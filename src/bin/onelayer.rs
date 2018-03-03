@@ -1,3 +1,4 @@
+extern crate rand;
 extern crate time;
 use std::fs::File;
 use std::io::prelude::*;
@@ -54,11 +55,12 @@ fn main() {
     println!("load: {:?}", start.elapsed().unwrap());
     let start = SystemTime::now();
 
-    let mut weights: [[u64; 13]; 10] = [[0; 13]; 10];
+    let mut weights: [[u64; 13]; 10] = rand::random::<[[u64; 13]; 10]>();
     let mut new_weights: [[[u64; 64]; 13]; 10] = [[[0; 64]; 13]; 10];
     let mut goodness_deltas: [[[i32; 64]; 13]; 10] = [[[0; 64]; 13]; 10];
     for o in 0..10 {
         for i in 0..13 {
+            weights[o][i] = rand::random::<u64>();
             for p in 0..64 {
                 new_weights[o][i][p] = weights[o][i] ^ (1 << (p));
             }

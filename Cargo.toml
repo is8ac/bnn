@@ -5,3 +5,12 @@ authors = ["Isaac Leonard <ifleonar@us.ibm.com>"]
 
 [dependencies]
 time = "0.1"
+rand = "0.4"
+
+[[bin]]
+name = "onelayer"
+path = "src/bin/onelayer.rs"
+
+[[bin]]
+name = "twolayer"
+path = "src/bin/twolayer.rs"
