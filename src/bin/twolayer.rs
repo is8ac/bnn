@@ -5,11 +5,9 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::time::SystemTime;
 
-const BATCH_SIZE: usize = 3;
+const BATCH_SIZE: usize = 3125;
 
-const HIDDEN_SIZE: usize = 2;
-
-fn load_labels() -> [usize; BATCH_SIZE] {
+fn load_labels() -> Vec<usize> {
     let path = Path::new("mnist/train-labels-idx1-ubyte");
     let mut file = File::open(&path).expect("can't open images");
     let mut header: [u8; 8] = [0; 8];
@@ -17,9 +15,9 @@ fn load_labels() -> [usize; BATCH_SIZE] {
 
     let mut bytes: [u8; BATCH_SIZE] = [0; BATCH_SIZE];
     file.read_exact(&mut bytes).expect("can't read label");
-    let mut labels: [usize; BATCH_SIZE] = [0; BATCH_SIZE];
-    for (i, byte) in bytes.iter().enumerate() {
-        labels[i] = *byte as usize;
+    let mut labels: Vec<usize> = Vec::new();
+    for byte in bytes.iter() {
+        labels.push(*byte as usize);
     }
     return labels;
 }
@@ -50,6 +48,59 @@ fn load_images() -> Vec<[u64; 13]> {
     return images;
 }
 
+
+fn avg5(v0: u64, v1: u64, v2: u64, v3: u64, v4: u64) -> u64 {
+    let d01 = v0 & v1;
+    let d02 = v0 & v2;
+    let d03 = v0 & v3;
+    let d12 = v1 & v2;
+    let d13 = v1 & v3;
+    let d23 = v2 & v3;
+
+    let t012 = d01 & v2;
+    let t013 = d01 & v3;
+    let t014 = d01 & v4;
+    let t023 = d02 & v3;
+    let t024 = d02 & v4;
+    let t034 = d03 & v4;
+    let t123 = d12 & v3;
+    let t124 = d12 & v4;
+    let t134 = d13 & v4;
+    let t234 = d23 & v4;
+
+    let avg = t012 | t013 | t014 | t023 | t024 | t034 | t123 | t124 | t134 | t234;
+    return avg;
+}
+
+fn avg3125(words: &[u64; 3125]) -> u64 {
+    let mut l4 = [0u64; 625];
+    for i in 0..625 {
+        l4[i] = avg5(words[i * 5 + 0],
+                     words[i * 5 + 1],
+                     words[i * 5 + 2],
+                     words[i * 5 + 3],
+                     words[i * 5 + 4])
+    }
+    let mut l3 = [0u64; 125];
+    for i in 0..125 {
+        l3[i] = avg5(l4[i * 5 + 0],
+                     l4[i * 5 + 1],
+                     l4[i * 5 + 2],
+                     l4[i * 5 + 3],
+                     l4[i * 5 + 4])
+    }
+    let mut l2 = [0u64; 25];
+    for i in 0..25 {
+        l2[i] = avg5(l3[i * 5 + 0],
+                     l3[i * 5 + 1],
+                     l3[i * 5 + 2],
+                     l3[i * 5 + 3],
+                     l3[i * 5 + 4])
+    }
+    let l1 = avg5(l2[0], l2[1], l2[2], l2[3], l2[4]);
+    return l1;
+}
+
 fn main() {
     let start = SystemTime::now();
     let images = load_images();
@@ -57,122 +108,40 @@ fn main() {
     println!("load: {:?}", start.elapsed().unwrap());
     let start = SystemTime::now();
 
-    let mut weights1: [[u64; 13]; HIDDEN_SIZE * 64] = [[0; 13]; HIDDEN_SIZE * 64];
-    let mut new_weights1: [[[u64; 64]; 13]; HIDDEN_SIZE * 64] = [[[0; 64]; 13]; HIDDEN_SIZE * 64];
-    let mut goodness_deltas1: [[[i32; 64]; 13]; HIDDEN_SIZE * 64] = [[[0; 64]; 13]; HIDDEN_SIZE *
-                                                                                    64];
-
-
-    // outputs of the first layer for the second to read.
-    let mut hidden_outputs: [[u64; HIDDEN_SIZE]; 10] = [[0; HIDDEN_SIZE]; 10];
-    // inputs which the second layer expect from the first layer.
-    let mut hidden_targets: [[bool; HIDDEN_SIZE * 64]; 10] = [[false; HIDDEN_SIZE * 64]; 10];
-
-    // init first layer
-    for o in 0..HIDDEN_SIZE * 64 {
-        // for each of the hidden outputs,
+    let mut hidden_targets = [[false; 128]; BATCH_SIZE];
+    let mut weights: [[u64; 13]; 128] = [[0u64; 13]; 128];
+    // init the weights.
+    for o in 0..128 {
         for i in 0..13 {
-            // for each of the inputs,
-            weights1[o][i] = rand::random::<u64>(); // 64 random bits
-            for p in 0..64 {
-                // for each permutation of the weight word,
-                // xor the existing weight with the 1 bit update
-                new_weights1[o][i][p] = weights1[o][i] ^ (1 << (p));
-            }
+            weights[o][i] = rand::random::<u64>();
         }
     }
-
-    let mut weights2: [[u64; 2]; 10] = [[0; 2]; 10];
-    let mut new_weights2: [[[u64; 64]; 2]; 10] = [[[0; 64]; 2]; 10];
-    let mut goodness_deltas2: [[[i32; 64]; 2]; 10] = [[[0; 64]; 2]; 10];
-
-    // init second layer
-    for o in 0..10 {
-        // for each of the final outputs,
-        for i in 0..HIDDEN_SIZE {
-            weights2[o][i] = rand::random::<u64>();
-            // for each bit in the hidden state
-            // random value for the hidden state
-            hidden_targets[o][i] = rand::random::<bool>();
-            // random weight
-            for p in 0..64 {
-                // for each permutation of the weight word,
-                // xor the existing weight word with the 1 bit update.
-                new_weights2[o][i][p] = weights2[o][i] ^ (1 << (p));
-            }
-        }
-    }
-    // calculate goodness deltas permutations in the first layer
     println!("init: {:?}", start.elapsed().unwrap());
     let start = SystemTime::now();
-    // calculate the deltas for each permutation of each weight.
-    for (s, &o) in labels.iter().enumerate() { // for each sample,
-        for h in 0..HIDDEN_SIZE * 64 { // for each bit of hidden state,
-            for i in 0..13 { // for each word of the input,
-                // calculate the value of the weight with no changes.
-                let nil_value = (weights1[h][i] ^ images[s][i]).count_ones() as i32;
-                for p in 0..64 {
-                    let new_value = (new_weights1[h][i][p] ^ images[s][i]).count_ones() as i32;
-                    let delta = new_value - nil_value;
-                    goodness_deltas1[o][i][p] += delta;
+    for i in 0..13 {
+        for o in 0..128 {
+            let mut new_weights = [0u64; BATCH_SIZE];
+            for s in 0..BATCH_SIZE {
+                if hidden_targets[s][o] {
+                    new_weights[s] = !images[s][i];
+                } else {
+                    // if not, make it small.
+                    new_weights[s] = images[s][i];
                 }
             }
+            weights[o][i] = avg3125(&new_weights);
+        }
+    }
+    for s in 0..BATCH_SIZE {
+        for i in 0..13 {
+            let mut sum: u32 = 0;
+            for o in 0..128 {
+                sum += (weights[o][i] ^ images[s][i]).count_ones()
+            }
+            println!("{:?}", sum);
+            hidden_targets[s][i] = sum > 4096;
         }
     }
     println!("main: {:?}", start.elapsed().unwrap());
-    let start = SystemTime::now();
-    for o in 0..HIDDEN_SIZE * 64 { // for each bit of hidden state
-        for i in 0..13 {
-            for p in 0..64 {
-                if goodness_deltas1[o][i][p] > 0 {
-                    weights1[o][i] = weights1[o][i] ^ (1 << (p));
-                }
-            }
-            hidden_outputs[o][i] = hidden_outputs[o][i] ^ weights1[o][i];
-        }
-    }
-    println!("final: {:?}", start.elapsed().unwrap());
-    let start = SystemTime::now();
-    let mut correct: u32 = 0;
-    let mut incorrect: u32 = 0;
-    for (s, image) in images.iter().enumerate() {
-        let mut hidden: [u64; 2] = [0; 2];
-        let mut top_index: u32 = 0;
-        let mut top_sum: u32 = 0;
-        // Compute the first layer.
-        for o in 0..HIDDEN_SIZE * 64 {
-            let mut sum: u32 = 0;
-            for i in 0..13 {
-                sum += (weights1[o][i] ^ image[i]).count_ones()
-            }
-            let word_index = o / 64;
-            // set a bit to the hidden state.
-            hidden[word_index] = hidden[word_index] | (((sum > 400) as u64) << o % 64);
-        }
-        println!("{:064b}", hidden[0]);
-        println!("{:064b}", hidden[1]);
-        // Compute the second layer.
-        for o in 0..10 {
-            let mut sum: u32 = 0;
-            for i in 0..2 {
-                sum += (weights2[o][i] ^ hidden[i]).count_ones()
-            }
-            if sum > top_sum {
-                top_index = o as u32;
-                top_sum = sum;
-            }
-        }
-        if top_index == labels[s] as u32 {
-            correct += 1;
-        } else {
-            incorrect += 1;
-        }
-    }
-    println!("run: {:?}", start.elapsed().unwrap());
-    println!("{:?}% correct",
-             correct as f32 / (correct + incorrect) as f32);
 
-    for word in weights1[0].iter().rev() {
-        print!("{:064b}", word);
-    }
 }
