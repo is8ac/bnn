@@ -1,11 +1,11 @@
-extern crate rand;
 extern crate time;
+extern crate rand;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 use std::time::SystemTime;
 
-const BATCH_SIZE: usize = 3125;
+const BATCH_SIZE: usize = 1000;
 
 fn load_labels() -> Vec<usize> {
     let path = Path::new("mnist/train-labels-idx1-ubyte");
@@ -48,100 +48,155 @@ fn load_images() -> Vec<[u64; 13]> {
     return images;
 }
 
-
-fn avg5(v0: u64, v1: u64, v2: u64, v3: u64, v4: u64) -> u64 {
-    let d01 = v0 & v1;
-    let d02 = v0 & v2;
-    let d03 = v0 & v3;
-    let d12 = v1 & v2;
-    let d13 = v1 & v3;
-    let d23 = v2 & v3;
-
-    let t012 = d01 & v2;
-    let t013 = d01 & v3;
-    let t014 = d01 & v4;
-    let t023 = d02 & v3;
-    let t024 = d02 & v4;
-    let t034 = d03 & v4;
-    let t123 = d12 & v3;
-    let t124 = d12 & v4;
-    let t134 = d13 & v4;
-    let t234 = d23 & v4;
-
-    let avg = t012 | t013 | t014 | t023 | t024 | t034 | t123 | t124 | t134 | t234;
-    return avg;
+fn bit_perturbations() -> [u64; 64] {
+    let mut words = [0u64; 64];
+    for i in 0..64 {
+        words[i] = 1 << i;
+    }
+    return words;
 }
 
-fn avg3125(words: &[u64; 3125]) -> u64 {
-    let mut l4 = [0u64; 625];
-    for i in 0..625 {
-        l4[i] = avg5(words[i * 5 + 0],
-                     words[i * 5 + 1],
-                     words[i * 5 + 2],
-                     words[i * 5 + 3],
-                     words[i * 5 + 4])
+fn accuracy13_10(&(weights1, weights2): &([[u64; 13]; HIDDEN_SIZE * 64],
+                                          [[u64; HIDDEN_SIZE]; 10]),
+                 inputs: &Vec<[u64; 13]>,
+                 targets: &Vec<usize>)
+                 -> f32 {
+    let mut correct: u32 = 0;
+    let mut incorrect: u32 = 0;
+    for e in 0..BATCH_SIZE {
+        let mut hidden_layer = [0u64; 2];
+        for o in 0..HIDDEN_SIZE * 64 {
+            let mut sum = 0;
+            for i in 0..13 {
+                sum += (weights1[o][i] ^ inputs[e][i]).count_ones();
+            }
+            let word_index = o / 64;
+            hidden_layer[word_index] = hidden_layer[word_index] | (((sum > 416) as u64) << o % 64);
+            // println!("{:?}", sum);
+            // println!("{:064b}", (((sum > 64) as u64) << o % 64));
+        }
+        let mut top_index: u32 = 0;
+        let mut top_sum: u32 = 0;
+        for o in 0..10 {
+            let mut sum: u32 = 0;
+            for i in 0..HIDDEN_SIZE {
+                sum += (weights2[o][i] ^ hidden_layer[i]).count_ones();
+            }
+            if sum > top_sum {
+                top_index = o as u32;
+                top_sum = sum;
+            }
+        }
+        if top_index == targets[e] as u32 {
+            correct += 1;
+        } else {
+            incorrect += 1;
+        }
     }
-    let mut l3 = [0u64; 125];
-    for i in 0..125 {
-        l3[i] = avg5(l4[i * 5 + 0],
-                     l4[i * 5 + 1],
-                     l4[i * 5 + 2],
-                     l4[i * 5 + 3],
-                     l4[i * 5 + 4])
-    }
-    let mut l2 = [0u64; 25];
-    for i in 0..25 {
-        l2[i] = avg5(l3[i * 5 + 0],
-                     l3[i * 5 + 1],
-                     l3[i * 5 + 2],
-                     l3[i * 5 + 3],
-                     l3[i * 5 + 4])
-    }
-    let l1 = avg5(l2[0], l2[1], l2[2], l2[3], l2[4]);
-    return l1;
+    return correct as f32 / (correct + incorrect) as f32;
 }
+
+
+fn goodness13_10(&(weights1, weights2): &([[u64; 13]; HIDDEN_SIZE * 64],
+                                          [[u64; HIDDEN_SIZE]; 10]),
+                 inputs: &Vec<[u64; 13]>,
+                 targets: &Vec<usize>)
+                 -> i64 {
+    let mut goodness = 0i64;
+    for e in 0..BATCH_SIZE {
+        let mut hidden_layer = [0u64; 2];
+        for o in 0..HIDDEN_SIZE * 64 {
+            let mut sum = 0;
+            for i in 0..13 {
+                sum += (weights1[o][i] ^ inputs[e][i]).count_ones();
+            }
+            let word_index = o / 64;
+            hidden_layer[word_index] = hidden_layer[word_index] | (((sum > 416) as u64) << o % 64);
+            // println!("{:?}", sum);
+            // println!("{:064b}", (((sum > 64) as u64) << o % 64));
+        }
+        for o in 0..10 {
+            let mut sum = 0i64;
+            for i in 0..HIDDEN_SIZE {
+                sum += (weights2[o][i] ^ hidden_layer[i]).count_ones() as i64;
+            }
+            if o == targets[e] {
+                // println!("+sum: {:?}", sum);
+                goodness = goodness + sum;
+            } else {
+                // println!("-sum: {:?}", sum);
+                //goodness = goodness - sum;
+            }
+        }
+    }
+    return goodness;
+}
+
+const HIDDEN_SIZE: usize = 2;
 
 fn main() {
-    let start = SystemTime::now();
     let images = load_images();
     let labels = load_labels();
-    println!("load: {:?}", start.elapsed().unwrap());
-    let start = SystemTime::now();
+    let perturbations = bit_perturbations();
 
-    let mut hidden_targets = [[false; 128]; BATCH_SIZE];
-    let mut weights: [[u64; 13]; 128] = [[0u64; 13]; 128];
-    // init the weights.
-    for o in 0..128 {
+    let mut params = ([[0u64; 13]; HIDDEN_SIZE * 64], [[0u64; HIDDEN_SIZE]; 10]);
+    for o in 0..HIDDEN_SIZE * 64 {
         for i in 0..13 {
-            weights[o][i] = rand::random::<u64>();
+            params.0[o][i] = rand::random::<u64>();
         }
     }
-    println!("init: {:?}", start.elapsed().unwrap());
-    let start = SystemTime::now();
-    for i in 0..13 {
-        for o in 0..128 {
-            let mut new_weights = [0u64; BATCH_SIZE];
-            for s in 0..BATCH_SIZE {
-                if hidden_targets[s][o] {
-                    new_weights[s] = !images[s][i];
-                } else {
-                    // if not, make it small.
-                    new_weights[s] = images[s][i];
+    for o in 0..10 {
+        for i in 0..HIDDEN_SIZE {
+            params.1[o][i] = rand::random::<u64>();
+        }
+    }
+    println!("init goodness: {:?}",
+             goodness13_10(&params, &images, &labels));
+    for iter in 0..30 {
+        let start = SystemTime::now();
+        for o in 0..HIDDEN_SIZE * 64 {
+            // for the outer dimention of the weights,
+            for i in 0..13 {
+                // and the inner dimention,
+                // calculate the goodness of no change,
+                let nil_goodness = goodness13_10(&params, &images, &labels);
+                for p in 0..64 {
+                    // println!("   {:064b}", params.0[o][i]);
+                    params.0[o][i] = params.0[o][i] ^ perturbations[p];
+                    // println!("vs {:064b}", params.0[o][i]);
+                    let new_goodness = goodness13_10(&params, &images, &labels);
+                    if !(new_goodness > nil_goodness) {
+                        // revert
+                        params.0[o][i] = params.0[o][i] ^ perturbations[p];
+                        // println!("reverting {:?} {:?}", nil_goodness, new_goodness);
+                    } else {
+                        // println!("keeping {:?} {:?}", nil_goodness, new_goodness);
+                    }
                 }
             }
-            weights[o][i] = avg3125(&new_weights);
         }
-    }
-    for s in 0..BATCH_SIZE {
-        for i in 0..13 {
-            let mut sum: u32 = 0;
-            for o in 0..128 {
-                sum += (weights[o][i] ^ images[s][i]).count_ones()
+        println!("layer one: {:?}", start.elapsed().unwrap());
+        for o in 0..10 {
+            // for the outer dimention of the weights,
+            for i in 0..HIDDEN_SIZE {
+                // and the inner dimention,
+                // calculate the goodness of no change,
+                let nil_goodness = goodness13_10(&params, &images, &labels);
+                for p in 0..64 {
+                    params.0[o][i] = params.0[o][i] ^ perturbations[p];
+                    let new_goodness = goodness13_10(&params, &images, &labels);
+                    if !(new_goodness > nil_goodness) {
+                        // revert
+                        params.1[o][i] = params.1[o][i] ^ perturbations[p];
+                    }
+                }
             }
-            println!("{:?}", sum);
-            hidden_targets[s][i] = sum > 4096;
         }
-    }
-    println!("main: {:?}", start.elapsed().unwrap());
 
+        // println!("new_goodness: {:?}", start.elapsed().unwrap());
+        println!("goodness at {:?} {:?}",
+                 iter,
+                 goodness13_10(&params, &images, &labels));
+        println!("accuracy {:?}%", accuracy13_10(&params, &images, &labels) * 100f32);
+    }
 }
