@@ -5,7 +5,13 @@ authors = ["Isaac Leonard <ifleonar@us.ibm.com>"]
 
 [dependencies]
 time = "0.1"
-rand = "0.4"
+rand = "0.4.2"
+tokio-core = "0.1"
+tokio-io = "0.1.5"
+futures = "0.1.18"
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0.10"
 
 [[bin]]
 name = "onelayer"
@@ -14,3 +20,19 @@ path = "src/bin/onelayer.rs"
 [[bin]]
 name = "twolayer"
 path = "src/bin/twolayer.rs"
+
+[[bin]]
+name = "conv"
+path = "src/bin/conv.rs"
+
+[[bin]]
+name = "master"
+path = "src/bin/master.rs"
+
+[[bin]]
+name = "client"
+path = "src/bin/client.rs"
+
+[[bin]]
+name = "macro_dense"
+path = "src/bin/macro_dense.rs"

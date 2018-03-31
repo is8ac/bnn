@@ -55,6 +55,25 @@ fn bit_perturbations() -> [u64; 64] {
     return words;
 }
 
+macro_rules! dense_layer {
+    ($input_size:expr, $output_size:expr) => (
+        |weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size]| -> [u64; $output_size] {
+            let mut output = [0u64; $output_size];
+            for o in 0..$output_size * 64 {
+                let mut sum = 0;
+                for i in 0..$input_size {
+                    sum += (weights[o][i] ^ input[i]).count_ones();
+                }
+                let word_index = o / 64;
+                output[word_index] = output[word_index] | (((sum > $input_size * 64 / 2) as u64) << o % 64);
+            }
+            return output;
+        }
+    )
+}
+
+//dense_layer!(dense13_1, 13, 1);
+
 fn accuracy13_10(
     &(weights1, weights2): &([[u64; 13]; HIDDEN_SIZE * 64], [[u64; HIDDEN_SIZE]; 10]),
     inputs: &Vec<[u64; 13]>,
@@ -63,17 +82,8 @@ fn accuracy13_10(
     let mut correct: u32 = 0;
     let mut incorrect: u32 = 0;
     for e in 0..inputs.len() {
-        let mut hidden_layer = [0u64; 2];
-        for o in 0..HIDDEN_SIZE * 64 {
-            let mut sum = 0;
-            for i in 0..13 {
-                sum += (weights1[o][i] ^ inputs[e][i]).count_ones();
-            }
-            let word_index = o / 64;
-            hidden_layer[word_index] = hidden_layer[word_index] | (((sum > 416) as u64) << o % 64);
-            // println!("{:?}", sum);
-            // println!("{:064b}", (((sum > 64) as u64) << o % 64));
-        }
+        //let mut hidden_layer = [0u64; HIDDEN_SIZE];
+        let hidden_layer = dense_layer!(13, 1)(&weights1, &inputs[e]);
         let mut top_index: u32 = 0;
         let mut top_sum: u32 = 0;
         for o in 0..10 {
@@ -102,17 +112,8 @@ fn goodness13_10(
 ) -> i64 {
     let mut goodness = 0i64;
     for e in 0..inputs.len() {
-        let mut hidden_layer = [0u64; 2];
-        for o in 0..HIDDEN_SIZE * 64 {
-            let mut sum = 0;
-            for i in 0..13 {
-                sum += (weights1[o][i] ^ inputs[e][i]).count_ones();
-            }
-            let word_index = o / 64;
-            hidden_layer[word_index] = hidden_layer[word_index] | (((sum > 416) as u64) << o % 64);
-            // println!("{:?}", sum);
-            // println!("{:064b}", (((sum > 64) as u64) << o % 64));
-        }
+        //let mut hidden_layer = [0u64; HIDDEN_SIZE];
+        let hidden_layer = dense_layer!(13, 1)(&weights1, &inputs[e]);
         for o in 0..10 {
             let mut sum = 0i64;
             for i in 0..HIDDEN_SIZE {
@@ -132,8 +133,9 @@ fn goodness13_10(
 
 const HIDDEN_SIZE: usize = 1;
 
+
 fn main() {
-    let training_size = 3000;
+    let training_size = 1000;
     let test_size = 1000;
     let images = load_images(
         &String::from("mnist/train-images-idx3-ubyte"),
