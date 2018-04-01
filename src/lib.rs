@@ -5,7 +5,7 @@ pub mod optimize {
     /// $avg_goodness should be a mutable f64.
     /// $goodness should be a function which depends on $word and returns a f64.
     #[macro_export]
-    macro_rules! word_bits {
+    macro_rules! optimize_word_bits {
         ($word:expr, $avg_goodness:expr, $goodness:expr) => (
             for p in 0..64 {
                 // for each bit of the word,
@@ -13,7 +13,7 @@ pub mod optimize {
                 $word = $word ^ perturbation;
                 let new_goodness =  $goodness;
                 if new_goodness > $avg_goodness {
-                    println!("keeping");
+                    //println!("keeping");
                     $avg_goodness = new_goodness;
                 } else {
                     //println!("reverting");
@@ -23,7 +23,8 @@ pub mod optimize {
         )
     }
 
-    /// Expands a function which takes a single example and returns one value into a code which returns the average of n calls.
+    /// Expands a function which takes a single example and
+    /// returns one value into a code which returns the average of n calls.
     #[macro_export]
     macro_rules! average {
         ($training_set:expr, $sample:expr, $n:expr) => (
@@ -35,11 +36,12 @@ pub mod optimize {
         )
     }
 
-    /// Converts a function which takes params and an example and returns a goodness into a function which just takes the example.
+    /// Converts a function which takes params and an example and
+    /// returns a goodness into a function which just takes the example.
     #[macro_export]
     macro_rules! wrap_params {
-        ($params:expr, $value_func:expr) => (
-            |example: &([[u64; 28]; 28], usize)| -> i64 {
+        ($params:expr, $value_func:expr, $data_type:ty) => (
+            |example: $data_type| -> i64 {
                 $value_func($params, example)
             }
         )
@@ -128,19 +130,19 @@ pub mod datasets {
                 |input: &[[u64; $x_size]; $y_size],
                 weights: &[[u64; 9]; 64]| ->
                 [[u64; ($x_size - 2) / $strides.0]; ($y_size - 2) / $strides.1] {
-                    let mut output = [[0u64; ($x_size - 2) / $strides.0]; ($y_size - 2) / $strides.1];
+                let mut output = [[0u64; ($x_size - 2) / $strides.0]; ($y_size - 2) / $strides.1];
                     for x in 0..($x_size - 2) / $strides.0 {
                         for y in 0..($y_size - 2) / $strides.1 {
                             for chan in 0..64 {
-                let sum = (weights[chan][0] ^ input[x * $strides.0 + 0][y * $strides.1 + 0]).count_ones()
-                        + (weights[chan][1] ^ input[x * $strides.0 + 1][y * $strides.1 + 0]).count_ones()
-                        + (weights[chan][2] ^ input[x * $strides.0 + 2][y * $strides.1 + 0]).count_ones()
-                        + (weights[chan][3] ^ input[x * $strides.0 + 0][y * $strides.1 + 1]).count_ones()
-                        + (weights[chan][4] ^ input[x * $strides.0 + 1][y * $strides.1 + 1]).count_ones()
-                        + (weights[chan][5] ^ input[x * $strides.0 + 2][y * $strides.1 + 1]).count_ones()
-                        + (weights[chan][6] ^ input[x * $strides.0 + 0][y * $strides.1 + 2]).count_ones()
-                        + (weights[chan][7] ^ input[x * $strides.0 + 1][y * $strides.1 + 2]).count_ones()
-                        + (weights[chan][8] ^ input[x * $strides.0 + 2][y * $strides.1 + 2]).count_ones();
+        let sum = (weights[chan][0] ^ input[x * $strides.0 + 0][y * $strides.1 + 0]).count_ones()
+                + (weights[chan][1] ^ input[x * $strides.0 + 1][y * $strides.1 + 0]).count_ones()
+                + (weights[chan][2] ^ input[x * $strides.0 + 2][y * $strides.1 + 0]).count_ones()
+                + (weights[chan][3] ^ input[x * $strides.0 + 0][y * $strides.1 + 1]).count_ones()
+                + (weights[chan][4] ^ input[x * $strides.0 + 1][y * $strides.1 + 1]).count_ones()
+                + (weights[chan][5] ^ input[x * $strides.0 + 2][y * $strides.1 + 1]).count_ones()
+                + (weights[chan][6] ^ input[x * $strides.0 + 0][y * $strides.1 + 2]).count_ones()
+                + (weights[chan][7] ^ input[x * $strides.0 + 1][y * $strides.1 + 2]).count_ones()
+                + (weights[chan][8] ^ input[x * $strides.0 + 2][y * $strides.1 + 2]).count_ones();
                                 output[x][y] = output[x][y] | (((sum > 288) as u64) << chan);
                             }
                         }
@@ -152,42 +154,43 @@ pub mod datasets {
         #[macro_export]
         macro_rules! dense_bits2bits {
             ($input_size:expr, $output_size:expr) => (
-                |weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size]| -> [u64; $output_size] {
-                    let mut output = [0u64; $output_size];
+                |output: &mut [u64; $output_size], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size]| {
                     for o in 0..$output_size * 64 {
                         let mut sum = 0;
                         for i in 0..$input_size {
                             sum += (weights[o][i] ^ input[i]).count_ones();
                         }
                         let word_index = o / 64;
-                        output[word_index] = output[word_index] | (((sum > $input_size * 64 / 2) as u64) << o % 64);
+                        output[word_index] = output[word_index] |
+                        (((sum > $input_size * 64 / 2) as u64) << o % 64);
                     }
-                    return output;
                 }
             )
         }
         #[macro_export]
         macro_rules! dense_bits2ints {
-            ($input:expr, $params:expr, $target_size:expr) => (
-                {
-                    let mut output = [0u32; $target_size];
-                    for o in 0..$target_size {
-                        output[o] = $input.iter().zip($params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
+            ($input_size:expr, $output_size:expr) => (
+                |output: &mut [u32; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size]| {
+                    for o in 0..$output_size {
+                        output[o] = input.iter().
+                        zip(params[o].iter()).
+                        fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
                     }
-                    output
                 }
             )
         }
         #[macro_export]
         macro_rules! correct {
             ($input:expr, $target:expr) => (
-                ($input.iter().enumerate().max_by_key(|&(_, item)| item).unwrap().0 == $target) as f64
+                ($input.iter().enumerate().
+                max_by_key(|&(_, item)| item).unwrap().0 == $target)
             )
         }
         #[macro_export]
         macro_rules! goodness {
             ($input:expr, $target:expr) => (
-                $input.iter().enumerate().fold(0, |acc, (index, value)| if index == $target {acc + value} else {acc})
+                $input.iter().enumerate().
+                fold(0, |acc, (index, value)| if index == $target {acc + value} else {acc})
             )
         }
     }
