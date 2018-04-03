@@ -168,6 +168,55 @@ pub mod datasets {
             )
         }
         #[macro_export]
+        macro_rules! dense_bits2bits_grad {
+            ($input_size:expr, $output_size:expr) => (
+                |target_grad: &[i8; $output_size * 64], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size]| -> [i8; $input_size * 64] {
+                    let threshold = ($input_size * 64) / 2;
+                    let mut input_sums = [0i32; $input_size * 64];
+                    for output_word in 0..$output_size {
+                        for output_word_bit in 0..64 {
+                            let mut xored_bits = [0u64; $input_size];
+                            let mut sum = 0;
+                            for i in 0..$input_size {
+                                xored_bits[i] = input[i] ^ weights[output_word * output_word_bit][i];
+                                sum += xored_bits[i].count_ones();
+                            }
+                            if target_grad[output_word * output_word_bit] > 0 {
+                                if sum == threshold {
+                                    for input_word in 0..$input_size {
+                                        for input_word_bit in 0..64 {
+                                            if ((xored_bits[input_word] >> input_word_bit) & 0b1) == 0b1 {
+                                                input_sums[input_word * input_word_bit] += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if sum == (threshold + 1) {
+                                for input_word in 0..$input_size {
+                                    for input_word_bit in 0..64 {
+                                        if ((xored_bits[input_word] >> input_word_bit) & 0b1) == 0b1 {
+                                            input_sums[input_word * input_word_bit] += -1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let mut grads = [0i8; $input_size * 64];
+                    for (index, &sum) in input_sums.iter().enumerate() {
+                        if sum > 0 {
+                            grads[index] = 1;
+                        }
+                        if sum < 0 {
+                            grads[index] = -1;
+                        }
+                    }
+                    grads
+                }
+            )
+        }
+        #[macro_export]
         macro_rules! dense_bits2ints {
             ($input_size:expr, $output_size:expr) => (
                 |output: &mut [u32; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size]| {
@@ -176,6 +225,51 @@ pub mod datasets {
                         zip(params[o].iter()).
                         fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
                     }
+                }
+            )
+        }
+        #[macro_export]
+        macro_rules! dense_bits2ints_grad {
+            ($input_size:expr, $output_size:expr) => (
+                |target_grad: &[i8; $output_size], weights: &[[u64; $input_size]; $output_size], input: &[u64; $input_size]| -> [i8; $input_size * 64] {
+                    let threshold = ($input_size * 64) / 2;
+                    let mut input_sums = [0i32; $input_size * 64];
+                    for output_index in 0..$output_size {
+                        let mut xored_bits = [0u64; $input_size];
+                        let mut sum = 0;
+                        for i in 0..$input_size {
+                            xored_bits[i] = input[i] ^ weights[output_index][i];
+                            sum += xored_bits[i].count_ones();
+                        }
+                        if sum == threshold {
+                            for input_word in 0..$input_size {
+                                for input_word_bit in 0..64 {
+                                    if ((xored_bits[input_word] >> input_word_bit) & 0b1) == 0b1 {
+                                        input_sums[input_word * input_word_bit] += 1;
+                                    }
+                                }
+                            }
+                        }
+                        if sum == (threshold + 1) {
+                            for input_word in 0..$input_size {
+                                for input_word_bit in 0..64 {
+                                    if ((xored_bits[input_word] >> input_word_bit) & 0b1) == 0b1 {
+                                        input_sums[input_word * input_word_bit] += -1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let mut grads = [0i8; $input_size * 64];
+                    for (index, &sum) in input_sums.iter().enumerate() {
+                        if sum > 0 {
+                            grads[index] = 1;
+                        }
+                        if sum < 0 {
+                            grads[index] = -1;
+                        }
+                    }
+                    grads
                 }
             )
         }
