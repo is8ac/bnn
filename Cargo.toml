@@ -6,12 +6,6 @@ authors = ["Isaac Leonard <ifleonar@us.ibm.com>"]
 [dependencies]
 time = "0.1"
 rand = "0.4.2"
-tokio-core = "0.1"
-tokio-io = "0.1.5"
-futures = "0.1.18"
-serde = "1.0"
-serde_derive = "1.0"
-serde_json = "1.0.10"
 
 [[bin]]
 name = "onelayer"
