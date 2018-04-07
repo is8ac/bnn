@@ -172,6 +172,19 @@ pub mod datasets {
             };
         }
         #[macro_export]
+        macro_rules! dense_bits2bits_cached {
+            ($input_size:expr, $output_size:expr) => {
+                |output: &mut [u64; $output_size], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size], o: usize| {
+                    let mut sum = 0;
+                    for i in 0..$input_size {
+                        sum += (weights[o][i] ^ input[i]).count_ones();
+                    }
+                    let word_index = o / 64;
+                    output[word_index] = output[word_index] | (((sum > $input_size as u32 * 64 / 2) as u64) << o % 64);
+                }
+            };
+        }
+        #[macro_export]
         macro_rules! dense_bits2ints {
             ($input_size:expr, $output_size:expr) => {
                 |output: &mut [u32; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size]| {
