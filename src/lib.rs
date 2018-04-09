@@ -22,7 +22,6 @@ pub mod optimize {
             }
         };
     }
-
     /// Expands a function which takes a single example and
     /// returns one value into a code which returns the average of n calls.
     #[macro_export]
@@ -191,6 +190,14 @@ pub mod datasets {
                     for o in 0..$output_size {
                         output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
                     }
+                }
+            };
+        }
+        #[macro_export]
+        macro_rules! dense_bits2ints_cached {
+            ($input_size:expr, $output_size:expr) => {
+                |output: &mut [u32; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size], o: usize| {
+                    output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
                 }
             };
         }

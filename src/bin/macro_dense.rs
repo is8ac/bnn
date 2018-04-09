@@ -7,8 +7,8 @@ use std::time::SystemTime;
 
 //#[derive(PartialEq, Eq, Hash)]
 
-const TRAINING_SIZE: usize = 60000;
-const h1: usize = 3;
+const TRAINING_SIZE: usize = 6000;
+const h1: usize = 2;
 const h2: usize = 1;
 
 fn main() {
@@ -39,92 +39,105 @@ fn main() {
     let layer1 = dense_bits2bits!(13, h1);
     let layer1_cached = dense_bits2bits_cached!(13, h1);
     let layer2 = dense_bits2bits!(h1, h2);
+    let layer2_cached = dense_bits2bits_cached!(h1, h2);
     let layer3 = dense_bits2ints!(h2, 10);
+    let layer3_cached = dense_bits2ints_cached!(h2, 10);
     let loss = int_loss!(10);
 
-    let layer1_loss = |input: &[u64; 13],
-                       targets: &[u32; 10],
-                       layer_params: &[[u64; 13]; h1 * 64],
+    let cached_loss = |&(input, c1, c2, c3, l): &([u64; 13], [u64; h1], [u64; h2], [u32; 10], u32),
+                       params: &([[u64; 13]; h1 * 64], [[u64; h1]; h2 * 64], [[u64; h2]; 10]),
+                       changed_layer: u32,
                        updated_output: usize,
-                       (c1, c2, c3, l): (&[u64; h1], &[u64; h2], &[u32; 10], u32)|
+                       targets: &[u32; 10]|
      -> u32 {
-        let mut state1 = [0u64; h1];
-        layer1_cached(&mut state1, layer_params, &input, updated_output);
-        if state1 == *c1 {
-            return l;
+        let mut state1 = c1;
+        if changed_layer == 1 {
+            layer1_cached(&mut state1, &params.0, &input, updated_output);
+            if state1[updated_output / 64] == c1[updated_output / 64] {
+                return l;
+            }
         }
-        let mut state2 = [0u64; h2];
-        layer2(&mut state2, &params.1, &state1);
-        if state2 == *c2 {
-            return l;
+        if changed_layer < 1 {
+            layer1(&mut state1, &params.0, &input);
+            if state1 == c1 {
+                return l;
+            }
         }
-        let mut state3 = [0u32; 10];
-        layer3(&mut state3, &params.2, &state2);
+        let mut state2 = c2;
+        if changed_layer == 2 {
+            layer2_cached(&mut state2, &params.1, &state1, updated_output);
+            if state2[updated_output / 64] == c2[updated_output / 64] {
+                return l;
+            }
+        }
+        if changed_layer < 2 {
+            layer2(&mut state2, &params.1, &state1);
+            if state2 == c2 {
+                return l;
+            }
+        }
+        let mut state3 = c3;
+        if changed_layer == 3 {
+            layer3_cached(&mut state3, &params.2, &state2, updated_output);
+            if state3[updated_output / 64] == c3[updated_output / 64] {
+                return l;
+            }
+        }
+        if changed_layer < 3 {
+            layer3(&mut state3, &params.2, &state2);
+            if state3 == c3 {
+                return l;
+            }
+        }
         loss(&state3, &targets)
     };
-    //let layer2_loss = |input: &[u64; 2], targets: &[u32; 10], layer_params: &[[u64; 2]; 10]| -> u32 {
-    //    let mut state2 = [0u32; 10];
-    //    layer2(&mut state2, &layer_params, &input);
-    //    loss(&state2, &targets)
-    //};
 
-    let mut state_cache = (
-        &mut vec![[0u64; h1]; TRAINING_SIZE],
-        &mut vec![[0u64; h2]; TRAINING_SIZE],
-        &mut vec![[0u32; 10]; TRAINING_SIZE],
-        &mut vec![0u32; TRAINING_SIZE],
-    );
+    let mut state_cache = vec![([0u64; 13], [0u64; h1], [0u64; h2], [0u32; 10], 0u32, 0usize); TRAINING_SIZE];
 
     for e in 0..TRAINING_SIZE {
-        layer1(&mut state_cache.0[e], &params.0, &images[e]);
-        layer2(&mut state_cache.1[e], &params.1, &state_cache.0[e]);
-        layer3(&mut state_cache.2[e], &params.2, &state_cache.1[e]);
-        state_cache.3[e] = loss(&state_cache.2[e], &labels[e]);
+        state_cache[e].0 = images[e];
+        layer1(&mut state_cache[e].1, &params.0, &images[e]);
+        let state0 = state_cache[e].1;
+        layer2(&mut state_cache[e].2, &params.1, &state0);
+        let state1 = state_cache[e].2;
+        layer3(&mut state_cache[e].3, &params.2, &state1);
+        state_cache[e].4 = loss(&state_cache[e].3, &labels[e]);
     }
-    println!("cache0 {:?}", state_cache.3[0]);
-    println!("cache0 {:?}", state_cache.3[1]);
-    let sum_nil_loss: u64 = images
-        .iter()
-        .zip(labels.iter())
-        .enumerate()
-        .map(|(e, (image, target))| {
-            layer1_loss(
-                image,
-                target,
-                &params.0,
-                0,
-                (&state_cache.0[e], &state_cache.1[e], &state_cache.2[e], state_cache.3[e]),
-            ) as u64
-        })
-        .sum();
+    let mut sum_nil_loss: u64 = state_cache.iter().map(|&(_, _, _, _, loss)| loss as u64).sum();
+    println!("sum loss: {:?}", sum_nil_loss);
     let nil_loss = sum_nil_loss as f64 / TRAINING_SIZE as f64;
     println!("avg nil loss: {:?}", nil_loss);
-    let mut scratch_params0 = params.0;
-    let mut losses0 = [[0f64; 13 * 64]; h1 * 64];
-    for o in 0..h1 * 64 {
-        for i in 0..13 {
+    println!("starting layer 3");
+    for i in 0..h2 {
+        for o in 0..10 {
             let start = SystemTime::now();
+            let mut changed = false;
             for b in 0..64 {
-                scratch_params0[o][i] = scratch_params0[o][i] ^ 0b1u64 << b;
+                params.2[o][i] = params.2[o][i] ^ 0b1u64 << b;
                 let sum_loss: u64 = images
                     .iter()
                     .zip(labels.iter())
                     .enumerate()
-                    .map(|(e, (image, target))| {
-                        layer1_loss(
-                            image,
-                            target,
-                            &scratch_params0,
-                            o,
-                            (&state_cache.0[e], &state_cache.1[e], &state_cache.2[e], state_cache.3[e]),
-                        ) as u64
-                    })
+                    .map(|(e, (image, target))| cached_loss(&state_cache[e], &params, 3, o, target) as u64)
                     .sum();
-                losses0[o][i * b] = nil_loss - (sum_loss as f64 / TRAINING_SIZE as f64);
-                scratch_params0[o][i] = params.0[o][i];
-                println!("{:?} {:?} {:?} delta: {:?}", o, i, b, losses0[o][i * b]);
+                if sum_loss <= sum_nil_loss {
+                    sum_nil_loss = sum_loss;
+                    //println!("keeping");
+                    changed = true;
+                    let loss = sum_loss as f64 / TRAINING_SIZE as f64;
+                    println!("{:?} loss: {:?}", b, loss);
+                } else {
+                    params.2[o][i] = params.2[o][i] ^ 0b1u64 << b; // revert
+                }
             }
-            println!("time for 64: {:?}", start.elapsed().unwrap());
+            println!("{:?} {:?} time: {:?}", o, i, start.elapsed().unwrap());
+            if changed {
+                for e in 0..TRAINING_SIZE {
+                    let state1 = state_cache[e].2;
+                    layer3(&mut state_cache[e].3, &params.2, &state1);
+                    state_cache[e].4 = loss(&state_cache[e].3, &labels[e]);
+                }
+            }
         }
     }
 }
