@@ -157,8 +157,8 @@ pub mod datasets {
         }
         #[macro_export]
         macro_rules! dense_bits2bits {
-            ($input_size:expr, $output_size:expr) => {
-                |output: &mut [u64; $output_size], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size]| {
+            ($name:ident, $input_size:expr, $output_size:expr) => {
+                fn $name(output: &mut [u64; $output_size], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size]) {
                     for o in 0..$output_size * 64 {
                         let mut sum = 0;
                         for i in 0..$input_size {
@@ -172,8 +172,32 @@ pub mod datasets {
         }
         #[macro_export]
         macro_rules! dense_bits2bits_cached {
-            ($input_size:expr, $output_size:expr) => {
-                |output: &mut [u64; $output_size], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size], o: usize| {
+            ($name:ident, $input_size:expr, $output_size:expr) => {
+                fn $name(
+                    output: &mut [u64; $output_size],
+                    weights: &[[u64; $input_size]; $output_size * 64],
+                    input: &[u64; $input_size],
+                    old_input: &[u64; $input_size],
+                ) -> bool {
+                    if input == old_input {
+                        return false;
+                    }
+                    for o in 0..$output_size * 64 {
+                        let mut sum = 0;
+                        for i in 0..$input_size {
+                            sum += (weights[o][i] ^ input[i]).count_ones();
+                        }
+                        let word_index = o / 64;
+                        output[word_index] = output[word_index] | (((sum > $input_size as u32 * 64 / 2) as u64) << o % 64);
+                    }
+                    true
+                }
+            };
+        }
+        #[macro_export]
+        macro_rules! dense_bits2bits_oneoutput {
+            ($name:ident, $input_size:expr, $output_size:expr) => {
+                fn $name(output: &mut [u64; $output_size], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size], o: usize) {
                     let mut sum = 0;
                     for i in 0..$input_size {
                         sum += (weights[o][i] ^ input[i]).count_ones();
@@ -185,8 +209,8 @@ pub mod datasets {
         }
         #[macro_export]
         macro_rules! dense_bits2ints {
-            ($input_size:expr, $output_size:expr) => {
-                |output: &mut [u32; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size]| {
+            ($name:ident, $input_size:expr, $output_size:expr) => {
+                fn $name(output: &mut [u32; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size]) {
                     for o in 0..$output_size {
                         output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
                     }
@@ -195,8 +219,27 @@ pub mod datasets {
         }
         #[macro_export]
         macro_rules! dense_bits2ints_cached {
-            ($input_size:expr, $output_size:expr) => {
-                |output: &mut [u32; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size], o: usize| {
+            ($name:ident, $input_size:expr, $output_size:expr) => {
+                fn $name(
+                    output: &mut [u32; $output_size],
+                    params: &[[u64; $input_size]; $output_size],
+                    input: &[u64; $input_size],
+                    old_input: &[u64; $input_size],
+                ) -> bool {
+                    if input == old_input {
+                        false
+                    }
+                    for o in 0..$output_size {
+                        output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
+                    }
+                    true
+                }
+            };
+        }
+        #[macro_export]
+        macro_rules! dense_bits2ints_oneoutput {
+            ($name:ident, $input_size:expr, $output_size:expr) => {
+                fn $name(output: &mut [u32; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size], o: usize) {
                     output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
                 }
             };
@@ -209,8 +252,8 @@ pub mod datasets {
         }
         #[macro_export]
         macro_rules! int_loss {
-            ($size:expr) => {
-                |actual: &[u32; $size], target: &[u32; $size]| -> u32 {
+            ($name:ident, $size:expr) => {
+                fn $name(actual: &[u32; $size], target: &[u32; $size]) -> u32 {
                     actual
                         .iter()
                         .zip(target.iter())
