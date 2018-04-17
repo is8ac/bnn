@@ -39,6 +39,40 @@ pub mod optimize {
             |example: $data_type| -> i64 { $value_func($params, example) }
         };
     }
+    #[macro_export]
+    macro_rules! optimize_layer {
+        ($loss_func:expr, $i_size:expr, $o_size:expr) => {
+            for e in 0..TRAINING_SIZE {
+                cache[e].refresh(&params);
+            }
+            let mut nil_avg_loss = $loss_func(cache);
+            println!("avg nil loss: {:?}", nil_avg_loss);
+            println!("starting layer 1");
+            for i in 0..$i_size {
+                for o in 0..$o_size {
+                    let start = SystemTime::now();
+                    let mut changed = false;
+                    for b in 0..64 {
+                        params.l1[o][i] = params.l1[o][i] ^ (0b1u64 << b);
+                        let avg_loss = $loss_func();
+                        if avg_loss < nil_avg_loss {
+                            nil_avg_loss = avg_loss;
+                            changed = true;
+                        //println!("{:?} loss: {:?}", b, avg_loss);
+                        } else {
+                            params.l1[o][i] = params.l1[o][i] ^ (0b1u64 << b); // revert
+                        }
+                    }
+                    if changed {
+                        for e in 0..TRAINING_SIZE {
+                            cache[e].refresh(&params);
+                        }
+                    }
+                    println!("{:?} {:?} time: {:?}", o, i, start.elapsed().unwrap());
+                }
+            }
+        };
+    }
 }
 
 pub mod datasets {
@@ -128,6 +162,34 @@ pub mod datasets {
             }
             return images;
         }
+        pub fn load_images_64chan_flat(path: &String, size: usize) -> Vec<[u64; 28 * 28]> {
+            let path = Path::new(path);
+            let mut file = File::open(&path).expect("can't open images");
+            let mut header: [u8; 16] = [0; 16];
+            file.read_exact(&mut header).expect("can't read header");
+
+            let mut images_bytes: [u8; 784] = [0; 784];
+
+            // bitpack the image into 13 64 bit words.
+            // There will be unused space in the last word, this is acceptable.
+            // the bits of each words will be in revere order,
+            // rev() the slice before use if you want them in the correct order.
+            let mut images: Vec<[u64; 28 * 28]> = Vec::new();
+            for _ in 0..size {
+                file.read_exact(&mut images_bytes).expect("can't read images");
+                let mut image = [0u64; 28 * 28];
+                for p in 0..784 {
+                    let mut ones = 0u64;
+                    for i in 0..images_bytes[p] / 4 {
+                        ones = ones | 1 << i;
+                    }
+                    image[p] = ones;
+                }
+                images.push(image);
+            }
+            return images;
+        }
+
     }
     pub mod layers {
         #[macro_export]
@@ -159,38 +221,15 @@ pub mod datasets {
         macro_rules! dense_bits2bits {
             ($name:ident, $input_size:expr, $output_size:expr) => {
                 fn $name(output: &mut [u64; $output_size], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size]) {
+                    let threshold = $input_size as u32 * 64 / 2;
                     for o in 0..$output_size * 64 {
-                        let mut sum = 0;
+                        let mut sum = 0u32;
                         for i in 0..$input_size {
                             sum += (weights[o][i] ^ input[i]).count_ones();
                         }
                         let word_index = o / 64;
-                        output[word_index] = output[word_index] | (((sum > $input_size as u32 * 64 / 2) as u64) << o % 64);
+                        output[word_index] = output[word_index] | (((sum > threshold) as u64) << (o % 64));
                     }
-                }
-            };
-        }
-        #[macro_export]
-        macro_rules! dense_bits2bits_cached {
-            ($name:ident, $input_size:expr, $output_size:expr) => {
-                fn $name(
-                    output: &mut [u64; $output_size],
-                    weights: &[[u64; $input_size]; $output_size * 64],
-                    input: &[u64; $input_size],
-                    old_input: &[u64; $input_size],
-                ) -> bool {
-                    if input == old_input {
-                        return false;
-                    }
-                    for o in 0..$output_size * 64 {
-                        let mut sum = 0;
-                        for i in 0..$input_size {
-                            sum += (weights[o][i] ^ input[i]).count_ones();
-                        }
-                        let word_index = o / 64;
-                        output[word_index] = output[word_index] | (((sum > $input_size as u32 * 64 / 2) as u64) << o % 64);
-                    }
-                    true
                 }
             };
         }
@@ -198,12 +237,13 @@ pub mod datasets {
         macro_rules! dense_bits2bits_oneoutput {
             ($name:ident, $input_size:expr, $output_size:expr) => {
                 fn $name(output: &mut [u64; $output_size], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size], o: usize) {
-                    let mut sum = 0;
+                    let threshold = $input_size as u32 * 64 / 2;
+                    let mut sum = 0u32;
                     for i in 0..$input_size {
                         sum += (weights[o][i] ^ input[i]).count_ones();
                     }
                     let word_index = o / 64;
-                    output[word_index] = output[word_index] | (((sum > $input_size as u32 * 64 / 2) as u64) << o % 64);
+                    output[word_index] = output[word_index] | (((sum > threshold) as u64) << (o % 64));
                 }
             };
         }
@@ -214,25 +254,6 @@ pub mod datasets {
                     for o in 0..$output_size {
                         output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
                     }
-                }
-            };
-        }
-        #[macro_export]
-        macro_rules! dense_bits2ints_cached {
-            ($name:ident, $input_size:expr, $output_size:expr) => {
-                fn $name(
-                    output: &mut [u32; $output_size],
-                    params: &[[u64; $input_size]; $output_size],
-                    input: &[u64; $input_size],
-                    old_input: &[u64; $input_size],
-                ) -> bool {
-                    if input == old_input {
-                        false
-                    }
-                    for o in 0..$output_size {
-                        output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
-                    }
-                    true
                 }
             };
         }

@@ -5,12 +5,10 @@ extern crate rand;
 use bitnn::datasets::mnist;
 use std::time::SystemTime;
 
-//#[derive(PartialEq, Eq, Hash)]
-
 const TRAINING_SIZE: usize = 60000;
 const TEST_SIZE: usize = 10000;
-const H1: usize = 7;
-const H2: usize = 5;
+const H1: usize = 3;
+const H2: usize = 2;
 
 dense_bits2bits!(layer1, 13, H1);
 dense_bits2bits_oneoutput!(layer1_oneoutput, 13, H1);
@@ -153,10 +151,10 @@ fn optimize_layer3(cache: &mut Vec<ExampleCache>, params: &mut Parameters) {
             for b in 0..64 {
                 params.l3[o][i] = params.l3[o][i] ^ (0b1u64 << b);
                 let avg_loss = avg_loss(cache, &params, l3_loss, o);
-                if avg_loss <= nil_avg_loss {
+                if avg_loss < nil_avg_loss {
                     nil_avg_loss = avg_loss;
                     changed = true;
-                    println!("{:?} loss: {:?}", b, avg_loss);
+                    //println!("{:?} loss: {:?}", b, avg_loss);
                 } else {
                     params.l3[o][i] = params.l3[o][i] ^ (0b1u64 << b); // revert
                 }
@@ -185,10 +183,10 @@ fn optimize_layer2(cache: &mut Vec<ExampleCache>, params: &mut Parameters) {
             for b in 0..64 {
                 params.l2[o][i] = params.l2[o][i] ^ (0b1u64 << b);
                 let avg_loss = avg_loss(cache, &params, l2_loss, o);
-                if avg_loss <= nil_avg_loss {
+                if avg_loss < nil_avg_loss {
                     nil_avg_loss = avg_loss;
                     changed = true;
-                    println!("{:?} loss: {:?}", b, avg_loss);
+                    //println!("{:?} loss: {:?}", b, avg_loss);
                 } else {
                     params.l2[o][i] = params.l2[o][i] ^ (0b1u64 << b); // revert
                 }
@@ -211,26 +209,28 @@ fn optimize_layer1(cache: &mut Vec<ExampleCache>, params: &mut Parameters) {
     println!("avg nil loss: {:?}", nil_avg_loss);
     println!("starting layer 1");
     for i in 0..13 {
+        let mut changed = false;
         for o in 0..H1 {
             let start = SystemTime::now();
-            let mut changed = false;
+            let start_64 = SystemTime::now();
             for b in 0..64 {
                 params.l1[o][i] = params.l1[o][i] ^ (0b1u64 << b);
                 let avg_loss = avg_loss(cache, &params, l1_loss, o);
-                if avg_loss <= nil_avg_loss {
+                if avg_loss < nil_avg_loss {
                     nil_avg_loss = avg_loss;
                     changed = true;
-                    println!("{:?} loss: {:?}", b, avg_loss);
+                    //println!("{:?} loss: {:?}", b, avg_loss);
                 } else {
                     params.l1[o][i] = params.l1[o][i] ^ (0b1u64 << b); // revert
                 }
             }
-            if changed {
-                for e in 0..TRAINING_SIZE {
-                    cache[e].refresh(&params);
-                }
+            println!("{:?} {:?} time: {:?}", o, i, start.elapsed().unwrap());
+        }
+        if changed {
+            let refresh_start = SystemTime::now();
+            for e in 0..TRAINING_SIZE {
+                cache[e].refresh(&params);
             }
-            //println!("{:?} {:?} time: {:?}", o, i, start.elapsed().unwrap());
         }
     }
 }
@@ -262,8 +262,8 @@ fn main() {
 
     let images = mnist::load_images_bitpacked(&String::from("mnist/train-images-idx3-ubyte"), TRAINING_SIZE);
     let labels = mnist::load_labels_onehot(&String::from("mnist/train-labels-idx1-ubyte"), TRAINING_SIZE, onval);
-    let test_images = mnist::load_images_bitpacked(&String::from("mnist/train-images-idx3-ubyte"), TEST_SIZE);
-    let test_labels = mnist::load_labels(&String::from("mnist/train-labels-idx1-ubyte"), TEST_SIZE);
+    let test_images = mnist::load_images_bitpacked(&String::from("mnist/t10k-images-idx3-ubyte"), TEST_SIZE);
+    let test_labels = mnist::load_labels(&String::from("mnist/t10k-labels-idx1-ubyte"), TEST_SIZE);
 
     let mut params = Parameters::random();
 
