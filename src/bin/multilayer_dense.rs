@@ -37,17 +37,17 @@ fn l1_loss(cache: &ExampleCache, params: &Parameters, updated_output: usize) -> 
     let mut s1 = cache.states.0;
     layer1_oneoutput(&mut s1, &params.l1, &cache.input, updated_output);
     if s1[updated_output / 64] == cache.states.0[updated_output / 64] {
-        cache.states.3
+        cache.loss
     } else {
         let mut s2 = [0u64; H2];
         layer2(&mut s2, &params.l2, &s1);
         if s2 == cache.states.1 {
-            cache.states.3
+            cache.loss
         } else {
             let mut s3 = [0u32; 10];
             layer3(&mut s3, &params.l3, &s2);
             if s3 == cache.states.2 {
-                cache.states.3
+                cache.loss
             } else {
                 loss(&s3, &cache.target)
             }
@@ -59,12 +59,12 @@ fn l2_loss(cache: &ExampleCache, params: &Parameters, updated_output: usize) -> 
     let mut s2 = cache.states.1;
     layer2_oneoutput(&mut s2, &params.l2, &cache.states.0, updated_output);
     if s2 == cache.states.1 {
-        cache.states.3
+        cache.loss
     } else {
         let mut s3 = [0u32; 10];
         layer3(&mut s3, &params.l3, &s2);
         if s3 == cache.states.2 {
-            cache.states.3
+            cache.loss
         } else {
             loss(&s3, &cache.target)
         }
@@ -75,7 +75,7 @@ fn l3_loss(cache: &ExampleCache, params: &Parameters, updated_output: usize) -> 
     let mut s3 = cache.states.2;
     layer3_oneoutput(&mut s3, &params.l3, &cache.states.1, updated_output);
     if s3 == cache.states.2 {
-        cache.states.3
+        cache.loss
     } else {
         loss(&s3, &cache.target)
     }
@@ -84,7 +84,8 @@ fn l3_loss(cache: &ExampleCache, params: &Parameters, updated_output: usize) -> 
 struct ExampleCache {
     input: [u64; 13],
     target: [u32; 10],
-    states: ([u64; H1], [u64; H2], [u32; 10], u32),
+    loss: u32,
+    states: ([u64; H1], [u64; H2], [u32; 10]),
 }
 
 impl ExampleCache {
@@ -92,7 +93,8 @@ impl ExampleCache {
         let mut example = ExampleCache {
             input: input,
             target: target,
-            states: ([0u64; H1], [0u64; H2], [0u32; 10], 0u32),
+            loss: 0u32,
+            states: ([0u64; H1], [0u64; H2], [0u32; 10]),
         };
         example.refresh(&params);
         example
@@ -101,7 +103,7 @@ impl ExampleCache {
         layer1(&mut self.states.0, &params.l1, &self.input);
         layer2(&mut self.states.1, &params.l2, &self.states.0);
         layer3(&mut self.states.2, &params.l3, &self.states.1);
-        self.states.3 = loss(&self.states.2, &self.target);
+        self.loss = loss(&self.states.2, &self.target);
     }
 }
 
@@ -154,7 +156,7 @@ fn optimize_layer3(cache: &mut Vec<ExampleCache>, params: &mut Parameters) {
                 if avg_loss < nil_avg_loss {
                     nil_avg_loss = avg_loss;
                     changed = true;
-                    //println!("{:?} loss: {:?}", b, avg_loss);
+                //println!("{:?} loss: {:?}", b, avg_loss);
                 } else {
                     params.l3[o][i] = params.l3[o][i] ^ (0b1u64 << b); // revert
                 }
@@ -186,7 +188,7 @@ fn optimize_layer2(cache: &mut Vec<ExampleCache>, params: &mut Parameters) {
                 if avg_loss < nil_avg_loss {
                     nil_avg_loss = avg_loss;
                     changed = true;
-                    //println!("{:?} loss: {:?}", b, avg_loss);
+                //println!("{:?} loss: {:?}", b, avg_loss);
                 } else {
                     params.l2[o][i] = params.l2[o][i] ^ (0b1u64 << b); // revert
                 }
@@ -219,7 +221,7 @@ fn optimize_layer1(cache: &mut Vec<ExampleCache>, params: &mut Parameters) {
                 if avg_loss < nil_avg_loss {
                     nil_avg_loss = avg_loss;
                     changed = true;
-                    //println!("{:?} loss: {:?}", b, avg_loss);
+                //println!("{:?} loss: {:?}", b, avg_loss);
                 } else {
                     params.l1[o][i] = params.l1[o][i] ^ (0b1u64 << b); // revert
                 }
