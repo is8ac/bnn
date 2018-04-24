@@ -94,17 +94,17 @@ pub mod datasets {
             }
             return labels;
         }
-        pub fn load_labels_onehot(path: &String, size: usize, onval: u32) -> Vec<[u32; 10]> {
+        pub fn load_labels_onehot(path: &String, size: usize, onval: u16) -> Vec<[u16; 10]> {
             let path = Path::new(path);
             let mut file = File::open(&path).expect("can't open images");
             let mut header: [u8; 8] = [0; 8];
             file.read_exact(&mut header).expect("can't read header");
 
             let mut byte: [u8; 1] = [0; 1];
-            let mut labels: Vec<[u32; 10]> = Vec::new();
+            let mut labels: Vec<[u16; 10]> = Vec::new();
             for _ in 0..size {
                 file.read_exact(&mut byte).expect("can't read label");
-                let mut label = [0u32; 10];
+                let mut label = [0u16; 10];
                 label[byte[0] as usize] = onval;
                 labels.push(label);
             }
@@ -218,41 +218,32 @@ pub mod datasets {
             };
         }
         #[macro_export]
-        macro_rules! dense_bits2bits {
+        macro_rules! dense_bits_fused_threshold {
             ($name:ident, $input_size:expr, $output_size:expr) => {
-                fn $name(output: &mut [u64; $output_size], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size]) {
-                    let threshold = $input_size as u32 * 64 / 2;
-                    for o in 0..$output_size * 64 {
-                        let mut sum = 0u32;
-                        for i in 0..$input_size {
-                            sum += (weights[o][i] ^ input[i]).count_ones();
+                fn $name(
+                    output: &mut [u64; $output_size],
+                    weights: &[[u64; $input_size]; $output_size * 64],
+                    thresholds: &[i16; $output_size * 64],
+                    input: &[u64; $input_size],
+                ) {
+                    for o in 0..$output_size {
+                        for b in 0..64 {
+                            let mut sum = 0u32;
+                            for i in 0..$input_size {
+                                sum += (weights[o * b][i] ^ input[i]).count_ones();
+                            }
+                            output[o] = output[o] | (((sum as i16 > thresholds[o * b]) as u64) << b);
                         }
-                        let word_index = o / 64;
-                        output[word_index] = output[word_index] | (((sum > threshold) as u64) << (o % 64));
                     }
-                }
-            };
-        }
-        #[macro_export]
-        macro_rules! dense_bits2bits_oneoutput {
-            ($name:ident, $input_size:expr, $output_size:expr) => {
-                fn $name(output: &mut [u64; $output_size], weights: &[[u64; $input_size]; $output_size * 64], input: &[u64; $input_size], o: usize) {
-                    let threshold = $input_size as u32 * 64 / 2;
-                    let mut sum = 0u32;
-                    for i in 0..$input_size {
-                        sum += (weights[o][i] ^ input[i]).count_ones();
-                    }
-                    let word_index = o / 64;
-                    output[word_index] = output[word_index] | (((sum > threshold) as u64) << (o % 64));
                 }
             };
         }
         #[macro_export]
         macro_rules! dense_bits2ints {
             ($name:ident, $input_size:expr, $output_size:expr) => {
-                fn $name(output: &mut [u32; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size]) {
+                fn $name(output: &mut [u16; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size]) {
                     for o in 0..$output_size {
-                        output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
+                        output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones()) as u16;
                     }
                 }
             };
@@ -260,8 +251,30 @@ pub mod datasets {
         #[macro_export]
         macro_rules! dense_bits2ints_oneoutput {
             ($name:ident, $input_size:expr, $output_size:expr) => {
-                fn $name(output: &mut [u32; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size], o: usize) {
-                    output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones());
+                fn $name(output: &mut [u16; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size], o: usize) {
+                    output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones()) as u16;
+                }
+            };
+        }
+        #[macro_export]
+        macro_rules! threshold_and_bitpack {
+            ($name:ident, $size:expr) => {
+                fn $name(output: &mut [u64; $size], params: &[u16; $size], input: &[u16; $size * 64]) {
+                    for o in 0..$size {
+                        for b in 0..64 {
+                            let i = o * b;
+                            output[o] = output[o] | (((input[i] > params[i]) as u64) << b);
+                        }
+                    }
+                }
+            };
+        }
+        #[macro_export]
+        macro_rules! threshold_and_bitpack_oneoutput {
+            ($name:ident, $size:expr) => {
+                fn $name(output: &mut [u64; $size], params: &[u16; $size], input: &[u16; $size * 64], o: usize) {
+                    let word = o / 64;
+                    output[word] = output[word] | (((input[o] > params[o]) as u64) << (o % 64));
                 }
             };
         }
@@ -274,13 +287,13 @@ pub mod datasets {
         #[macro_export]
         macro_rules! int_loss {
             ($name:ident, $size:expr) => {
-                fn $name(actual: &[u32; $size], target: &[u32; $size]) -> u32 {
+                fn $name(actual: &[u16; $size], target: &[u16; $size]) -> i32 {
                     actual
                         .iter()
                         .zip(target.iter())
                         .map(|(&a, &t)| {
                             let diff = a as i32 - t as i32;
-                            (diff * diff) as u32
+                            diff * diff
                         })
                         .sum()
                 }
