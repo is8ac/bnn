@@ -194,8 +194,12 @@ pub mod datasets {
     pub mod layers {
         #[macro_export]
         macro_rules! conv2d {
-            ($x_size:expr, $y_size:expr, $strides:expr) => {
-                |input: &[[u64; $x_size]; $y_size], weights: &[[u64; 9]; 64]| -> [[u64; ($x_size - 2) / $strides.0]; ($y_size - 2) / $strides.1] {
+            ($name:ident, $x_size:expr, $y_size:expr, $strides:expr) => {
+                fn $name(
+                    input: &[[u64; $x_size]; $y_size],
+                    weights: &[[u64; 9]; 64],
+                    thresholds: &[i16; 64],
+                ) -> [[u64; ($x_size - 2) / $strides.0]; ($y_size - 2) / $strides.1] {
                     let mut output = [[0u64; ($x_size - 2) / $strides.0]; ($y_size - 2) / $strides.1];
                     for x in 0..($x_size - 2) / $strides.0 {
                         for y in 0..($y_size - 2) / $strides.1 {
@@ -209,11 +213,29 @@ pub mod datasets {
                                     + (weights[chan][6] ^ input[x * $strides.0 + 0][y * $strides.1 + 2]).count_ones()
                                     + (weights[chan][7] ^ input[x * $strides.0 + 1][y * $strides.1 + 2]).count_ones()
                                     + (weights[chan][8] ^ input[x * $strides.0 + 2][y * $strides.1 + 2]).count_ones();
-                                output[x][y] = output[x][y] | (((sum > 288) as u64) << chan);
+                                output[x][y] = output[x][y] | (((sum as i16 > thresholds[chan]) as u64) << chan);
                             }
                         }
                     }
-                    return output;
+                    output
+                }
+            };
+        }
+        #[macro_export]
+        macro_rules! squash {
+            ($name:ident, $x_size:expr, $y_size:expr) => {
+                fn $name(input: &[[u64; $x_size]; $y_size]) -> [u64; $x_size * $y_size] {
+                    let mut output = [0u64; $x_size * $y_size];
+                    //for x in 0..$x_size {
+                    //    for y in 0..$y_size {
+                    //        output[x * y] = input[x][y];
+                    //    }
+                    //}
+                    for o in 0..$x_size * $y_size {
+                        output[o] = input[o / $y_size][o % $y_size];
+                    }
+                    //println!("squash output: {:?}", output);
+                    output
                 }
             };
         }
@@ -241,10 +263,15 @@ pub mod datasets {
         #[macro_export]
         macro_rules! dense_bits2ints {
             ($name:ident, $input_size:expr, $output_size:expr) => {
-                fn $name(output: &mut [u16; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size]) {
-                    for o in 0..$output_size {
-                        output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones()) as u16;
+                fn $name(input: &[u64; $input_size], params: &[[u64; $input_size]; $output_size]) -> [i16; $output_size] {
+                    let mut output = [0i16; $output_size];
+                    for i in 0..$input_size {
+                        for o in 0..$output_size {
+                            output[o] += (input[i] ^ params[o][i]).count_ones() as i16;
+                            //println!("{:?} {:?}", (input[i] ^ params[o][i]), params[o][i]);
+                        }
                     }
+                    output
                 }
             };
         }
