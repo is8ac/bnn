@@ -135,7 +135,7 @@ pub mod datasets {
             return images;
         }
 
-        pub fn load_images_64chan(path: &String, size: usize) -> Vec<[[u64; 28]; 28]> {
+        pub fn load_images_64chan(path: &String, size: usize) -> Vec<[[[u64; 1]; 28]; 28]> {
             let path = Path::new(path);
             let mut file = File::open(&path).expect("can't open images");
             let mut header: [u8; 16] = [0; 16];
@@ -147,16 +147,16 @@ pub mod datasets {
             // There will be unused space in the last word, this is acceptable.
             // the bits of each words will be in revere order,
             // rev() the slice before use if you want them in the correct order.
-            let mut images: Vec<[[u64; 28]; 28]> = Vec::new();
+            let mut images: Vec<[[[u64; 1]; 28]; 28]> = Vec::new();
             for _ in 0..size {
                 file.read_exact(&mut images_bytes).expect("can't read images");
-                let mut image = [[0u64; 28]; 28];
+                let mut image = [[[0u64; 1]; 28]; 28];
                 for p in 0..784 {
                     let mut ones = 0u64;
                     for i in 0..images_bytes[p] / 4 {
                         ones = ones | 1 << i;
                     }
-                    image[p / 28][p % 28] = ones;
+                    image[p / 28][p % 28][0] = ones;
                 }
                 images.push(image);
             }
@@ -192,28 +192,61 @@ pub mod datasets {
 
     }
     pub mod layers {
+        // zero padded
         #[macro_export]
-        macro_rules! conv2d {
-            ($name:ident, $x_size:expr, $y_size:expr, $strides:expr) => {
+        macro_rules! conv3x3 {
+            ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
                 fn $name(
-                    input: &[[u64; $x_size]; $y_size],
-                    weights: &[[u64; 9]; 64],
-                    thresholds: &[i16; 64],
-                ) -> [[u64; ($x_size - 2) / $strides.0]; ($y_size - 2) / $strides.1] {
-                    let mut output = [[0u64; ($x_size - 2) / $strides.0]; ($y_size - 2) / $strides.1];
-                    for x in 0..($x_size - 2) / $strides.0 {
-                        for y in 0..($y_size - 2) / $strides.1 {
-                            for chan in 0..64 {
-                                let sum = (weights[chan][0] ^ input[x * $strides.0 + 0][y * $strides.1 + 0]).count_ones()
-                                    + (weights[chan][1] ^ input[x * $strides.0 + 1][y * $strides.1 + 0]).count_ones()
-                                    + (weights[chan][2] ^ input[x * $strides.0 + 2][y * $strides.1 + 0]).count_ones()
-                                    + (weights[chan][3] ^ input[x * $strides.0 + 0][y * $strides.1 + 1]).count_ones()
-                                    + (weights[chan][4] ^ input[x * $strides.0 + 1][y * $strides.1 + 1]).count_ones()
-                                    + (weights[chan][5] ^ input[x * $strides.0 + 2][y * $strides.1 + 1]).count_ones()
-                                    + (weights[chan][6] ^ input[x * $strides.0 + 0][y * $strides.1 + 2]).count_ones()
-                                    + (weights[chan][7] ^ input[x * $strides.0 + 1][y * $strides.1 + 2]).count_ones()
-                                    + (weights[chan][8] ^ input[x * $strides.0 + 2][y * $strides.1 + 2]).count_ones();
-                                output[x][y] = output[x][y] | (((sum as i16 > thresholds[chan]) as u64) << chan);
+                    input: &[[[u64; $in_chans]; $y_size]; $x_size],
+                    weights: &[[[u64; $in_chans]; 9]; 64 * $out_chans],
+                    thresholds: &[i16; $out_chans * 64],
+                ) -> [[[u64; $out_chans]; $y_size]; $x_size] {
+                    let mut output = [[[0u64; $out_chans]; $y_size]; $x_size];
+                    for x in 1..$x_size - 1 {
+                        for y in 1..$y_size - 1 {
+                            for ow in 0..$out_chans {
+                                for ob in 0..64 {
+                                    let mut sum = 0;
+                                    for iw in 0..$in_chans {
+                                       sum += (weights[ow * 64 + ob][0][iw] ^ input[x + 0][y + 0][iw]).count_ones()
+                                            + (weights[ow * 64 + ob][1][iw] ^ input[x + 1][y + 0][iw]).count_ones()
+                                            + (weights[ow * 64 + ob][2][iw] ^ input[x + 2][y + 0][iw]).count_ones()
+                                            + (weights[ow * 64 + ob][3][iw] ^ input[x + 0][y + 1][iw]).count_ones()
+                                            + (weights[ow * 64 + ob][4][iw] ^ input[x + 1][y + 1][iw]).count_ones()
+                                            + (weights[ow * 64 + ob][5][iw] ^ input[x + 2][y + 1][iw]).count_ones()
+                                            + (weights[ow * 64 + ob][6][iw] ^ input[x + 0][y + 2][iw]).count_ones()
+                                            + (weights[ow * 64 + ob][7][iw] ^ input[x + 1][y + 2][iw]).count_ones()
+                                            + (weights[ow * 64 + ob][8][iw] ^ input[x + 2][y + 2][iw]).count_ones();
+                                    }
+                                    output[x][y][ow] = output[x][y][ow] | (((sum as i16 > thresholds[ow * 64 + ob]) as u64) << ob);
+                                }
+                            }
+                        }
+                    }
+                    output
+                }
+                type input_type = [[[u64; $in_chans]; $y_size]; $x_size];
+            };
+        }
+        #[macro_export]
+        macro_rules! conv1x1_multichan {
+            ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
+                fn $name(
+                    input: &[[[u64; $in_chans]; $x_size]; $y_size],
+                    weights: &[[u64; $in_chans]; 64 * $out_chans],
+                    thresholds: &[i16; $out_chans * 64],
+                ) -> [[[u64 $num_chans]; $x_size]; $y_size] {
+                    let mut output = [[[0u64; $out_chans]; $x_size]; $y_size];
+                    for x in 0..$x_size {
+                        for y in 0..$y_size {
+                            for ow in 0..$out_chans {
+                                for ob in 0..64 {
+                                    let mut sum = 0;
+                                    for iw in 0..$in_chans {
+                                        sum += (weights[ow * 64 + ob][0][iw] ^ input[x][y][iw]).count_ones()
+                                    }
+                                    output[x][y][ow] = output[x][y][ow] | (((sum as i16 > thresholds[ow * 64 + ob]) as u64) << ob);
+                                }
                             }
                         }
                     }
@@ -222,18 +255,58 @@ pub mod datasets {
             };
         }
         #[macro_export]
-        macro_rules! squash {
-            ($name:ident, $x_size:expr, $y_size:expr) => {
-                fn $name(input: &[[u64; $x_size]; $y_size]) -> [u64; $x_size * $y_size] {
-                    let mut output = [0u64; $x_size * $y_size];
-                    //for x in 0..$x_size {
-                    //    for y in 0..$y_size {
-                    //        output[x * y] = input[x][y];
-                    //    }
-                    //}
-                    for o in 0..$x_size * $y_size {
-                        output[o] = input[o / $y_size][o % $y_size];
+        macro_rules! pool_or2x2 {
+            ($name:ident, $x_size:expr, $y_size:expr, $num_chans:expr) => {
+                fn $name(input: &[[[u64; $num_chans]; $x_size]; $y_size]) -> [[[u64; $num_chans]; $y_size / 2]; $x_size / 2] {
+                    let mut output = [[[0u64; $num_chans]; $y_size / 2]; $x_size / 2];
+                    for x in 0..$x_size / 2 {
+                        for y in 0..$y_size / 2 {
+                            for chan in 0..$num_chans {
+                                output[x][y][chan] = input[x * 2 + 0][y * 2 + 0][chan] | input[x * 2 + 1][y * 2 + 0][chan]
+                                    | input[x * 2 + 0][y * 2 + 1][chan] | input[x * 2 + 1][y * 2 + 1][chan]
+                            }
+                        }
                     }
+                    output
+                }
+            };
+        }
+        #[macro_export]
+        macro_rules! pool_and2x2 {
+            ($name:ident, $x_size:expr, $y_size:expr, $num_chans:expr) => {
+                fn $name(input: &[[[u64; $num_chans]; $x_size]; $y_size]) -> [[[u64 $num_chans]; $y_size]; $x_size] {
+                    let mut output = [[[0u64; $num_chans]; $y_size / 2]; $x_size / 2];
+                    for x in 0..$x_size / 2 {
+                        for y in 0..$y_size / 2 {
+                            for chan in 0..$num_chans {
+                                output[x][y][chan] =
+                                input[x * 2 + 0][y * 2 + 0][chan] &
+                                input[x * 2 + 1][y * 2 + 0][chan] &
+                                input[x * 2 + 0][y * 2 + 1][chan] &
+                                input[x * 2 + 1][y * 2 + 1][chan]
+                            }
+                        }
+                    }
+                    output
+                }
+            };
+        }
+        /// takes [x, y, chan] (or any other 3 dimentional vector)
+        #[macro_export]
+        macro_rules! flatten3d {
+            ($name:ident, $x_size:expr, $y_size:expr, $num_chans:expr) => {
+                fn $name(input: &[[[u64; $num_chans]; $x_size]; $y_size]) -> [u64; $x_size * $y_size * $num_chans] {
+                    let mut output = [0u64; $x_size * $y_size];
+                    for x in 0..$x_size {
+                        for y in 0..$y_size {
+                            for c in $num_chans {
+                                output[x * $y_size * $num_chans + y * $num_chans + c] = input[x][y][c];
+                            }
+                        }
+                    }
+                    //for o in 0..$x_size * $y_size {
+                    //    output[o] = input[o / $y_size][o % $y_size];
+                    //}
                     //println!("squash output: {:?}", output);
                     output
                 }
@@ -252,9 +325,9 @@ pub mod datasets {
                         for b in 0..64 {
                             let mut sum = 0u32;
                             for i in 0..$input_size {
-                                sum += (weights[o * b][i] ^ input[i]).count_ones();
+                                sum += (weights[o * 64 + b][i] ^ input[i]).count_ones();
                             }
-                            output[o] = output[o] | (((sum as i16 > thresholds[o * b]) as u64) << b);
+                            output[o] = output[o] | (((sum as i16 > thresholds[o * 64 + b]) as u64) << b);
                         }
                     }
                 }
@@ -276,14 +349,6 @@ pub mod datasets {
             };
         }
         #[macro_export]
-        macro_rules! dense_bits2ints_oneoutput {
-            ($name:ident, $input_size:expr, $output_size:expr) => {
-                fn $name(output: &mut [u16; $output_size], params: &[[u64; $input_size]; $output_size], input: &[u64; $input_size], o: usize) {
-                    output[o] = input.iter().zip(params[o].iter()).fold(0, |acc, x| acc + (x.0 ^ x.1).count_ones()) as u16;
-                }
-            };
-        }
-        #[macro_export]
         macro_rules! threshold_and_bitpack {
             ($name:ident, $size:expr) => {
                 fn $name(output: &mut [u64; $size], params: &[u16; $size], input: &[u16; $size * 64]) {
@@ -293,15 +358,6 @@ pub mod datasets {
                             output[o] = output[o] | (((input[i] > params[i]) as u64) << b);
                         }
                     }
-                }
-            };
-        }
-        #[macro_export]
-        macro_rules! threshold_and_bitpack_oneoutput {
-            ($name:ident, $size:expr) => {
-                fn $name(output: &mut [u64; $size], params: &[u16; $size], input: &[u16; $size * 64], o: usize) {
-                    let word = o / 64;
-                    output[word] = output[word] | (((input[o] > params[o]) as u64) << (o % 64));
                 }
             };
         }
