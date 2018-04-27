@@ -15,41 +15,39 @@ const C1: usize = 3;
 const C2: usize = 2;
 const C3: usize = 1;
 
-conv3x3!(conv1, 28, 28, C0, C1);
-pool_or2x2!(pool1, 28, 28, C1);
-conv3x3!(conv2, 14, 14, C1, C2);
-pool_or2x2!(pool2, 14, 14, C2);
-conv3x3!(conv3, 7, 7, C2, C3);
-flatten3d!(flatten, 7, 7, C3);
-dense_bits2ints!(dense_1, 9, 10);
-
-struct Parameters {
-    conv1_weights: [[[u64; C0]; 9]; C1 * 64],
-    conv1_thresholds: [i16; C1 * 64],
-    conv2_weights: [[[u64; C1]; 9]; C2 * 64],
-    conv2_thresholds: [i16; C2 * 64],
-    conv3_weights: [[[u64; C2]; 9]; C3 * 64],
-    conv3_thresholds: [i16; C3 * 64],
-    dense_weights: [[u64; 7 * 7 * C3]; 10],
+fn random_bits() -> u64 {
+    rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>()
+        & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>()
+        & rand::random::<u64>()
 }
 
-macro_rules! random_bits {
-    () => {
-        rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>()
-            & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>() & rand::random::<u64>()
-            & rand::random::<u64>()
-    };
+fn random_int() -> i16 {
+    rand::thread_rng().gen_range(-1, 2)
 }
 
-impl Parameters {
-    fn new_nil() -> Parameters {
-        Parameters {
-            conv1_weights: [[[0u64; C0]; 9]; C1 * 64],
-            conv1_thresholds: [(9 * 64 / 2) as i16; C1 * 64],
+
+conv3x3!(Conv1, 28, 28, C0, C1);
+pool_or2x2!(Pool1, 28, 28, C1);
+conv3x3!(Conv2, 14, 14, C1, C2);
+pool_or2x2!(Pool2, 14, 14, C2);
+conv3x3!(Conv3, 7, 7, C2, C3);
+flatten3d!(Flatten, 7, 7, C3);
+dense_bits2ints!(Dense1, 9, 10);
+
+struct Layers {
+    conv1: Conv1,
+    pool1: Pool1
+    conv2: Conv2,
+    conv3: Conv3,
+    dense: Dense,
+}
+
+impl Layers {
+    fn new_nil() -> Layers {
+        Layers {
+            conv1: Conv1,
             conv2_weights: [[[0u64; C1]; 9]; C2 * 64],
-            conv2_thresholds: [(9 * 64 / 2) as i16; C2 * 64],
             conv3_weights: [[[0u64; C2]; 9]; C3 * 64],
-            conv3_thresholds: [(C3 * 64 / 2) as i16; C3 * 64],
             dense_weights: [[0u64; 7 * 7 * C3]; 10],
         }
     }

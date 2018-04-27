@@ -1,4 +1,4 @@
-// 76%
+// 200 acc: 19.88%
 #[macro_use]
 extern crate bitnn;
 extern crate rand;
