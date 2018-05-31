@@ -1,5 +1,10 @@
 # bitnets
-This project is currently in development. Do not expect it to so much as compile.
+This project is currently in development.
+
+To try it out, run
+```
+cargo run --release --bin mnist_conv
+```
 
 
 # Literature
