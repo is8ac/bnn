@@ -1,10 +1,12 @@
 // 93%
+use std::sync::mpsc::channel;
 use std::time::SystemTime;
 
 use std::fmt;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
+use std::thread;
 use std::thread::sleep;
 
 #[macro_use]
@@ -16,13 +18,14 @@ use std::time::Duration;
 //const MINIBATCH_SIZE: usize = 200;
 const TRAINING_SIZE: usize = 10000;
 const TEST_SIZE: usize = 10000;
-const NIL_LOSS_SIZE: usize = TRAINING_SIZE;
+const NTHREADS: usize = 1;
+const CACHE_SIZE: usize = TRAINING_SIZE / NTHREADS;
 
 // channel sizes (will be multiplied by 8);
 const C0: usize = 1;
 const C1: usize = 2;
-const C2: usize = 3;
-const C3: usize = 4;
+const C2: usize = 4;
+const C3: usize = 8;
 
 // Parameter sizes and max output ranges.
 const K1_SIZE: usize = C0 * C1 * 3 * 3;
@@ -44,6 +47,139 @@ conv_3x3_u8_params_u32_activation_output!(conv3, 7, 7, C2, C3 * 8, K3_MAX, 0);
 flatten3d!(flatten, u32, 7, 7, C3 * 8);
 dense_ints2ints!(dense1, u32, i32, 5 * 5 * C3, 10);
 
+struct Cache {
+    images: Vec<[[[u8; 1]; 28]; 28]>,
+    labels: Vec<usize>,
+    s1: Vec<[[[u32; C1 * 8]; 14]; 14]>,
+    s2: Vec<[[[u32; C2 * 8]; 7]; 7]>,
+    s3: Vec<[u32; C3 * 8 * 5 * 5]>,
+    actuals: Vec<[i32; 10]>,
+    losses: Vec<i64>,
+    correct: Vec<bool>,
+    params: Parameters,
+    clean: [bool; 8],
+}
+
+impl Cache {
+    fn update_images(&mut self) {
+        println!("I don't actualy know how to update the images yet");
+        // some day it may make sens to load in the images in demand.
+        self.clean[0] = true;
+        panic!("don't try to invalidate the images.")
+    }
+    fn update_s1(&mut self) {
+        if !self.clean[0] {
+            self.update_images();
+        }
+        println!("updating cache 1");
+        for i in 0..CACHE_SIZE {
+            self.s1[i] = pool1(&conv1(&self.images[i], &self.params.ck1));
+        }
+        // s1 is now clean
+        self.clean[1] = true;
+    }
+    fn update_s2(&mut self) {
+        // if s1 is not clean, we must update the it before we can calculate s2.
+        if !self.clean[1] {
+            self.update_s1();
+        }
+        println!("updating cache 2");
+        for i in 0..CACHE_SIZE {
+            self.s2[i] = pool2(&conv2(&self.s1[i], &self.params.ck2));
+        }
+        // s2 is now clean
+        self.clean[2] = true;
+    }
+    fn update_s3(&mut self) {
+        if !self.clean[2] {
+            self.update_s2();
+        }
+        println!("updating cache 3");
+        for i in 0..CACHE_SIZE {
+            self.s3[i] = flatten(&conv3(&self.s2[i], &self.params.ck3));
+        }
+        // s3 is now clean.
+        self.clean[3] = true;
+    }
+    fn update_actuals(&mut self) {
+        if !self.clean[3] {
+            self.update_s3();
+        }
+        println!("updating actuals cache ");
+        for i in 0..CACHE_SIZE {
+            self.actuals[i] = dense1(&self.s3[i], &self.params.dense1);
+        }
+        // s3 is now clean.
+        self.clean[4] = true;
+    }
+    fn update_losses(&mut self) {
+        if !self.clean[4] {
+            self.update_actuals();
+        }
+        for i in 0..CACHE_SIZE {
+            self.losses[i] = self.actuals[i].iter().map(|o| ((o - self.actuals[i][self.labels[i]] + 3) as i64).max(0)).sum();
+        }
+        self.clean[5] = true;
+    }
+    fn avg_loss(&mut self) -> f64 {
+        if !self.clean[5] {
+            self.update_losses();
+        }
+        let sum: i64 = self.losses.iter().sum();
+        sum as f64 / CACHE_SIZE as f64
+    }
+    fn update_correct(&mut self) {
+        if !self.clean[4] {
+            self.update_actuals();
+        }
+        for e in 0..CACHE_SIZE {
+            let mut index: usize = 0;
+            let mut max = 0i32;
+            for i in 0..10 {
+                if self.actuals[e][i] > max {
+                    max = self.actuals[e][i];
+                    index = i;
+                }
+            }
+            self.correct[e] = index == self.labels[e];
+        }
+        self.clean[6] = true;
+    }
+    fn avg_accuracy(&mut self) -> f64 {
+        if !self.clean[6] {
+            self.update_correct();
+        }
+        let sum: u64 = self.correct.iter().map(|&c| c as u64).sum();
+        sum as f64 / CACHE_SIZE as f64
+    }
+    fn mutate(&mut self, layer: usize, index: usize) {
+        // invalidate the cache
+        for i in layer..8-1 {
+            self.clean[i] = false;
+        }
+        self.params.mutate(layer, index)
+    }
+    fn new(images: Vec<[[[u8; 1]; 28]; 28]>, labels: Vec<usize>, params: Parameters) -> Cache {
+        Cache {
+            images: images,
+            s1: vec![[[[0u32; C1 * 8]; 14]; 14]; CACHE_SIZE],
+            s2: vec![[[[0u32; C2 * 8]; 7]; 7]; CACHE_SIZE],
+            s3: vec![[0u32; C3 * 8 * 5 * 5]; CACHE_SIZE],
+            actuals: vec![[0i32; 10]; CACHE_SIZE],
+            losses: vec![0i64; CACHE_SIZE],
+            correct: vec![false; CACHE_SIZE],
+            labels: labels,
+            params: params,
+            clean: [true, false, false, false, false, false, false, true], // the images and labels start out clean, but the other caches do not.
+        }
+    }
+}
+
+struct Update {
+    layer: usize,
+    bit_index: usize,
+}
+
 #[derive(Clone, Copy)]
 struct Parameters {
     ck1: [u8; K1_SIZE],
@@ -52,7 +188,26 @@ struct Parameters {
     dense1: [u8; D1_SIZE],
 }
 
+macro_rules! flip_bit {
+    ($array:expr, $index:expr) => {
+        $array[$index / 8] = $array[$index / 8] ^ 0b1u8 << ($index % 8);
+    };
+}
+
 impl Parameters {
+    fn mutate(&mut self, layer: usize, bit_index: usize) {
+        if layer == 1 {
+            flip_bit!(self.ck1, bit_index);
+        } else if layer == 2 {
+            flip_bit!(self.ck2, bit_index);
+        } else if layer == 3 {
+            flip_bit!(self.ck3, bit_index);
+        } else if layer == 4 {
+            flip_bit!(self.dense1, bit_index);
+        } else {
+            panic!("bad layer ID");
+        }
+    }
     fn new() -> Parameters {
         Parameters {
             ck1: random_byte_array!(K1_SIZE)(),
@@ -174,8 +329,7 @@ macro_rules! optimize_layer {
                 }
             }
         }
-        println!("avg acc: {:?}%", avg_accuracy(&test_examples, &$params) * 100.0);
-        write_params(&params);
+        write_params(&$params);
     };
 }
 
@@ -186,93 +340,19 @@ fn main() {
 
     let test_images = mnist::load_images_u8_1chan(&String::from("mnist/t10k-images-idx3-ubyte"), TEST_SIZE);
     let test_labels = mnist::load_labels(&String::from("mnist/t10k-labels-idx1-ubyte"), TEST_SIZE);
-    let test_examples: Vec<([[[u8; 1]; 28]; 28], usize)> = test_images.iter().zip(test_labels).map(|(&image, target)| (image, target)).collect();
+    //let test_examples: Vec<([[[u8; 1]; 28]; 28], usize)> = test_images.iter().zip(test_labels).map(|(&image, target)| (image, target)).collect();
 
-    //let mut params = load_params();
-    let mut params = Parameters::new();
+    let mut params = load_params();
+    //let mut params = Parameters::new();
 
-    let mut nil_loss = avg_loss!(images, labels, model_image, params);
-    println!("nil loss: {:?}", nil_loss);
-    if true {
-        println!("starting: {:?}", K1_SIZE);
-        for w in 0..K1_SIZE {
-            for b in 0..8 {
-                params.ck1[w] = params.ck1[w] ^ 1u8 << b;
-                let new_loss = avg_loss!(images, labels, model_image, params);
-                if new_loss <= nil_loss {
-                    nil_loss = new_loss;
-                    println!("{:?} keeping: {:?}", w, nil_loss);
-                } else {
-                    println!("{:?} reverting: {:?}", w, new_loss);
-                    params.ck1[w] = params.ck1[w] ^ 1u8 << b;
-                }
-            }
-        }
-        println!("avg acc: {:?}%", avg_accuracy(&test_examples, &params) * 100.0);
-        write_params(&params);
+    let mut cache = Cache::new(images, labels, params);
+    let mut test_cache = Cache::new(test_images, test_labels, params);
 
-        let mut s1 = vec![[[[0u32; C1 * 8]; 14]; 14]; TRAINING_SIZE];
-        for i in 0..TRAINING_SIZE {
-            s1[i] = pool1(&conv1(&images[i], &params.ck1));
-        }
-        println!("starting: {:?}", K2_SIZE);
-        for w in 0..K2_SIZE {
-            for b in 0..8 {
-                params.ck2[w] = params.ck2[w] ^ 1u8 << b;
-                let new_loss = avg_loss!(s1, labels, model_s2, params);
-                if new_loss <= nil_loss {
-                    nil_loss = new_loss;
-                    println!("{:?} keeping: {:?}", w, nil_loss);
-                } else {
-                    println!("{:?} reverting: {:?}", w, new_loss);
-                    params.ck2[w] = params.ck2[w] ^ 1u8 << b;
-                }
-            }
-        }
-        println!("avg acc: {:?}%", avg_accuracy(&test_examples, &params) * 100.0);
-        write_params(&params);
-
-        let mut s2 = vec![[[[0u32; C2 * 8]; 7]; 7]; TRAINING_SIZE];
-        for i in 0..TRAINING_SIZE {
-            s2[i] = pool2(&conv2(&s1[i], &params.ck2));
-        }
-        println!("starting: {:?}", K3_SIZE);
-        for w in 0..K3_SIZE {
-            for b in 0..8 {
-                params.ck3[w] = params.ck3[w] ^ 1u8 << b;
-                let new_loss = avg_loss!(s2, labels, model_s3, params);
-                if new_loss <= nil_loss {
-                    nil_loss = new_loss;
-                    println!("{:?} keeping: {:?}", w, nil_loss);
-                } else {
-                    println!("{:?} reverting: {:?}", w, new_loss);
-                    params.ck3[w] = params.ck3[w] ^ 1u8 << b;
-                }
-            }
-        }
-        println!("avg acc: {:?}%", avg_accuracy(&test_examples, &params) * 100.0);
-        write_params(&params);
-
-        let mut s3 = vec![[0u32; C3 * 8 * 5 * 5]; TRAINING_SIZE];
-        for i in 0..TRAINING_SIZE {
-            s3[i] = flatten(&conv3(&s2[i], &params.ck3));
-        }
-        println!("starting: {:?}", D1_SIZE);
-        for w in 0..D1_SIZE {
-            for b in 0..8 {
-                params.dense1[w] = params.dense1[w] ^ 1u8 << b;
-                let new_loss = avg_loss!(s3, labels, model_d1, params);
-                if new_loss <= nil_loss {
-                    nil_loss = new_loss;
-                    println!("{:?} keeping: {:?}", w, nil_loss);
-                } else {
-                    println!("{:?} reverting: {:?}", w, new_loss);
-                    params.dense1[w] = params.dense1[w] ^ 1u8 << b;
-                }
-            }
-        }
-        write_params(&params);
-    }
-
-    println!("avg acc: {:?}%", avg_accuracy(&test_examples, &params) * 100.0);
+    let avg_loss = cache.avg_loss();
+    println!("avg loss: {:?}", avg_loss);
+    cache.mutate(3, 1);
+    let avg_loss = cache.avg_loss();
+    println!("avg loss: {:?}", avg_loss);
+    let avg_acc = test_cache.avg_accuracy();
+    println!("avg acc: {:?}%", avg_acc * 100.0);
 }
