@@ -5,12 +5,4 @@ authors = ["Isaac Leonard <ifleonar@us.ibm.com>"]
 
 [dependencies]
 time = "0.1"
-rand = "0.4"
-
-[[bin]]
-name = "scratch"
-path = "src/bin/scratch.rs"
-
-[[bin]]
-name = "mnist_conv"
-path = "src/bin/mnist_conv.rs"
+rand = "0.5"

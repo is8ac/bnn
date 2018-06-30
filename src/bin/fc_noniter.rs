@@ -5,7 +5,7 @@ extern crate rand;
 use bitnn::datasets::mnist;
 use std::time::SystemTime;
 
-const TRAINING_SIZE: usize = 6000;
+const TRAINING_SIZE: usize = 1000;
 
 binary_conv3x3!(conv, 28, 28, 1, 1);
 binary_conv3x3_partial!(conv_update, 28, 28, 1, 1);

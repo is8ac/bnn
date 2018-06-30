@@ -1,6 +1,3 @@
-#![feature(test)]
-extern crate test;
-
 extern crate rand;
 #[macro_use]
 pub mod datasets {
@@ -94,7 +91,7 @@ pub mod datasets {
 #[macro_use]
 pub mod params {
     #[macro_export]
-    macro_rules! random_prms_3d {
+    macro_rules! random_prms {
         ($dim0:expr, $dim1:expr, $dim2:expr) => {{
             let mut new_params = [[[0u64; $dim2]; $dim1]; $dim0];
             for d0 in 0..$dim0 {
@@ -102,6 +99,28 @@ pub mod params {
                     for d2 in 0..$dim2 {
                         new_params[d0][d1][d2] = rand::random::<u64>();
                     }
+                }
+            }
+            new_params
+        }};
+        ($dim0:expr, $dim1:expr, $dim2:expr, $dim3:expr) => {{
+            let mut new_params = [[[[0u64; $dim3]; $dim2]; $dim1]; $dim0];
+            for d0 in 0..$dim0 {
+                for d1 in 0..$dim1 {
+                    for d2 in 0..$dim2 {
+                        for d3 in 0..$dim3 {
+                            new_params[d0][d1][d2][d3] = rand::random::<u64>();
+                        }
+                    }
+                }
+            }
+            new_params
+        }};
+        ($dim0:expr, $dim1:expr) => {{
+            let mut new_params = [[0u64; $dim1]; $dim0];
+            for d0 in 0..$dim0 {
+                for d1 in 0..$dim1 {
+                    new_params[d0][d1] = rand::random::<u64>();
                 }
             }
             new_params
@@ -525,7 +544,7 @@ pub mod layers {
               weights: &[[[u64; $in_chans]; 9]; $out_chans * 64],
           ) -> [[[u64; $out_chans]; $y_size - 2]; $x_size - 2] {
               let mut output = [[[0u64; $out_chans]; $y_size - 2]; $x_size - 2];
-              let threshold = (9 * 32 * $in_chans) as u32;
+              let threshold = (9 * (64 / 2) * $in_chans) as u32;
               for x in 0..$x_size - 2 { // for all the pixels in the output, inset by one
                   for y in 0..$y_size - 2 {
                       for ow in 0..$out_chans { // for each word of the output channels,
@@ -609,6 +628,27 @@ pub mod layers {
             }
         };
     }
+    #[macro_export]
+    macro_rules! fc_3dbits2ints_partial {
+        ($name:ident, $x_size:expr, $y_size:expr, $z_size:expr, $output_size:expr) => {
+            fn $name(
+                input: &[[[u64; $z_size]; $y_size]; $x_size],
+                weights: &[[[[u64; $z_size]; $y_size]; $x_size]; $output_size],
+                output: &mut [u32; $output_size],
+                o: usize,
+            ) {
+                for x in 0..$x_size {
+                    for y in 0..$y_size {
+                        for z in 0..$z_size {
+                            output[o] += (input[x][y][z] ^ weights[o][x][y][z]).count_ones();
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+
     #[macro_export]
     macro_rules! fc_3dbits2ints_goodness {
         ($name:ident, $x_size:expr, $y_size:expr, $z_size:expr, $output_size:expr) => {
@@ -760,6 +800,25 @@ pub mod layers {
                     }
                 }
                 params
+            }
+        };
+    }
+    #[macro_export]
+    macro_rules! softmax_loss {
+        ($name:ident, $input_type:ident, $size:expr, $scale:expr) => {
+            fn $name(input: &[$input_type; $size], target: usize) -> f64 {
+                let mut input_exp = [0f64; $size];
+                let mut sum_exp = 0f64;
+                for i in 0..$size {
+                    input_exp[i] = (input[i] as f64 * $scale).exp();
+                    sum_exp += input_exp[i];
+                }
+                let mut softmax = [0f64; $size];
+                for i in 0..$size {
+                    softmax[i] = input_exp[i] / sum_exp;
+                }
+                softmax[target] -= 1f64;
+                softmax.iter().map(|x| x.powf(2f64)).sum()
             }
         };
     }
