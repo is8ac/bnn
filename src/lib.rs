@@ -292,6 +292,9 @@ pub mod layers {
                                     }
                                 }
                             }
+                            if sum > $max {
+                                println!("{:?}", sum);
+                            }
                             output[x][y][o] = (sum >> $shift).max(0).min($max) as u32;
                         }
                     }
@@ -342,12 +345,12 @@ pub mod layers {
             }
         };
     }
-
+    // padded
     #[macro_export]
     macro_rules! conv {
         (
             $name:ident,
-            $internal_type:expr,
+            $internal_type:ident,
             $x_size:expr,
             $y_size:expr,
             $in_chans:expr,
@@ -361,11 +364,11 @@ pub mod layers {
         ) => {
             fn $name(
                 input: &[[[$in_type; $in_chans]; $y_size]; $x_size],
-                filter: &[u8; $in_chans * $out_chans * 3 * 3],
+                filter: &[u8; $in_chans * $out_chans * $patch_x * $patch_y],
             ) -> [[[$out_type; $out_chans * 8]; $y_size]; $x_size] {
                 let mut output = [[[make_0val!($out_type); $out_chans * 8]; $y_size]; $x_size];
                 for x in ($patch_x / 2)..$x_size - ($patch_x / 2) {
-                    // for all the pixels in the output, inset by one
+                    // for all the pixels in the output, inset by half the patch.
                     for y in ($patch_y / 2)..$y_size - ($patch_y / 2) {
                         for ow in 0..$out_chans {
                             for ob in 0..8 {
@@ -426,11 +429,11 @@ pub mod layers {
     #[macro_export]
     macro_rules! flatten3d {
         ($name:ident, $type:ident, $x_size:expr, $y_size:expr, $num_chans:expr) => {
-            fn $name(input: &[[[$type; $num_chans]; $x_size]; $y_size]) -> [$type; ($x_size - 2) * ($y_size - 2) * $num_chans] {
-                let mut output = [make_0val!($type); ($x_size - 2) * ($y_size - 2) * $num_chans];
+            fn $name(input: &[[[$type; $num_chans]; $x_size]; $y_size]) -> [$type; $x_size * $y_size * $num_chans] {
+                let mut output = [make_0val!($type); $x_size * $y_size * $num_chans];
                 let mut index = 0;
-                for x in 1..$x_size - 1 {
-                    for y in 1..$y_size - 1 {
+                for x in 0..$x_size {
+                    for y in 0..$y_size {
                         for c in 0..$num_chans {
                             output[index] = input[x][y][c];
                             index += 1;
@@ -812,6 +815,7 @@ pub mod layers {
                 for i in 0..$size {
                     input_exp[i] = (input[i] as f64 * $scale).exp();
                     sum_exp += input_exp[i];
+                    //println!("int: {:?} exp: {:?}", input[i] as f64 * $scale, input_exp[i]);
                 }
                 let mut softmax = [0f64; $size];
                 for i in 0..$size {
