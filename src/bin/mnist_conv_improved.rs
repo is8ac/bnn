@@ -1,25 +1,15 @@
-use std::fmt;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
+use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc::channel;
 use std::thread;
-use std::thread::sleep;
-use std::time;
-use std::time::SystemTime;
 
 #[macro_use]
 extern crate bitnn;
 extern crate rand;
 use bitnn::datasets::mnist;
 use rand::prelude::*;
-use std::time::Duration;
-
-const TRAINING_SIZE: usize = 60_000;
-const TEST_SIZE: usize = 10_000;
-const NTHREADS: usize = 8;
-const CACHE_SIZE: usize = TRAINING_SIZE / NTHREADS;
-const MINIBATCH_SIZE: usize = 1000;
 
 // channel sizes (all but C0 will be multiplied by 8);
 const C0: usize = 1;
@@ -168,18 +158,15 @@ impl Cache {
             panic!("bad cache index");
         }
     }
-    fn mutate(&mut self, update: Update) {
-        if update.layer == 1 {
-            flip_bit!(self.params.ck1, update.bit);
+    fn mutate(&mut self, layer: usize, bit: usize) {
+        self.params.mutate(layer, bit);
+        if layer == 1 {
             self.invalidate_s1();
-        } else if update.layer == 2 {
-            flip_bit!(self.params.ck2, update.bit);
+        } else if layer == 2 {
             self.invalidate_s2();
-        } else if update.layer == 3 {
-            flip_bit!(self.params.d1, update.bit);
+        } else if layer == 3 {
             self.invalidate_s3();
-        } else if update.layer == 4 {
-            flip_bit!(self.params.d2, update.bit);
+        } else if layer == 4 {
         } else {
             panic!("bad layer ID");
         }
@@ -199,11 +186,15 @@ impl Cache {
 }
 
 #[derive(Clone, Copy)]
-struct Update {
-    cache_index: usize,
-    layer: usize,
-    bit: usize,
-    minibatch_size: usize,
+struct Message {
+    mutate: bool, // true if the worker is to mutate its parameters
+    layer: usize, // the layer to be mutated.
+    bit: usize, // the bit to be flipped.
+    update_cache: bool, // true if the worker is to update its cache
+    cache_index: usize, // the layer of the cache to be updated
+    loss: bool, // true if the worker is to send back loss
+    accuracy: bool,
+    minibatch_size: usize, // number of samples to use when computing loss.
 }
 
 #[derive(Clone, Copy)]
@@ -221,6 +212,19 @@ impl Parameters {
             ck2: random_byte_array!(K2_SIZE)(),
             d1: random_byte_array!(D1_SIZE)(),
             d2: random_byte_array!(D2_SIZE)(),
+        }
+    }
+    fn mutate(&mut self, layer: usize, bit: usize) {
+        if layer == 1 {
+            flip_bit!(self.ck1, bit);
+        } else if layer == 2 {
+            flip_bit!(self.ck2, bit);
+        } else if layer == 3 {
+            flip_bit!(self.d1, bit);
+        } else if layer == 4 {
+            flip_bit!(self.d2, bit);
+        } else {
+            panic!("bad layer ID");
         }
     }
     fn write(&self, wtr: &mut Vec<u8>) {
@@ -264,136 +268,172 @@ fn write_params(params: &Parameters) {
     file.write_all(&*wtr).unwrap();
 }
 
+struct WorkerPool {
+    send_chans: Vec<Sender<Message>>,
+    recv_chan: Receiver<f64>,
+    nthreads: usize,
+}
+
+impl WorkerPool {
+    fn new(mut images: Vec<[[[u8; 1]; 28]; 28]>, mut labels: Vec<usize>, params: Parameters, nthreads: usize) -> WorkerPool {
+        let (loss_tx, loss_rx) = channel();
+        let mut sender_chans = vec![];
+        let cache_size = images.len() / nthreads;
+        for _ in 0..nthreads {
+            let tx = loss_tx.clone();
+            let (update_tx, update_rx) = channel();
+            sender_chans.push(update_tx);
+            // each worker needs its own shard of the training set.
+            let examples_len = images.len();
+            let images_shard = images.split_off(examples_len - cache_size);
+            let labels_shard = labels.split_off(examples_len - cache_size);
+            let mut worker_params = Box::new(params);
+            thread::spawn(move || {
+                let mut cache = Cache::new(images_shard, labels_shard, worker_params);
+                loop {
+                    let msg: Message = update_rx.recv().expect("can't receive update");
+                    if msg.update_cache {
+                        cache.update_cache(msg.cache_index);
+                    }
+                    if msg.mutate {
+                        cache.mutate(msg.layer, msg.bit);
+                    }
+                    if msg.loss {
+                        let loss = cache.avg_loss(msg.minibatch_size);
+                        tx.send(loss).expect("can't send loss");
+                    }
+                    if msg.accuracy {
+                        let acc = cache.avg_accuracy();
+                        tx.send(acc).expect("can't send accuracy");
+                    }
+                }
+            });
+        }
+        WorkerPool{
+            send_chans: sender_chans,
+            recv_chan: loss_rx,
+            nthreads: nthreads,
+        }
+    }
+    fn mutate(&self, l: usize, b: usize) {
+        let update = Message {
+            mutate: true,
+            layer: l,
+            bit: b,
+            update_cache: false,
+            cache_index: 0,
+            loss: false,
+            accuracy: false,
+            minibatch_size: 0,
+        };
+        for w in 0..self.nthreads {
+            self.send_chans[w].send(update.clone()).expect("can't send update")
+        }
+    }
+    fn update_cache(&self, i: usize) {
+        let update = Message {
+            mutate: false,
+            layer: 0,
+            bit: 0,
+            update_cache: true,
+            cache_index: i,
+            loss: false,
+            accuracy: false,
+            minibatch_size: 0,
+        };
+        for w in 0..self.nthreads {
+            self.send_chans[w].send(update.clone()).expect("can't send update")
+        }
+    }
+    fn loss(&self, n: usize) -> f64 {
+        let update = Message {
+            mutate: false,
+            layer: 0,
+            bit: 0,
+            update_cache: false,
+            cache_index: 0,
+            loss: true,
+            accuracy: false,
+            minibatch_size: n / self.nthreads,
+        };
+        for w in 0..self.nthreads {
+            self.send_chans[w].send(update.clone()).expect("can't send update")
+        }
+        let mut sum_loss = 0f64;
+        for _ in 0..self.nthreads {
+            sum_loss += self.recv_chan.recv().expect("can't receive loss");
+        }
+        sum_loss / self.nthreads as f64
+    }
+    fn accuracy(&self, n: usize) -> f64 {
+        let update = Message {
+            mutate: false,
+            layer: 0,
+            bit: 0,
+            update_cache: false,
+            cache_index: 0,
+            loss: false,
+            accuracy: true,
+            minibatch_size: n / self.nthreads,
+        };
+        for w in 0..self.nthreads {
+            self.send_chans[w].send(update.clone()).expect("can't send update")
+        }
+        let mut sum_loss = 0f64;
+        for _ in 0..self.nthreads {
+            sum_loss += self.recv_chan.recv().expect("can't receive loss");
+        }
+        sum_loss / self.nthreads as f64
+    }
+}
+
+
 fn main() {
+    const TRAINING_SIZE: usize = 60_00;
+    const TEST_SIZE: usize = 10_00;
+    const NTHREADS: usize = 8;
     println!("starting v0.1.4 with {:?} threads", NTHREADS);
+
     let mut rng = thread_rng();
-    let mut images = mnist::load_images_u8_1chan(&String::from("mnist/train-images-idx3-ubyte"), TRAINING_SIZE);
-    let mut labels = mnist::load_labels(&String::from("mnist/train-labels-idx1-ubyte"), TRAINING_SIZE);
-    //let examples: Vec<([[[u8; 1]; 28]; 28], usize)> = images.iter().zip(labels).map(|(&image, target)| (image, target)).collect();
+    let images = mnist::load_images_u8_1chan(&String::from("mnist/train-images-idx3-ubyte"), TRAINING_SIZE);
+    let labels = mnist::load_labels(&String::from("mnist/train-labels-idx1-ubyte"), TRAINING_SIZE);
 
     let test_images = mnist::load_images_u8_1chan(&String::from("mnist/t10k-images-idx3-ubyte"), TEST_SIZE);
     let test_labels = mnist::load_labels(&String::from("mnist/t10k-labels-idx1-ubyte"), TEST_SIZE);
-    //let test_examples: Vec<([[[u8; 1]; 28]; 28], usize)> = test_images.iter().zip(test_labels).map(|(&image, target)| (image, target)).collect();
 
-    //let mut params = load_params();
-    let mut params = Parameters::new();
+    let mut params = load_params();
+    //let mut params = Parameters::new();
 
-    let (loss_tx, loss_rx) = channel();
-    let mut sender_chans = vec![];
-    for t in 0..NTHREADS {
-        let tx = loss_tx.clone();
-        let (update_tx, update_rx) = channel();
-        sender_chans.push(update_tx);
-        // each worker needs its own shard of the training set.
-        let examples_len = images.len();
-        let images_shard = images.split_off(examples_len - CACHE_SIZE);
-        let labels_shard = labels.split_off(examples_len - CACHE_SIZE);
-        let mut worker_params = Box::new(params);
-        thread::spawn(move || {
-            let mut cache = Cache::new(images_shard, labels_shard, worker_params);
-            loop {
-                let (update, mutate, send_loss) = update_rx.recv().expect("can't receive update");
-                if mutate {
-                    cache.mutate(update);
-                }
-                if send_loss {
-                    let loss = cache.avg_loss(update.minibatch_size);
-                    tx.send(loss).expect("can't send loss");
-                }
-            }
-        });
-    }
-    let (eval_update_tx, eval_update_rx) = channel();
-    let mut eval_params = Box::new(params);
-    thread::spawn(move || {
-        let mut test_cache = Cache::new(test_images, test_labels, eval_params);
-        let mut last_save = SystemTime::now();
-        loop {
-            let update: Update = eval_update_rx.recv().expect("eval thread can't receive update");
-            test_cache.update_cache(update.cache_index);
-            test_cache.mutate(update);
-            if (last_save + Duration::new(10, 0)) < SystemTime::now() {
-                let avg_acc = test_cache.avg_accuracy();
-                println!("avg acc: {:?}%", avg_acc * 100.0);
-                write_params(&test_cache.params);
-                last_save = SystemTime::now();
-            }
-        }
-    });
-    let ten_millis = time::Duration::from_millis(1000);
-
-    thread::sleep(ten_millis);
+    let pool = WorkerPool::new(images, labels, params, NTHREADS);
+    let test_pool = WorkerPool::new(test_images, test_labels, params, NTHREADS);
 
     let layers = [0, K1_SIZE * 8, K2_SIZE * 8, D1_SIZE * 8, D2_SIZE * 8];
     let train_order = [1, 2, 3, 4, 2, 3, 4, 3, 4, 4];
 
-    for w in 0..NTHREADS {
-        sender_chans[w]
-            .send((
-                Update {
-                    layer: 0,
-                    bit: 0,
-                    cache_index: 0,
-                    minibatch_size: MINIBATCH_SIZE / NTHREADS,
-                },
-                false,
-                true,
-            ))
-            .expect("can't send update")
-    }
-    println!("sent updates");
-    let mut sum_loss = 0f64;
-    for w in 0..NTHREADS {
-        println!("getting loss",);
-        sum_loss += loss_rx.recv().expect("can't receive loss");
-    }
-    let mut nil_loss = sum_loss / NTHREADS as f64;
+    let mut nil_loss = pool.loss(TRAINING_SIZE);
     println!("nil loss: {:?}", nil_loss);
     loop {
         for &l in train_order.iter() {
             println!("begining layer {:?} with {:?} bits", l, layers[l]);
-            for i in 0..20 {
+            pool.update_cache(l-1);
+            test_pool.update_cache(l-1);
+            for _ in 0..20 {
                 let b = rng.gen_range(0, layers[l]);
-                let update = Update {
-                    layer: l,
-                    bit: b,
-                    cache_index: 0,
-                    minibatch_size: 100,
-                };
-                for w in 0..NTHREADS {
-                    sender_chans[w].send((update.clone(), true, true)).expect("can't send update")
-                }
-                let mut sum_loss = 0f64;
-                for w in 0..NTHREADS {
-                    sum_loss += loss_rx.recv().expect("can't receive loss");
-                }
-                let new_loss = sum_loss / NTHREADS as f64;
+                pool.mutate(l, b);
+                let new_loss = pool.loss(TRAINING_SIZE);
                 if new_loss <= nil_loss {
+                    nil_loss = new_loss;
                     // update the eval worker.
-                    eval_update_tx.send(update).expect("can't send update");
-                    let update = Update {
-                        layer: 0,
-                        bit: 0,
-                        cache_index: 0,
-                        minibatch_size: CACHE_SIZE,
-                    };
-                    for w in 0..NTHREADS {
-                        sender_chans[w].send((update.clone(), false, true)).expect("can't send update")
-                    }
-                    let mut sum_loss = 0f64;
-                    for w in 0..NTHREADS {
-                        sum_loss += loss_rx.recv().expect("can't receive loss");
-                    }
-                    nil_loss = sum_loss / NTHREADS as f64;
-                    println!("{:?} {:?}/{:?} put loss: {:?} real loss: {:?}", l, i, layers[l], new_loss, nil_loss);
+                    test_pool.mutate(l, b);
+                    params.mutate(l, b);
+                    let acc = test_pool.accuracy(TEST_SIZE);
+                    println!("loss: {:?}, acc: {:?}%", new_loss, acc * 100f64);
                 } else {
-                    println!("reverting",);
-                    // revert
-                    for w in 0..NTHREADS {
-                        sender_chans[w].send((update, true, false)).expect("can't send update")
-                    }
+                    println!("reverting");
+                    pool.mutate(l, b);
                 }
             }
+            write_params(&params);
         }
     }
 }
