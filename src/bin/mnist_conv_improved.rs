@@ -14,9 +14,9 @@ use rand::prelude::*;
 
 // channel sizes (all but C0 will be multiplied by 8);
 const C0: usize = 1;
-const C1: usize = 4;
-const C2: usize = 8;
-const D1: usize = 128;
+const C1: usize = 3;
+const C2: usize = 5;
+const D1: usize = 12;
 
 // Parameter sizes and max output ranges.
 const K1_SIZE: usize = C0 * C1 * 5 * 5 + C1 * 2;
@@ -302,10 +302,10 @@ impl WorkerPool {
                     }
                     if msg.loss {
                         let mut seed = [0u8; 32];
-                        seed[0] = (msg.seed << 0) as u8;
-                        seed[1] = (msg.seed << 8) as u8;
-                        seed[2] = (msg.seed << 16) as u8;
-                        seed[3] = (msg.seed << 24) as u8;
+                        seed[0] = (msg.seed >> 0) as u8;
+                        seed[1] = (msg.seed >> 8) as u8;
+                        seed[2] = (msg.seed >> 16) as u8;
+                        seed[3] = (msg.seed >> 24) as u8;
                         let loss = cache.avg_loss(msg.minibatch_size, seed);
                         tx.send(loss).expect("can't send loss");
                     }
@@ -400,9 +400,9 @@ impl WorkerPool {
 
 fn main() {
     const TRAINING_SIZE: usize = 60_000;
-    const TEST_SIZE: usize = 1000;
+    const TEST_SIZE: usize = 10_000;
     const NTHREADS: usize = 8;
-    const MINIBATCH_SIZE: usize = 200;
+    const MINIBATCH_SIZE: usize = 50;
     println!("starting v0.1.4 with {:?} threads", NTHREADS);
 
     let mut rng = thread_rng();
@@ -418,37 +418,35 @@ fn main() {
     let pool = WorkerPool::new(images, labels, params, NTHREADS);
     let test_pool = WorkerPool::new(test_images, test_labels, params, NTHREADS);
 
-    let layers = [0, K1_SIZE * 8, K2_SIZE * 8, D1_SIZE * 8, D2_SIZE * 8];
-    let train_order = [1, 2, 3, 4, 4, 2, 3, 3, 4, 4, 3, 3, 4, 4, 4];
+    let layer_sizes = [0, K1_SIZE * 8, K2_SIZE * 8, D1_SIZE * 8, D2_SIZE * 8]; // lookup table of layer sizes
 
     let mut seed: u64 = 0;
-    loop {
-        for &l in train_order.iter() {
-            println!("begining layer {:?} with {:?} bits", l, layers[l]);
-            pool.update_cache(l - 1);
-            test_pool.update_cache(l - 1);
-            for _ in 0..30 {
+    let mut nil_loss: f64 = 1234.56;
+    for l in 1..5 {
+        println!("begining layer {:?} with {:?} bits", l, layer_sizes[l]);
+        pool.update_cache(l - 1);
+        test_pool.update_cache(l - 1);
+        for b in 0..layer_sizes[l] {
+            if b % 29 == 0 {
                 seed += 1;
-                let mut nil_loss = pool.loss(MINIBATCH_SIZE, seed);
-                for _ in 0..20 {
-                    let b = rng.gen_range(0, layers[l]);
-                    pool.mutate(l, b);
-                    let new_loss = pool.loss(MINIBATCH_SIZE, seed);
-                    if new_loss <= nil_loss {
-                        nil_loss = new_loss;
-                        // update the eval worker.
-                        test_pool.mutate(l, b);
-                        params.mutate(l, b);
-                        println!("{:?} loss: {:?}", l, new_loss);
-                    } else {
-                        println!("reverting: {:?}", new_loss);
-                        pool.mutate(l, b);
-                    }
-                }
+                println!("new seed: {:?}", seed);
+                nil_loss = pool.loss(MINIBATCH_SIZE, seed);
             }
-            write_params(&params);
-            let acc = test_pool.accuracy(TEST_SIZE);
-            println!("acc: {:?}%", acc * 100f64);
+            pool.mutate(l, b);
+            let new_loss = pool.loss(MINIBATCH_SIZE, seed);
+            if new_loss < nil_loss {
+                nil_loss = new_loss;
+                // update the eval worker.
+                test_pool.mutate(l, b);
+                params.mutate(l, b);
+                println!("{:?} {:?}/{:?} loss: {:?}", l, b, layer_sizes[l], new_loss);
+            } else {
+                //println!("{:?} {:?}/{:?} reverting: {:?}", l, b, layer_sizes[l], new_loss);
+                pool.mutate(l, b);
+            }
         }
+        write_params(&params);
+        let acc = test_pool.accuracy(TEST_SIZE);
+        println!("acc: {:?}%", acc * 100f64);
     }
 }
