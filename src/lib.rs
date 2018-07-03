@@ -208,6 +208,27 @@ pub mod layers {
             }
         };
     }
+    #[macro_export]
+    macro_rules! dist_1d {
+        ($type:ty, $prefix:expr, $size:expr) => {
+            |input: &[$type; $size]| -> ($type, $type, f64) {
+                let mut sum = 0 as $type;
+                let mut max = 0 as $type;
+                let mut min = 0 as $type;
+                for i in 0..$size {
+                    if input[i] > max {
+                        max = input[i];
+                    }
+                    if input[i] < min {
+                        min = input[i];
+                    }
+                    sum += input[i];
+                }
+                let avg = sum as f64 / $size as f64;
+                (min, avg, max)
+            }
+        };
+    }
 
     #[macro_export]
     macro_rules! log_dist {
@@ -364,9 +385,10 @@ pub mod layers {
         ) => {
             fn $name(
                 input: &[[[$in_type; $in_chans]; $y_size]; $x_size],
-                filter: &[u8; $in_chans * $out_chans * $patch_x * $patch_y],
+                filter: &[u8; $in_chans * $out_chans * $patch_x * $patch_y + $out_chans * 2],
             ) -> [[[$out_type; $out_chans * 8]; $y_size]; $x_size] {
                 let mut output = [[[make_0val!($out_type); $out_chans * 8]; $y_size]; $x_size];
+                let biases_offset = $in_chans * $out_chans * $patch_x * $patch_y;
                 for x in ($patch_x / 2)..$x_size - ($patch_x / 2) {
                     // for all the pixels in the output, inset by half the patch.
                     for y in ($patch_y / 2)..$y_size - ($patch_y / 2) {
@@ -374,7 +396,7 @@ pub mod layers {
                             for ob in 0..8 {
                                 let mask = 0b1u8 << ob;
                                 let o = ow * 8 + ob;
-                                let mut sum = make_0val!($internal_type);
+                                let mut sum = (filter[biases_offset + ow * 2] as i16 * filter[biases_offset + ow * 2] as i16) as $internal_type;
                                 let o_offset = ow * $in_chans * $patch_x * $patch_y;
                                 for i in 0..$in_chans {
                                     let i_offset = o_offset + i * $patch_x * $patch_y;

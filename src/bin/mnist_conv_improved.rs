@@ -1,9 +1,10 @@
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
-use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
+use std::time::SystemTime;
 
 #[macro_use]
 extern crate bitnn;
@@ -18,10 +19,10 @@ const C2: usize = 8;
 const D1: usize = 128;
 
 // Parameter sizes and max output ranges.
-const K1_SIZE: usize = C0 * C1 * 5 * 5;
+const K1_SIZE: usize = C0 * C1 * 5 * 5 + C1 * 2;
 const K1_MAX: i32 = i32::max_value() / ((C1 * 8) * 5 * 5) as i32;
 
-const K2_SIZE: usize = C1 * (C2 * 8) * 5 * 5;
+const K2_SIZE: usize = C1 * (C2 * 8) * 5 * 5 + C2 * 2;
 const K2_MAX: i32 = i32::max_value() / ((C2 * 8) * 5 * 5) as i32;
 
 const D1_SIZE: usize = C2 * 7 * 7 * D1 * 8;
@@ -93,7 +94,6 @@ impl Cache {
         }
     }
     fn update_s1(&mut self) {
-        println!("updating cache 1");
         for i in 0..self.cache_size {
             self.s1.1[i] = self.calc_s1(i);
         }
@@ -104,7 +104,6 @@ impl Cache {
         self.invalidate_s2()
     }
     fn update_s2(&mut self) {
-        println!("updating cache 2");
         for i in 0..self.cache_size {
             self.s2.1[i] = self.calc_s2(i);
         }
@@ -115,7 +114,6 @@ impl Cache {
         self.invalidate_s3()
     }
     fn update_s3(&mut self) {
-        println!("updating cache 3");
         for i in 0..self.cache_size {
             self.s3.1[i] = self.calc_s3(i);
         }
@@ -124,11 +122,14 @@ impl Cache {
     fn invalidate_s3(&mut self) {
         self.s3.0 = false;
     }
-    fn avg_loss(&mut self, batch_size: usize) -> f64 {
+    fn avg_loss(&mut self, batch_size: usize, seed: [u8; 32]) -> f64 {
+        //let start = SystemTime::now();
         let mut vec: Vec<usize> = (0..self.cache_size).collect();
         let slice: &mut [usize] = &mut vec;
 
-        thread_rng().shuffle(slice);
+        let mut rng = rand::prng::ChaChaRng::from_seed(seed);
+        rng.shuffle(slice);
+        //println!("rng gen time: {:?}", start.elapsed().unwrap());
         let mut sum = 0f64;
 
         for &e in slice[0..batch_size].iter() {
@@ -187,12 +188,13 @@ impl Cache {
 
 #[derive(Clone, Copy)]
 struct Message {
-    mutate: bool, // true if the worker is to mutate its parameters
-    layer: usize, // the layer to be mutated.
-    bit: usize, // the bit to be flipped.
+    mutate: bool,       // true if the worker is to mutate its parameters
+    layer: usize,       // the layer to be mutated.
+    bit: usize,         // the bit to be flipped.
     update_cache: bool, // true if the worker is to update its cache
     cache_index: usize, // the layer of the cache to be updated
-    loss: bool, // true if the worker is to send back loss
+    loss: bool,         // true if the worker is to send back loss
+    seed: u64,          // seed when selecting the minibatches
     accuracy: bool,
     minibatch_size: usize, // number of samples to use when computing loss.
 }
@@ -299,7 +301,12 @@ impl WorkerPool {
                         cache.mutate(msg.layer, msg.bit);
                     }
                     if msg.loss {
-                        let loss = cache.avg_loss(msg.minibatch_size);
+                        let mut seed = [0u8; 32];
+                        seed[0] = (msg.seed << 0) as u8;
+                        seed[1] = (msg.seed << 8) as u8;
+                        seed[2] = (msg.seed << 16) as u8;
+                        seed[3] = (msg.seed << 24) as u8;
+                        let loss = cache.avg_loss(msg.minibatch_size, seed);
                         tx.send(loss).expect("can't send loss");
                     }
                     if msg.accuracy {
@@ -309,7 +316,7 @@ impl WorkerPool {
                 }
             });
         }
-        WorkerPool{
+        WorkerPool {
             send_chans: sender_chans,
             recv_chan: loss_rx,
             nthreads: nthreads,
@@ -323,6 +330,7 @@ impl WorkerPool {
             update_cache: false,
             cache_index: 0,
             loss: false,
+            seed: 0,
             accuracy: false,
             minibatch_size: 0,
         };
@@ -338,6 +346,7 @@ impl WorkerPool {
             update_cache: true,
             cache_index: i,
             loss: false,
+            seed: 0,
             accuracy: false,
             minibatch_size: 0,
         };
@@ -345,7 +354,7 @@ impl WorkerPool {
             self.send_chans[w].send(update.clone()).expect("can't send update")
         }
     }
-    fn loss(&self, n: usize) -> f64 {
+    fn loss(&self, n: usize, seed: u64) -> f64 {
         let update = Message {
             mutate: false,
             layer: 0,
@@ -353,6 +362,7 @@ impl WorkerPool {
             update_cache: false,
             cache_index: 0,
             loss: true,
+            seed: seed,
             accuracy: false,
             minibatch_size: n / self.nthreads,
         };
@@ -373,6 +383,7 @@ impl WorkerPool {
             update_cache: false,
             cache_index: 0,
             loss: false,
+            seed: 0,
             accuracy: true,
             minibatch_size: n / self.nthreads,
         };
@@ -387,11 +398,11 @@ impl WorkerPool {
     }
 }
 
-
 fn main() {
-    const TRAINING_SIZE: usize = 60_00;
-    const TEST_SIZE: usize = 10_00;
+    const TRAINING_SIZE: usize = 60_000;
+    const TEST_SIZE: usize = 1000;
     const NTHREADS: usize = 8;
+    const MINIBATCH_SIZE: usize = 200;
     println!("starting v0.1.4 with {:?} threads", NTHREADS);
 
     let mut rng = thread_rng();
@@ -408,32 +419,36 @@ fn main() {
     let test_pool = WorkerPool::new(test_images, test_labels, params, NTHREADS);
 
     let layers = [0, K1_SIZE * 8, K2_SIZE * 8, D1_SIZE * 8, D2_SIZE * 8];
-    let train_order = [1, 2, 3, 4, 2, 3, 4, 3, 4, 4];
+    let train_order = [1, 2, 3, 4, 4, 2, 3, 3, 4, 4, 3, 3, 4, 4, 4];
 
-    let mut nil_loss = pool.loss(TRAINING_SIZE);
-    println!("nil loss: {:?}", nil_loss);
+    let mut seed: u64 = 0;
     loop {
         for &l in train_order.iter() {
             println!("begining layer {:?} with {:?} bits", l, layers[l]);
-            pool.update_cache(l-1);
-            test_pool.update_cache(l-1);
-            for _ in 0..20 {
-                let b = rng.gen_range(0, layers[l]);
-                pool.mutate(l, b);
-                let new_loss = pool.loss(TRAINING_SIZE);
-                if new_loss <= nil_loss {
-                    nil_loss = new_loss;
-                    // update the eval worker.
-                    test_pool.mutate(l, b);
-                    params.mutate(l, b);
-                    let acc = test_pool.accuracy(TEST_SIZE);
-                    println!("loss: {:?}, acc: {:?}%", new_loss, acc * 100f64);
-                } else {
-                    println!("reverting");
+            pool.update_cache(l - 1);
+            test_pool.update_cache(l - 1);
+            for _ in 0..30 {
+                seed += 1;
+                let mut nil_loss = pool.loss(MINIBATCH_SIZE, seed);
+                for _ in 0..20 {
+                    let b = rng.gen_range(0, layers[l]);
                     pool.mutate(l, b);
+                    let new_loss = pool.loss(MINIBATCH_SIZE, seed);
+                    if new_loss <= nil_loss {
+                        nil_loss = new_loss;
+                        // update the eval worker.
+                        test_pool.mutate(l, b);
+                        params.mutate(l, b);
+                        println!("{:?} loss: {:?}", l, new_loss);
+                    } else {
+                        println!("reverting: {:?}", new_loss);
+                        pool.mutate(l, b);
+                    }
                 }
             }
             write_params(&params);
+            let acc = test_pool.accuracy(TEST_SIZE);
+            println!("acc: {:?}%", acc * 100f64);
         }
     }
 }
