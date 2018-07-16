@@ -1,4 +1,6 @@
+extern crate image;
 extern crate rand;
+
 pub mod optimize {
     //pub trait Parameters {
     //    fn nlayers() -> usize;
@@ -53,6 +55,66 @@ pub mod optimize {
 
 #[macro_use]
 pub mod datasets {
+    pub mod cifar {
+        use std::fs::File;
+        use std::io::prelude::*;
+        use std::path::Path;
+        extern crate image;
+        use image::{GenericImage, ImageBuffer, Rgb};
+
+        pub fn write_image(data: [[[u64; 1]; 32]; 32], path: &String) {
+            let mut image = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(32u32, 32u32);
+            for x in 0..32 {
+                for y in 0..32 {
+                    let bits = data[x][y][0];
+                    let pixel_bytes = parse_rgb_u64(bits);
+                    image.get_pixel_mut(x as u32, y as u32).data = pixel_bytes;
+
+                }
+            }
+            image.save(path).unwrap();
+        }
+        pub fn encode_unary_rgb(bytes: [u8; 3]) -> u64 {
+            let mut ones = 0u64;
+            for color in 0..3 {
+                for i in 0..bytes[color] / 12 {
+                    ones = ones | 0b1u64 << (color * 21 + i as usize);
+                }
+            }
+            ones
+        }
+        pub fn parse_rgb_u64(bits: u64) -> [u8; 3] {
+            let mut bytes = [0u8; 3];
+            for color in 0..3 {
+                bytes[color] = (((bits >> (color * 21)) & 0b111111111111111111111u64).count_ones() * 12) as u8; // 21 bit mask
+            }
+            bytes
+        }
+        pub fn load_images_64chan(path: &String, size: usize) -> Vec<(u8, [[[u64; 1]; 32]; 32])> {
+            let path = Path::new(path);
+            let mut file = File::open(&path).expect("can't open images");
+
+            let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
+            let mut label: [u8; 1] = [0; 1];
+            let mut images: Vec<(u8, [[[u64; 1]; 32]; 32])> = Vec::new();
+            for _ in 0..size {
+                file.read_exact(&mut label).expect("can't read label");
+                file.read_exact(&mut image_bytes).expect("can't read images");
+                let mut image = [[[0u64; 1]; 32]; 32];
+                for x in 0..32 {
+                    for y in 0..32 {
+                        image[x][y][0] = encode_unary_rgb([
+                            image_bytes[(0 * 1024) + (y * 32) + x],
+                            image_bytes[(1 * 1024) + (y * 32) + x],
+                            image_bytes[(2 * 1024) + (y * 32) + x],
+                        ]);
+                    }
+                }
+                images.push((label[0], image));
+            }
+            return images;
+        }
+    }
     pub mod mnist {
         use std::fs::File;
         use std::io::prelude::*;
@@ -415,8 +477,24 @@ pub mod layers {
     // padded
     #[macro_export]
     macro_rules! conv {
-        ($name:ident, $internal_type:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $in_type:ident, $out_chans:expr, $out_type:ident, $patch_x:expr, $patch_y:expr, $max:expr, $shift:expr) => {
-            fn $name(input: &[[[$in_type; $in_chans]; $y_size]; $x_size], filter: &[u8; $in_chans * $out_chans * $patch_x * $patch_y]) -> [[[$out_type; $out_chans * 8]; $y_size]; $x_size] {
+        (
+            $name:ident,
+            $internal_type:ident,
+            $x_size:expr,
+            $y_size:expr,
+            $in_chans:expr,
+            $in_type:ident,
+            $out_chans:expr,
+            $out_type:ident,
+            $patch_x:expr,
+            $patch_y:expr,
+            $max:expr,
+            $shift:expr
+        ) => {
+            fn $name(
+                input: &[[[$in_type; $in_chans]; $y_size]; $x_size],
+                filter: &[u8; $in_chans * $out_chans * $patch_x * $patch_y],
+            ) -> [[[$out_type; $out_chans * 8]; $y_size]; $x_size] {
                 let mut output = [[[make_0val!($out_type); $out_chans * 8]; $y_size]; $x_size];
                 for x in ($patch_x / 2)..$x_size - ($patch_x / 2) {
                     // for all the pixels in the output, inset by half the patch.
@@ -464,7 +542,10 @@ pub mod layers {
                     for y in 0..$y_size / 2 {
                         let iy = y * 2;
                         for chan in 0..$num_chans {
-                            output[x][y][chan] = input[ix + 0][iy + 0][chan].max(input[ix + 1][iy + 0][chan]).max(input[ix + 0][iy + 1][chan]).max(input[ix + 1][iy + 1][chan]);
+                            output[x][y][chan] = input[ix + 0][iy + 0][chan]
+                                .max(input[ix + 1][iy + 0][chan])
+                                .max(input[ix + 0][iy + 1][chan])
+                                .max(input[ix + 1][iy + 1][chan]);
                         }
                     }
                 }
@@ -657,7 +738,9 @@ pub mod layers {
     #[macro_export]
     macro_rules! sub_i32_4d {
         ($type:ty, $a_size:expr, $b_size:expr, $c_size:expr, $d_size:expr) => {
-            |grads_a: &[[[[$type; $d_size]; $c_size]; $b_size]; $a_size], grads_b: &[[[[$type; $d_size]; $c_size]; $b_size]; $a_size]| -> [[[[$type; $d_size]; $c_size]; $b_size]; $a_size] {
+            |grads_a: &[[[[$type; $d_size]; $c_size]; $b_size]; $a_size],
+             grads_b: &[[[[$type; $d_size]; $c_size]; $b_size]; $a_size]|
+             -> [[[[$type; $d_size]; $c_size]; $b_size]; $a_size] {
                 let mut diffs = [[[[0 as $type; $d_size]; $c_size]; $b_size]; $a_size];
                 for a in 0..$a_size {
                     for b in 0..$b_size {
@@ -711,7 +794,6 @@ pub mod layers {
         };
     }
 
-
     #[macro_export]
     macro_rules! binary_conv3x3 {
         ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
@@ -752,7 +834,13 @@ pub mod layers {
     #[macro_export]
     macro_rules! binary_conv3x3_partial {
         ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
-            fn $name(input: &[[[u64; $in_chans]; $y_size]; $x_size], weights: &[[[u64; $in_chans]; 9]; $out_chans * 64], output: &mut [[[u64; $out_chans]; $y_size - 2]; $x_size - 2], ow: usize, ob: usize) {
+            fn $name(
+                input: &[[[u64; $in_chans]; $y_size]; $x_size],
+                weights: &[[[u64; $in_chans]; 9]; $out_chans * 64],
+                output: &mut [[[u64; $out_chans]; $y_size - 2]; $x_size - 2],
+                ow: usize,
+                ob: usize,
+            ) {
                 let threshold = (9 * 32 * $in_chans) as u32;
                 let wi = ow * 64 + ob;
                 let mask = !(0b1u64 << ob);
@@ -833,7 +921,12 @@ pub mod layers {
     #[macro_export]
     macro_rules! fc_3dbits2ints_grads {
         ($name:ident, $x_size:expr, $y_size:expr, $i_size:expr, $output_size:expr) => {
-            fn $name(input: &[[[u64; $i_size]; $y_size]; $x_size], pos_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size], neg_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size], actual: usize) {
+            fn $name(
+                input: &[[[u64; $i_size]; $y_size]; $x_size],
+                pos_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size],
+                neg_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size],
+                actual: usize,
+            ) {
                 for o in 0..$output_size {
                     for x in 0..$x_size {
                         for y in 0..$y_size {
@@ -865,7 +958,14 @@ pub mod layers {
     #[macro_export]
     macro_rules! fc_3dbits2ints_grads_update {
         ($name:ident, $x_size:expr, $y_size:expr, $i_size:expr, $output_size:expr) => {
-            fn $name(input: &[[[u64; $i_size]; $y_size]; $x_size], pos_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size], neg_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size], actual: usize, i: usize, b: usize) {
+            fn $name(
+                input: &[[[u64; $i_size]; $y_size]; $x_size],
+                pos_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size],
+                neg_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size],
+                actual: usize,
+                i: usize,
+                b: usize,
+            ) {
                 let mask = 0b1u64 << b;
                 for o in 0..$output_size {
                     for x in 0..$x_size {
@@ -927,7 +1027,10 @@ pub mod layers {
     #[macro_export]
     macro_rules! fc_3dbits2ints_grads2params {
         ($name:ident, $x_size:expr, $y_size:expr, $z_size:expr, $output_size:expr) => {
-            fn $name(pos_grads: &[[[[[i32; 64]; $z_size]; $y_size]; $x_size]; $output_size], neg_grads: &[[[[[i32; 64]; $z_size]; $y_size]; $x_size]; $output_size]) -> [[[[u64; $z_size]; $y_size]; $x_size]; $output_size] {
+            fn $name(
+                pos_grads: &[[[[[i32; 64]; $z_size]; $y_size]; $x_size]; $output_size],
+                neg_grads: &[[[[[i32; 64]; $z_size]; $y_size]; $x_size]; $output_size],
+            ) -> [[[[u64; $z_size]; $y_size]; $x_size]; $output_size] {
                 let mut params = [[[[0u64; $z_size]; $y_size]; $x_size]; $output_size];
                 for o in 0..$output_size {
                     for x in 0..$x_size {
