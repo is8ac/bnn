@@ -41,6 +41,8 @@ fn main() {
         .map(|grads| bitpack(&sub_i32_4d!(f32, 3, 3, 1, 64)(&grads, &global_avg_grads)))
         .collect();
 
+    let data_path = String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/test_batch.bin");
+    let images = cifar::load_images_64chan(&data_path, TRAINING_SIZE);
     let num_correct: u64 = images
         .iter()
         .map(|(label, image)| {

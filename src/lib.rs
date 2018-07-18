@@ -702,13 +702,10 @@ pub mod layers {
                                 // for each pixel,
                                 for x in 0..$x_size - 2 {
                                     for y in 0..$y_size - 2 {
-                                        //println!("{:?}", ((input[x + px][y + py][iw] >> ib) as u32) & 0b1u32);
                                         sum += (!(input[x + px][y + py][iw] >> ib) as u32) & 0b1u32;
                                     }
                                 }
-                                //println!("sum: {:?}", sum);
                                 grads[px][py][iw][ib] += sum as f32;
-                                //grads[px][py][iw][ib] += sum as i32 - ((($x_size - 2) * ($y_size - 2)) / 2) as i32;
                             }
                         }
                     }
