@@ -691,29 +691,6 @@ pub mod layers {
     }
 
     #[macro_export]
-    macro_rules! xor_conv3x3_onechan_pooled_grads_update {
-        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr) => {
-            fn $name(input: &[[[u64; $in_chans]; $y_size]; $x_size], grads: &mut [[[[f32; 64]; $in_chans]; 3]; 3]) {
-                for iw in 0..$in_chans {
-                    for ib in 0..64 {
-                        for px in 0..3 {
-                            for py in 0..3 {
-                                let mut sum: u32 = 0;
-                                // for each pixel,
-                                for x in 0..$x_size - 2 {
-                                    for y in 0..$y_size - 2 {
-                                        sum += (!(input[x + px][y + py][iw] >> ib) as u32) & 0b1u32;
-                                    }
-                                }
-                                grads[px][py][iw][ib] += sum as f32;
-                            }
-                        }
-                    }
-                }
-            }
-        };
-    }
-    #[macro_export]
     macro_rules! bitpack_u64_3d {
         ($name:ident, $a_size:expr, $b_size:expr, $c_size:expr, $thresh:expr) => {
             fn $name(grads: &[[[[f32; 64]; $c_size]; $b_size]; $a_size]) -> [[[u64; $c_size]; $b_size]; $a_size] {
@@ -754,42 +731,6 @@ pub mod layers {
         };
     }
 
-    #[macro_export]
-    macro_rules! sum_4d {
-        ($type:ty, $a_size:expr, $b_size:expr, $c_size:expr, $d_size:expr) => {
-            |grads: &Vec<[[[[$type; $d_size]; $c_size]; $b_size]; $a_size]>| -> [[[[$type; $d_size]; $c_size]; $b_size]; $a_size] {
-                let mut diffs = [[[[0 as $type; $d_size]; $c_size]; $b_size]; $a_size];
-                for a in 0..$a_size {
-                    for b in 0..$b_size {
-                        for c in 0..$c_size {
-                            for d in 0..$d_size {
-                                diffs[a][b][c][d] = grads.iter().map(|x| x[a][b][c][d]).sum();
-                            }
-                        }
-                    }
-                }
-                diffs
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! div_4d {
-        ($factor:expr, $a_size:expr, $b_size:expr, $c_size:expr, $d_size:expr) => {
-            |input: &[[[[f32; $d_size]; $c_size]; $b_size]; $a_size]| -> [[[[f32; $d_size]; $c_size]; $b_size]; $a_size] {
-                let mut output = [[[[0f32; $d_size]; $c_size]; $b_size]; $a_size];
-                for a in 0..$a_size {
-                    for b in 0..$b_size {
-                        for c in 0..$c_size {
-                            for d in 0..$d_size {
-                                output[a][b][c][d] = input[a][b][c][d] as f32 / $factor;
-                            }
-                        }
-                    }
-                }
-                output
-            }
-        };
-    }
 
     #[macro_export]
     macro_rules! binary_conv3x3 {

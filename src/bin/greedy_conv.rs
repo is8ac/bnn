@@ -9,38 +9,60 @@ const IMAGE_SIZE: usize = 32;
 const CHAN_0: usize = 1;
 
 xor_conv3x3_onechan_pooled!(conv_onechan, IMAGE_SIZE, IMAGE_SIZE, 1);
-xor_conv3x3_onechan_pooled_grads_update!(grads_update, IMAGE_SIZE, IMAGE_SIZE, 1);
 bitpack_u64_3d!(bitpack, 3, 3, 1, 0f32);
 
-fn main() {
-    let data_path = String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/data_batch_1.bin");
-    let images = cifar::load_images_64chan(&data_path, TRAINING_SIZE);
-    let split_images: Vec<Vec<&(u8, [[[u64; 1]; 32]; 32])>> = (0u8..10)
-        .map(|target_label| images.iter().filter(|(label, _)| *label == target_label).collect())
-        .collect();
+#[macro_export]
+macro_rules! grads_no_boost {
+    ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr) => {
+        fn $name(examples: &Vec<(u8, [[[u64; $in_chans]; $y_size]; $x_size])>) -> ([[[[f32; 64]; 1]; 3]; 3], Vec<[[[[f32; 64]; 1]; 3]; 3]>) {
+            let mut grads = vec![[[[[0u32; 64]; 1]; 3]; 3]; 10];
+            let mut lens = vec![0u64; 10];
+            for (label, image) in examples.iter() {
+                for iw in 0..$in_chans {
+                    for ib in 0..64 {
+                        for px in 0..3 {
+                            for py in 0..3 {
+                                let mut sum: u32 = 0;
+                                // for each pixel,
+                                for x in 0..$x_size - 2 {
+                                    for y in 0..$y_size - 2 {
+                                        sum += (image[x + px][y + py][iw] as u32 >> ib) & 0b1u32;
+                                    }
+                                }
+                                // now add to the label grads,
+                                grads[*label as usize][px][py][iw][ib] += sum;
+                                lens[*label as usize] += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            // Now we must scale down.
+            let mut scaled_grads = vec![[[[[0f32; 64]; 1]; 3]; 3]; 10];
+            let mut global_scaled_grads = [[[[0f32; 64]; 1]; 3]; 3];
+            let sum_len: u64 = lens.iter().sum();
+            for px in 0..3 {
+                for py in 0..3 {
+                    for ic in 0..1 {
+                        for b in 0..64 {
+                            let mut sum_grad = 0;
+                            for l in 0..10 {
+                                sum_grad += grads[l][px][py][ic][b];
+                                scaled_grads[l][px][py][ic][b] = grads[l][px][py][ic][b] as f32 / lens[l] as f32;
+                            }
+                            global_scaled_grads[px][py][ic][b] = sum_grad as f32 / sum_len as f32;
+                        }
+                    }
+                }
+            }
+            (global_scaled_grads, scaled_grads)
+        }
+    };
+}
 
-    let avg_grads: Vec<[[[[f32; 64]; 1]; 3]; 3]> = split_images
-        .iter()
-        .map(|images| {
-            let (grad_sum, len) = images.iter().map(|(_, sub_image)| sub_image).fold(
-                ([[[[0f32; 64]; CHAN_0]; 3]; 3], 0),
-                |mut grads, e| {
-                    grads_update(&e, &mut grads.0);
-                    grads.1 += 1;
-                    grads
-                },
-            );
-            div_4d!(len as f32, 3, 3, 1, 64)(&grad_sum)
-        })
-        .collect();
+grads_no_boost!(l1_grads, IMAGE_SIZE, IMAGE_SIZE, CHAN_0);
 
-    let global_avg_grads = div_4d!(10f32, 3, 3, 1, 64)(&sum_4d!(f32, 3, 3, 1, 64)(&avg_grads));
-
-    let filters: Vec<[[[u64; 1]; 3]; 3]> = avg_grads
-        .iter()
-        .map(|grads| bitpack(&sub_i32_4d!(f32, 3, 3, 1, 64)(&grads, &global_avg_grads)))
-        .collect();
-
+fn eval(filters: &Vec<[[[u64; 1]; 3]; 3]>) -> f32 {
     let data_path = String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/test_batch.bin");
     let images = cifar::load_images_64chan(&data_path, TRAINING_SIZE);
     let num_correct: u64 = images
@@ -55,5 +77,30 @@ fn main() {
                 .0 as u8 == *label) as u64
         })
         .sum();
-    println!("acc: {:?}%", (num_correct as f32 / images.len() as f32) * 100f32);
+    num_correct as f32 / images.len() as f32
+}
+
+fn main() {
+    let data_path = String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/data_batch_1.bin");
+    let images = cifar::load_images_64chan(&data_path, TRAINING_SIZE);
+
+    let (global_avg_grads, avg_grads) = l1_grads(&images);
+
+    //let global_avg_grads = div_4d!(10f32, 3, 3, 1, 64)(&sum_4d!(f32, 3, 3, 1, 64)(&avg_grads));
+
+    let filters: Vec<[[[u64; 1]; 3]; 3]> = avg_grads
+        .iter()
+        .map(|grads| bitpack(&sub_i32_4d!(f32, 3, 3, 1, 64)(&global_avg_grads, &grads)))
+        .collect();
+
+    for l in 0..10 {
+        println!("{:?}", l);
+        for px in 0..3 {
+            for py in 0..3 {
+                println!("{:?}: {:?}x{:?} {:064b}", l, px, py, filters[l][px][py][0]);
+            }
+        }
+    }
+
+    println!("acc: {:?}%", eval(&filters) * 100f32);
 }
