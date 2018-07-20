@@ -90,9 +90,9 @@ pub mod datasets {
             }
             bytes
         }
-        pub fn load_images_64chan(path: &String, size: usize) -> Vec<(u8, [[[u64; 1]; 32]; 32])> {
+        pub fn load_images_64chan_10(path: &String, size: usize) -> Vec<(u8, [[[u64; 1]; 32]; 32])> {
             let path = Path::new(path);
-            let mut file = File::open(&path).expect("can't open images");
+            let mut file = File::open(&path).expect("can't open data");
 
             let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
             let mut label: [u8; 1] = [0; 1];
@@ -114,6 +114,31 @@ pub mod datasets {
             }
             return images;
         }
+        pub fn load_images_64chan_100(path: &String, size: usize, fine: bool) -> Vec<(u8, [[[u64; 1]; 32]; 32])> {
+            let path = Path::new(path);
+            let mut file = File::open(&path).expect("can't open data");
+
+            let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
+            let mut label: [u8; 2] = [0; 2];
+            let mut images: Vec<(u8, [[[u64; 1]; 32]; 32])> = Vec::new();
+            for _ in 0..size {
+                file.read_exact(&mut label).expect("can't read label");
+                file.read_exact(&mut image_bytes).expect("can't read images");
+                let mut image = [[[0u64; 1]; 32]; 32];
+                for x in 0..32 {
+                    for y in 0..32 {
+                        image[x][y][0] = encode_unary_rgb([
+                            image_bytes[(0 * 1024) + (y * 32) + x],
+                            image_bytes[(1 * 1024) + (y * 32) + x],
+                            image_bytes[(2 * 1024) + (y * 32) + x],
+                        ]);
+                    }
+                }
+                images.push((label[fine as usize], image));
+            }
+            return images;
+        }
+
     }
     pub mod mnist {
         use std::fs::File;
