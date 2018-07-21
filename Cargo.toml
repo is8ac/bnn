@@ -6,3 +6,4 @@ authors = ["Isaac Leonard <ifleonar@us.ibm.com>"]
 [dependencies]
 time = "0.1"
 rand = "0.5"
+image = "0.19.0"
