@@ -9,9 +9,9 @@ const CHAN_0: usize = 1;
 const CHAN_1: usize = 3;
 const NUM_CLASSES: usize = 100;
 
-xor_conv3x3_means!(l1_means, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, CHAN_1);
+//xor_conv3x3_means!(l1_means, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, CHAN_1);
 
-xor_conv3x3_onechan_pooled!(l1_conv_onechan, IMAGE_SIZE, IMAGE_SIZE, CHAN_0);
+//xor_conv3x3_onechan_pooled!(l1_conv_onechan, IMAGE_SIZE, IMAGE_SIZE, CHAN_0);
 xor_conv3x3_bitpacked!(
     l1_conv_bitpacked,
     IMAGE_SIZE,
@@ -22,20 +22,20 @@ xor_conv3x3_bitpacked!(
 );
 boosted_grads_3x3!(l1_grads, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, NUM_CLASSES, 20);
 bitpack_u64_3d!(l1_bitpack_params, f32, 3, 3, CHAN_0, 0f32);
-xor_conv3x3_max!(l1_max_label, 1, NUM_CLASSES);
+//xor_conv3x3_max!(l1_max_label, 1, NUM_CLASSES);
 
-xor_conv3x3_onechan_pooled!(l2_conv_onechan, IMAGE_SIZE, IMAGE_SIZE, CHAN_1);
-xor_conv3x3_bitpacked!(
-    l2_conv_bitpacked,
-    IMAGE_SIZE,
-    IMAGE_SIZE,
-    CHAN_1,
-    CHAN_1,
-    ((CHAN_1 * 64 * 9) / 2) as u32
-);
-boosted_grads_3x3!(l2_grads, IMAGE_SIZE, IMAGE_SIZE, CHAN_1, NUM_CLASSES, 20);
-bitpack_u64_3d!(l2_bitpack_params, f32, 3, 3, CHAN_1, 0f32);
-xor_conv3x3_max!(l2_max_label, 1, NUM_CLASSES);
+//xor_conv3x3_onechan_pooled!(l2_conv_onechan, IMAGE_SIZE, IMAGE_SIZE, CHAN_1);
+//xor_conv3x3_bitpacked!(
+//    l2_conv_bitpacked,
+//    IMAGE_SIZE,
+//    IMAGE_SIZE,
+//    CHAN_1,
+//    CHAN_1,
+//    ((CHAN_1 * 64 * 9) / 2) as u32
+//);
+//boosted_grads_3x3!(l2_grads, IMAGE_SIZE, IMAGE_SIZE, CHAN_1, NUM_CLASSES, 20);
+//bitpack_u64_3d!(l2_bitpack_params, f32, 3, 3, CHAN_1, 0f32);
+//xor_conv3x3_max!(l2_max_label, 1, NUM_CLASSES);
 
 #[macro_export]
 macro_rules! eval_acc {
@@ -63,7 +63,7 @@ macro_rules! eval_acc {
 }
 
 eval_acc!(l1_eval, 32, 32, CHAN_0, NUM_CLASSES);
-eval_acc!(l2_eval, 32, 32, CHAN_1, NUM_CLASSES);
+//eval_acc!(l2_eval, 32, 32, CHAN_1, NUM_CLASSES);
 
 macro_rules! bitpack_filter_set {
     ($name:ident, $in_chans:expr, $n_labels:expr) => {
@@ -87,11 +87,11 @@ macro_rules! bitpack_filter_set {
 }
 
 bitpack_filter_set!(l1_bitpack, CHAN_0, NUM_CLASSES);
-bitpack_filter_set!(l2_bitpack, CHAN_1, NUM_CLASSES);
+//bitpack_filter_set!(l2_bitpack, CHAN_1, NUM_CLASSES);
 
 fn main() {
     let test_data_path = String::from("/home/isaac/big/cache/datasets/cifar-100-binary/test.bin");
-    let test_images = cifar::load_images_64chan_100(&test_data_path, 3000, true);
+    let test_images = cifar::load_images_64chan_100(&test_data_path, 500, true);
 
     let data_path = String::from("/home/isaac/big/cache/datasets/cifar-100-binary/train.bin");
     let images = cifar::load_images_64chan_100(&data_path, TRAINING_SIZE, true);
