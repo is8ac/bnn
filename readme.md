@@ -32,3 +32,21 @@ cargo run --release --bin mnist_conv
 - [Deep Neuroevolution: Genetic Algorithms Are a Competitive Alternative for Training Deep Neural Networks for Reinforcement Learning](https://arxiv.org/abs/1712.06567)
 - [Evolving Deep Neural Networks](https://arxiv.org/abs/1703.00548)
 - [Evolution Strategies as a Scalable Alternative to Reinforcement Learning](https://blog.openai.com/evolution-strategies/)
+
+
+[AdaComp : Adaptive Residual Gradient Compression for Data-Parallel Distributed Training](https://arxiv.org/abs/1712.02679)
+
+Stages:
+- For each layer:
+  - Allocate an empty vector to hold filter sets
+  - For each boosting:
+    - Filter the set of patches to those which none of the existing filter sets can correct classify
+    - Calculate the average grads for all patches
+    - Calculate the average grads for the patches of each label
+    - Subtract the global average grads from the label specific average grads
+    - Threshold at 0 and bitpack
+    - Push the set of bitpacked filters into the vector of filter sets.
+  - Flatten the filter set and de-duplicate
+  - Take output_chans * 64 filters from the de-duplicated set of filters, and use as the layer filters
+  - Calculate the mean of all activations for each filter, and use as the thresholds
+  - Use both the layer filters and the thresholds to calculate the bitpacked output of the layer to be used as input to the next layer.

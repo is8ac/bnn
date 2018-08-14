@@ -709,6 +709,7 @@ pub mod layers {
             fn $name(
                 input: &[[[u64; $in_chans]; $y_size]; $x_size],
                 weights: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans],
+                thresholds: &[[u32; 64]; $out_chans],
             ) -> [[[u64; $out_chans]; $y_size]; $x_size] {
                 let mut output = [[[0u64; $out_chans]; $y_size]; $x_size];
                 // for all the pixels in the output, inset by one
@@ -721,16 +722,111 @@ pub mod layers {
                                 for px in 0..3 {
                                     for py in 0..3 {
                                         for iw in 0..$in_chans {
-                                            sum += (weights[ow][ob][px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
+                                            sum +=
+                                                (weights[ow][ob][px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
                                         }
                                     }
                                 }
-                                output[x + 1][y + 1][ow] = output[x + 1][y + 1][ow] | (((sum > $thresh) as u64) << ob);
+                                output[x + 1][y + 1][ow] =
+                                    output[x + 1][y + 1][ow] | (((sum > thresholds[ow][ob]) as u64) << ob);
                             }
                         }
                     }
                 }
                 output
+            }
+        };
+    }
+
+    #[macro_export]
+    macro_rules! xor_conv3x3_max {
+        ($name:ident, $in_chans:expr, $n_labels:expr) => {
+            fn $name(input: &[[[u64; $in_chans]; 3]; 3], filters: &[[[[u64; $in_chans]; 3]; 3]; $n_labels]) -> usize {
+                let mut max_index = 0;
+                let mut max_val = 0;
+                for l in 0..$n_labels {
+                    let mut sum: u32 = 0;
+                    for px in 0..3 {
+                        for py in 0..3 {
+                            for iw in 0..$in_chans {
+                                sum += (filters[l][px][py][iw] ^ input[px][py][iw]).count_ones();
+                            }
+                        }
+                    }
+                    if sum > max_val {
+                        max_val = sum;
+                        max_index = l;
+                    }
+                }
+                max_index
+            }
+        };
+    }
+    #[macro_export]
+    macro_rules! xor_conv3x3_infer {
+        ($in_chans:expr, $filters:expr, $input:expr) => {{
+            let mut sum: u32 = 0;
+            for px in 0..3 {
+                for py in 0..3 {
+                    for iw in 0..$in_chans {
+                        sum += ($filters[px][py][iw] ^ $input[px][py][iw]).count_ones();
+                    }
+                }
+            }
+            sum
+        }};
+    }
+
+    #[macro_export]
+    macro_rules! xor_conv3x3_isin_topn {
+        ($name:ident, $in_chans:expr, $n_labels:expr, $n:expr) => {
+            fn $name(
+                input: &[[[u64; $in_chans]; 3]; 3],
+                filters: &[[[[u64; $in_chans]; 3]; 3]; $n_labels],
+                label: usize,
+            ) -> bool {
+                let target_sum = xor_conv3x3_infer!($in_chans, filters[label], input);
+                let mut n_wrong = 0;
+                for target in 0..$n_labels {
+                    let actual_sum = xor_conv3x3_infer!($in_chans, filters[target], input);
+                    if actual_sum > target_sum {
+                        n_wrong += 1;
+                        if n_wrong >= $n {
+                            return false;
+                        }
+                    }
+                }
+                true
+            }
+        };
+    }
+
+    #[macro_export]
+    macro_rules! xor_conv3x3_activations {
+        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
+            fn $name(
+                filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans],
+                input: [[[u64; $in_chans]; $y_size]; $x_size],
+            ) -> [u32; $out_chans] {
+                let mut activations: Vec<Vec<u32>> = (0..$out_chans).map(|_| let mut x = Vec::new(); x.reserve())
+                for x in 0..$x_size - 2 {
+                    for y in 0..$y_size - 2 {
+                        for ow in 0..$out_chans {
+                            for ob in 0..64 {
+                                let mut sum = 0;
+                                for px in 0..3 {
+                                    for py in 0..3 {
+                                        for iw in 0..$in_chans {
+                                            sum += (filters[ow][ob][px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut thresholds = [[0u32; 64]; $out_chans];
+                thresholds
             }
         };
     }
@@ -797,7 +893,87 @@ pub mod layers {
             }
         };
     }
-
+    #[macro_export]
+    macro_rules! boosted_grads_3x3 {
+        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $n_labels:expr, $n:expr) => {
+            fn $name(
+                examples: &Vec<(u8, [[[u64; $in_chans]; $y_size]; $x_size])>,
+                filter_sets: &Vec<[[[[u64; $in_chans]; 3]; 3]; $n_labels]>,
+            ) -> [[[[[f32; 64]; $in_chans]; 3]; 3]; $n_labels] {
+                fn is_hard(patch: &[[[u64; $in_chans]; 3]; 3], filter_sets: &Vec<[[[[u64; $in_chans]; 3]; 3]; $n_labels]>, label: u8) -> bool {
+                    xor_conv3x3_isin_topn!(is_correct, $in_chans, $n_labels, $n);
+                    for filter_set in filter_sets {
+                        if is_correct(&patch, &filter_set, label as usize) {
+                            return false;
+                        }
+                    }
+                    true
+                };
+                // for each bit of each (hard) patch, how many bits of the image are set for the corresponding label?
+                let mut label_sums = [[[[[0u32; 64]; $in_chans]; 3]; 3]; $n_labels];
+                // for each label, how many pixels did we look at?
+                let mut label_lens = [0u64; $n_labels];
+                for (label, image) in examples.iter() {
+                    // for each pixel of the image
+                    for x in 0..$x_size - 2 {
+                        for y in 0..$y_size - 2 {
+                            // extract a patch
+                            let patch = [
+                                [image[x + 0][y + 0], image[x + 0][y + 1], image[x + 0][y + 2]],
+                                [image[x + 1][y + 0], image[x + 1][y + 1], image[x + 1][y + 2]],
+                                [image[x + 2][y + 0], image[x + 2][y + 1], image[x + 2][y + 2]],
+                            ];
+                            // if none of the existing filters can correctly label the patch,
+                            if is_hard(&patch, &filter_sets, *label) {
+                                // increment that labels pixel counter.
+                                label_lens[*label as usize] += 1;
+                                // for each of the 9 pixles in the patch,
+                                for px in 0..3 {
+                                    for py in 0..3 {
+                                        // for each word,
+                                        for iw in 0..$in_chans {
+                                            // and for each bit,
+                                            for ib in 0..64 {
+                                                // increment the counter for the bit of that label
+                                                label_sums[*label as usize][px][py][iw][ib] +=
+                                                    (patch[px][py][iw] as u32 >> ib) & 0b1u32;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Now we must scale down.
+                // How much more often was each bit of the patch set in true labels then in average?
+                let mut scaled_grads = [[[[[0f32; 64]; $in_chans]; 3]; 3]; $n_labels];
+                // how many pixels in total did we look at?
+                let global_len: u64 = label_lens.iter().sum();
+                println!("total pixels: {:?}", global_len);
+                for px in 0..3 {
+                    for py in 0..3 {
+                        for ic in 0..$in_chans {
+                            // for each bit, of the patch
+                            for b in 0..64 {
+                                let mut global_sum = 0u32; // how many times was this bit set in any label?
+                                let mut scaled_label_sums = [0f32; $n_labels]; // what fraction of each label had this bit set?
+                                for l in 0..$n_labels {
+                                    global_sum += label_sums[l][px][py][ic][b];
+                                    scaled_label_sums[l] = label_sums[l][px][py][ic][b] as f32 / label_lens[l] as f32;
+                                }
+                                let scaled_global_sum = global_sum as f32 / global_len as f32;
+                                for l in 0..$n_labels {
+                                    scaled_grads[l][px][py][ic][b] = scaled_global_sum - scaled_label_sums[l];
+                                }
+                            }
+                        }
+                    }
+                }
+                scaled_grads
+            }
+        };
+    }
     #[macro_export]
     macro_rules! binary_conv3x3 {
         ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {

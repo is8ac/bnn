@@ -14,31 +14,38 @@ use rand::prelude::*;
 
 // channel sizes (all but C0 will be multiplied by 8);
 const C0: usize = 1;
-const C1: usize = 3;
-const C2: usize = 5;
-const D1: usize = 12;
+const C1: usize = 8;
+const C2: usize = 16;
+const C3: usize = 16;
+const D1: usize = 64;
 
 // Parameter sizes and max output ranges.
-const K1_SIZE: usize = C0 * C1 * 5 * 5 + C1 * 2;
-const K1_MAX: i32 = i32::max_value() / ((C1 * 8) * 5 * 5) as i32;
+const K1_SIZE: usize = C0 * C1 * 3 * 3;
+const K1_MAX: i32 = i32::max_value() / ((C1 * 8) * 3 * 3) as i32;
 
-const K2_SIZE: usize = C1 * (C2 * 8) * 5 * 5 + C2 * 2;
-const K2_MAX: i32 = i32::max_value() / ((C2 * 8) * 5 * 5) as i32;
+const K2_SIZE: usize = C1 * (C2 * 8) * 3 * 3;
+const K2_MAX: i32 = i32::max_value() / ((C2 * 8) * 3 * 3) as i32;
 
-const D1_SIZE: usize = C2 * 7 * 7 * D1 * 8;
+const K3_SIZE: usize = C2 * (C3 * 8) * 3 * 3;
+const K3_MAX: i32 = i32::max_value() / ((C2 * 8) * 3 * 3) as i32;
+
+const D1_SIZE: usize = C3 * 3 * 3 * D1 * 8;
 const D1_MAX: i32 = i32::max_value() / D1 as i32;
 
 const D2_SIZE: usize = D1 * 10;
 
-conv!(conv1, i32, 28, 28, C0, u8, C1, u32, 5, 5, K1_MAX, 0);
+conv!(conv1, i32, 28, 28, C0, u8, C1, u32, 3, 3, K1_MAX, 0);
 max_pool!(pool1, u32, 28, 28, C1 * 8);
 
-conv!(conv2, i32, 14, 14, C1 * 8, u32, C2, u32, 5, 5, K2_MAX, 0);
+conv!(conv2, i32, 14, 14, C1 * 8, u32, C2, u32, 3, 3, K2_MAX, 0);
 max_pool!(pool2, u32, 14, 14, C2 * 8);
 
-flatten3d!(flatten, u32, 7, 7, C2 * 8);
+conv!(conv3, i32, 7, 7, C2 * 8, u32, C3, u32, 3, 3, K3_MAX, 0);
+max_pool!(pool3, u32, 7, 7, C3 * 8);
 
-dense_ints2ints!(dense1, u32, i32, 7 * 7 * C2, D1 * 8);
+flatten3d!(flatten, u32, 3, 3, C3 * 8);
+
+dense_ints2ints!(dense1, u32, i32, 3 * 3 * C3, D1 * 8);
 max_1d!(relu1, D1 * 8, D1_MAX);
 dense_ints2ints!(dense2, u32, i32, D1, 10);
 softmax_loss!(lossfn, i32, 10, 0.0000005f64);
@@ -63,8 +70,9 @@ struct Cache {
     images: Vec<[[[u8; 1]; 28]; 28]>,
     labels: Vec<usize>,
     s1: (bool, Vec<[[[u32; C1 * 8]; 14]; 14]>), // output of first conv and maxpool
-    s2: (bool, Vec<[u32; C2 * 8 * 7 * 7]>),     // output of second conv and maxpool
-    s3: (bool, Vec<[u32; D1 * 8]>),             // output of first FC layer
+    s2: (bool, Vec<[[[u32; C2 * 8]; 7]; 7]>),   // output of second conv and maxpool
+    s3: (bool, Vec<[u32; C3 * 8 * 3 * 3]>),     // output of third conv and maxpool
+    s4: (bool, Vec<[u32; D1 * 8]>),             // output of first FC layer
     cache_size: usize,
 }
 
@@ -72,25 +80,32 @@ impl Cache {
     fn calc_s1(&self, i: usize) -> [[[u32; C1 * 8]; 14]; 14] {
         pool1(&conv1(&self.images[i], &self.params.ck1))
     }
-    fn calc_s2(&self, i: usize) -> [u32; C2 * 8 * 7 * 7] {
+    fn calc_s2(&self, i: usize) -> [[[u32; C2 * 8]; 7]; 7] {
         if self.s1.0 {
-            flatten(&pool2(&conv2(&self.s1.1[i], &self.params.ck2)))
+            pool2(&conv2(&self.s1.1[i], &self.params.ck2))
         } else {
-            flatten(&pool2(&conv2(&self.calc_s1(i), &self.params.ck2)))
+            pool2(&conv2(&self.calc_s1(i), &self.params.ck2))
         }
     }
-    fn calc_s3(&self, i: usize) -> [u32; D1 * 8] {
+    fn calc_s3(&self, i: usize) -> [u32; C3 * 8 * 3 * 3] {
         if self.s2.0 {
-            relu1(&dense1(&self.s2.1[i], &self.params.d1))
+            flatten(&pool3(&conv3(&self.s2.1[i], &self.params.ck3)))
         } else {
-            relu1(&dense1(&self.calc_s2(i), &self.params.d1))
+            flatten(&pool3(&conv3(&self.calc_s2(i), &self.params.ck3)))
+        }
+    }
+    fn calc_s4(&self, i: usize) -> [u32; D1 * 8] {
+        if self.s3.0 {
+            relu1(&dense1(&self.s3.1[i], &self.params.d1))
+        } else {
+            relu1(&dense1(&self.calc_s3(i), &self.params.d1))
         }
     }
     fn calc_actual(&self, i: usize) -> [i32; 10] {
-        if self.s3.0 {
-            dense2(&self.s3.1[i], &self.params.d2)
+        if self.s4.0 {
+            dense2(&self.s4.1[i], &self.params.d2)
         } else {
-            dense2(&self.calc_s3(i), &self.params.d2)
+            dense2(&self.calc_s4(i), &self.params.d2)
         }
     }
     fn update_s1(&mut self) {
@@ -121,6 +136,17 @@ impl Cache {
     }
     fn invalidate_s3(&mut self) {
         self.s3.0 = false;
+        self.invalidate_s4()
+    }
+
+    fn update_s4(&mut self) {
+        for i in 0..self.cache_size {
+            self.s4.1[i] = self.calc_s4(i);
+        }
+        self.s4.0 = true;
+    }
+    fn invalidate_s4(&mut self) {
+        self.s4.0 = false;
     }
     fn avg_loss(&mut self, batch_size: usize, seed: [u8; 32]) -> f64 {
         //let start = SystemTime::now();
@@ -138,13 +164,13 @@ impl Cache {
         }
         sum / batch_size as f64
     }
-    fn avg_accuracy(&mut self) -> f64 {
+    fn avg_accuracy(&mut self, batch_size: usize) -> f64 {
         let mut sum: u64 = 0;
-        for e in 0..self.cache_size {
+        for e in 0..batch_size {
             let actual = self.calc_actual(e);
             sum += is_correct(&actual, self.labels[e]) as u64;
         }
-        sum as f64 / self.cache_size as f64
+        sum as f64 / batch_size as f64
     }
     fn update_cache(&mut self, cache_index: usize) {
         if cache_index == 0 {
@@ -155,6 +181,8 @@ impl Cache {
             self.update_s2();
         } else if cache_index == 3 {
             self.update_s3();
+        } else if cache_index == 4 {
+            self.update_s4();
         } else {
             panic!("bad cache index");
         }
@@ -168,6 +196,8 @@ impl Cache {
         } else if layer == 3 {
             self.invalidate_s3();
         } else if layer == 4 {
+            self.invalidate_s4();
+        } else if layer == 5 {
         } else {
             panic!("bad layer ID");
         }
@@ -179,8 +209,9 @@ impl Cache {
             images: images,
             labels: labels,
             s1: (false, vec![[[[0u32; C1 * 8]; 14]; 14]; cache_size]),
-            s2: (false, vec![[0u32; C2 * 8 * 7 * 7]; cache_size]),
-            s3: (false, vec![[0u32; D1 * 8]; cache_size]),
+            s2: (false, vec![[[[0u32; C2 * 8]; 7]; 7]; cache_size]),
+            s3: (false, vec![[0u32; C3 * 8 * 3 * 3]; cache_size]),
+            s4: (false, vec![[0u32; D1 * 8]; cache_size]),
             cache_size: cache_size,
         }
     }
@@ -203,6 +234,7 @@ struct Message {
 struct Parameters {
     ck1: [u8; K1_SIZE],
     ck2: [u8; K2_SIZE],
+    ck3: [u8; K3_SIZE],
     d1: [u8; D1_SIZE],
     d2: [u8; D2_SIZE],
 }
@@ -212,6 +244,7 @@ impl Parameters {
         Parameters {
             ck1: random_byte_array!(K1_SIZE)(),
             ck2: random_byte_array!(K2_SIZE)(),
+            ck3: random_byte_array!(K3_SIZE)(),
             d1: random_byte_array!(D1_SIZE)(),
             d2: random_byte_array!(D2_SIZE)(),
         }
@@ -222,8 +255,10 @@ impl Parameters {
         } else if layer == 2 {
             flip_bit!(self.ck2, bit);
         } else if layer == 3 {
-            flip_bit!(self.d1, bit);
+            flip_bit!(self.ck3, bit);
         } else if layer == 4 {
+            flip_bit!(self.d1, bit);
+        } else if layer == 5 {
             flip_bit!(self.d2, bit);
         } else {
             panic!("bad layer ID");
@@ -234,6 +269,9 @@ impl Parameters {
             wtr.push(i);
         }
         for &i in self.ck2.iter() {
+            wtr.push(i);
+        }
+        for &i in self.ck3.iter() {
             wtr.push(i);
         }
         for &i in self.d1.iter() {
@@ -248,6 +286,7 @@ impl Parameters {
         Parameters {
             ck1: read_array!(K1_SIZE)(&mut data),
             ck2: read_array!(K2_SIZE)(&mut data),
+            ck3: read_array!(K3_SIZE)(&mut data),
             d1: read_array!(D1_SIZE)(&mut data),
             d2: read_array!(D2_SIZE)(&mut data),
         }
@@ -310,7 +349,7 @@ impl WorkerPool {
                         tx.send(loss).expect("can't send loss");
                     }
                     if msg.accuracy {
-                        let acc = cache.avg_accuracy();
+                        let acc = cache.avg_accuracy(msg.minibatch_size);
                         tx.send(acc).expect("can't send accuracy");
                     }
                 }
@@ -402,10 +441,9 @@ fn main() {
     const TRAINING_SIZE: usize = 60_000;
     const TEST_SIZE: usize = 10_000;
     const NTHREADS: usize = 8;
-    const MINIBATCH_SIZE: usize = 50;
+    const MINIBATCH_SIZE: usize = 64;
     println!("starting v0.1.4 with {:?} threads", NTHREADS);
 
-    let mut rng = thread_rng();
     let images = mnist::load_images_u8_1chan(&String::from("mnist/train-images-idx3-ubyte"), TRAINING_SIZE);
     let labels = mnist::load_labels(&String::from("mnist/train-labels-idx1-ubyte"), TRAINING_SIZE);
 
@@ -418,35 +456,42 @@ fn main() {
     let pool = WorkerPool::new(images, labels, params, NTHREADS);
     let test_pool = WorkerPool::new(test_images, test_labels, params, NTHREADS);
 
-    let layer_sizes = [0, K1_SIZE * 8, K2_SIZE * 8, D1_SIZE * 8, D2_SIZE * 8]; // lookup table of layer sizes
+    let layer_sizes = [0, K1_SIZE * 8, K2_SIZE * 8, K3_SIZE * 8, D1_SIZE * 8, D2_SIZE * 8]; // lookup table of layer sizes
+    println!("layer bits: {:?}", layer_sizes);
 
     let mut seed: u64 = 0;
     let mut nil_loss: f64 = 1234.56;
-    for l in 1..5 {
-        println!("begining layer {:?} with {:?} bits", l, layer_sizes[l]);
-        pool.update_cache(l - 1);
-        test_pool.update_cache(l - 1);
-        for b in 0..layer_sizes[l] {
-            if b % 29 == 0 {
-                seed += 1;
-                println!("new seed: {:?}", seed);
-                nil_loss = pool.loss(MINIBATCH_SIZE, seed);
-            }
-            pool.mutate(l, b);
-            let new_loss = pool.loss(MINIBATCH_SIZE, seed);
-            if new_loss < nil_loss {
-                nil_loss = new_loss;
-                // update the eval worker.
-                test_pool.mutate(l, b);
-                params.mutate(l, b);
-                println!("{:?} {:?}/{:?} loss: {:?}", l, b, layer_sizes[l], new_loss);
-            } else {
-                //println!("{:?} {:?}/{:?} reverting: {:?}", l, b, layer_sizes[l], new_loss);
+    for i in 0.. {
+        for l in 1..6 {
+            println!("begining layer {:?} with {:?} bits", l, layer_sizes[l]);
+            pool.update_cache(l - 1);
+            test_pool.update_cache(l - 1);
+            for b in 0..layer_sizes[l] {
+                if b % 17 == 0 {
+                    seed += 1;
+                    println!("{:?} new seed: {:?}", i, seed);
+                    nil_loss = pool.loss(MINIBATCH_SIZE, seed);
+                    let acc = test_pool.accuracy(100);
+                    println!("{:?} test acc: {:?}%", i, acc * 100f64);
+                }
                 pool.mutate(l, b);
+                //let start = SystemTime::now();
+                let new_loss = pool.loss(MINIBATCH_SIZE, seed);
+                //println!("time per example: {:?}", start.elapsed().unwrap() / (MINIBATCH_SIZE / NTHREADS) as u32);
+                if new_loss < nil_loss {
+                    nil_loss = new_loss;
+                    // update the eval worker.
+                    test_pool.mutate(l, b);
+                    params.mutate(l, b);
+                    println!("{:?} {:?}/{:?} loss: {:?}", l, b, layer_sizes[l], new_loss);
+                } else {
+                    //println!("{:?} {:?}/{:?} reverting: {:?}", l, b, layer_sizes[l], new_loss);
+                    pool.mutate(l, b);
+                }
             }
+            write_params(&params);
+            let acc = test_pool.accuracy(TEST_SIZE);
+            println!("{:?} test acc: {:?}%", i, acc * 100f64);
         }
-        write_params(&params);
-        let acc = test_pool.accuracy(TEST_SIZE);
-        println!("acc: {:?}%", acc * 100f64);
     }
 }

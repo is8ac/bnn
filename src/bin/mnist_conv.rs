@@ -16,8 +16,8 @@ use bitnn::datasets::mnist;
 use rand::prelude::*;
 use std::time::Duration;
 
-const TRAINING_SIZE: usize = 60000;
-const TEST_SIZE: usize = 10000;
+const TRAINING_SIZE: usize = 60_000;
+const TEST_SIZE: usize = 10_000;
 const NTHREADS: usize = 8;
 const CACHE_SIZE: usize = TRAINING_SIZE / NTHREADS;
 
@@ -52,6 +52,7 @@ flatten3d!(flatten, u32, 7, 7, C3 * 8);
 dense_ints2ints!(dense1, u32, i32, 5 * 5 * C3, D1 * 8);
 max_1d!(relu1, D1 * 8, D1_MAX);
 dense_ints2ints!(dense2, u32, i32, D1, 10);
+softmax_loss!(lossfn, i32, 10, 0.0000005f64);
 
 struct Cache {
     images: Vec<[[[u8; 1]; 28]; 28]>,
@@ -61,7 +62,7 @@ struct Cache {
     s3: Vec<[u32; C3 * 8 * 5 * 5]>,
     s4: Vec<[u32; D1 * 8]>,
     actuals: Vec<[i32; 10]>,
-    losses: Vec<i64>,
+    losses: Vec<f64>,
     correct: Vec<bool>,
     params: Parameters,
     clean: [bool; 9],
@@ -134,8 +135,7 @@ impl Cache {
             self.update_actuals();
         }
         for i in 0..CACHE_SIZE {
-            let target = self.actuals[i][self.labels[i]];
-            self.losses[i] = self.actuals[i].iter().map(|o| ((o - target).max(0) + 9) as i64).sum();
+            self.losses[i] = lossfn(&self.actuals[i], self.labels[i]);
         }
         self.clean[6] = true;
     }
@@ -143,8 +143,8 @@ impl Cache {
         if !self.clean[6] {
             self.update_losses();
         }
-        let sum: i64 = self.losses.iter().sum();
-        sum as f64 / CACHE_SIZE as f64
+        let sum: f64 = self.losses.iter().sum();
+        sum / CACHE_SIZE as f64
     }
     fn update_correct(&mut self) {
         if !self.clean[5] {
@@ -185,7 +185,7 @@ impl Cache {
             s3: vec![[0u32; C3 * 8 * 5 * 5]; CACHE_SIZE],
             s4: vec![[0u32; D1 * 8]; CACHE_SIZE],
             actuals: vec![[0i32; 10]; CACHE_SIZE],
-            losses: vec![0i64; CACHE_SIZE],
+            losses: vec![0f64; CACHE_SIZE],
             correct: vec![false; CACHE_SIZE],
             labels: labels,
             params: params,
@@ -339,7 +339,9 @@ fn main() {
         let mut test_cache = Cache::new(test_images, test_labels, params);
         let mut last_save = SystemTime::now();
         loop {
+            println!("start");
             let update = eval_update_rx.recv().expect("eval thread can't receive update");
+            println!("end");
             test_cache.mutate(update);
             if (last_save + Duration::new(30, 0)) < SystemTime::now() {
                 let avg_acc = test_cache.avg_accuracy();
@@ -368,7 +370,7 @@ fn main() {
     loop {
         for &l in train_order.iter() {
             println!("begining layer {:?} with {:?} bits", l, layers[l]);
-            for i in 0..100 {
+            for i in 0..20 {
                 let b = rng.gen_range(0, layers[l]);
                 let update = Update { layer: l, bit: b };
                 for w in 0..NTHREADS {
