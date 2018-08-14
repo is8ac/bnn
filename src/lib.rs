@@ -174,7 +174,6 @@ pub mod datasets {
     }
 }
 
-
 #[macro_use]
 pub mod layers {
     #[macro_export]
@@ -246,41 +245,6 @@ pub mod layers {
         };
     }
     #[macro_export]
-    macro_rules! xor_conv3x3_bitpacked {
-        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr, $thresh:expr) => {
-            fn $name(
-                input: &[[[u64; $in_chans]; $y_size]; $x_size],
-                weights: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans],
-                thresholds: &[[u32; 64]; $out_chans],
-            ) -> [[[u64; $out_chans]; $y_size]; $x_size] {
-                let mut output = [[[0u64; $out_chans]; $y_size]; $x_size];
-                // for all the pixels in the output, inset by one
-                for x in 0..$x_size - 2 {
-                    for y in 0..$y_size - 2 {
-                        // for each pixel,
-                        for ow in 0..$out_chans {
-                            for ob in 0..64 {
-                                let mut sum: u32 = 0;
-                                for px in 0..3 {
-                                    for py in 0..3 {
-                                        for iw in 0..$in_chans {
-                                            sum +=
-                                                (weights[ow][ob][px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
-                                        }
-                                    }
-                                }
-                                output[x + 1][y + 1][ow] =
-                                    output[x + 1][y + 1][ow] | (((sum > thresholds[ow][ob]) as u64) << ob);
-                            }
-                        }
-                    }
-                }
-                output
-            }
-        };
-    }
-
-    #[macro_export]
     macro_rules! xor_conv3x3_max {
         ($name:ident, $in_chans:expr, $n_labels:expr) => {
             fn $name(input: &[[[u64; $in_chans]; 3]; 3], filters: &[[[[u64; $in_chans]; 3]; 3]; $n_labels]) -> usize {
@@ -348,18 +312,18 @@ pub mod layers {
         ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
             fn $name(
                 filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans],
-                input: [[[u64; $in_chans]; $y_size]; $x_size],
-            ) -> [u32; $out_chans] {
-                let mut activations: Vec<Vec<u32>> = (0..$out_chans).map(|_| let mut x = Vec::new(); x.reserve())
+                input: &[[[u64; $in_chans]; $y_size]; $x_size],
+            ) -> [[[[u32; 64]; $out_chans]; $y_size]; $x_size] {
+                let mut activations = [[[[0u32; 64]; $out_chans]; $y_size]; $x_size];
                 for x in 0..$x_size - 2 {
                     for y in 0..$y_size - 2 {
                         for ow in 0..$out_chans {
                             for ob in 0..64 {
-                                let mut sum = 0;
                                 for px in 0..3 {
                                     for py in 0..3 {
                                         for iw in 0..$in_chans {
-                                            sum += (filters[ow][ob][px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
+                                            activations[x + 1][y + 1][ow][ob] +=
+                                                (filters[ow][ob][px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
                                         }
                                     }
                                 }
@@ -367,12 +331,60 @@ pub mod layers {
                         }
                     }
                 }
-                let mut thresholds = [[0u32; 64]; $out_chans];
-                thresholds
+                activations
+            }
+        };
+    }
+    #[macro_export]
+    macro_rules! threshold_and_bitpack_image {
+        ($name:ident, $x_size:expr, $y_size:expr, $out_chans:expr) => {
+            fn $name(
+                input: &[[[[u32; 64]; $out_chans]; $y_size]; $x_size],
+                thresholds: &[[u32; 64]; $out_chans],
+            ) -> [[[u64; $out_chans]; $y_size]; $x_size] {
+                let mut output = [[[0u64; $out_chans]; $y_size]; $x_size];
+                for x in 0..$x_size {
+                    for y in 0..$y_size {
+                        for c in 0..$out_chans {
+                            for b in 0..64 {
+                                output[x][y][c] =
+                                    output[x][y][c] | (((input[x][y][c][b] > thresholds[c][b]) as u64) << b);
+                            }
+                        }
+                    }
+                }
+                output
             }
         };
     }
 
+    #[macro_export]
+    macro_rules! median_activations {
+        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
+            fn $name(
+                pixel_activations: &Vec<[[[[u32; 64]; $out_chans]; $y_size]; $x_size]>,
+            ) -> [[u32; 64]; $out_chans] {
+                let mut medians = [[0u32; 64]; $out_chans];
+                for c in 0..$out_chans {
+                    for b in 0..64 {
+                        let mut chan_activations: Vec<u32> = Vec::with_capacity(pixel_activations.len());
+                        for e in 0..pixel_activations.len() {
+                            for x in 0..$x_size {
+                                for y in 0..$y_size {
+                                    chan_activations.push(pixel_activations[e][x][y][c][b]);
+                                }
+                            }
+                        }
+                        chan_activations.sort();
+                        //println!("{:?}", chan_activations);
+                        //println!("{:?}", pixel_activations.len() / 2);
+                        medians[c][b] = chan_activations[(pixel_activations.len() * $x_size * $y_size) / 2];
+                    }
+                }
+                medians
+            }
+        };
+    }
     #[macro_export]
     macro_rules! xor_conv3x3_onechan_pooled {
         ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr) => {
@@ -411,27 +423,6 @@ pub mod layers {
                     }
                 }
                 params
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! sub_i32_4d {
-        ($type:ty, $a_size:expr, $b_size:expr, $c_size:expr, $d_size:expr) => {
-            |grads_a: &[[[[$type; $d_size]; $c_size]; $b_size]; $a_size],
-             grads_b: &[[[[$type; $d_size]; $c_size]; $b_size]; $a_size]|
-             -> [[[[$type; $d_size]; $c_size]; $b_size]; $a_size] {
-                let mut diffs = [[[[0 as $type; $d_size]; $c_size]; $b_size]; $a_size];
-                for a in 0..$a_size {
-                    for b in 0..$b_size {
-                        for c in 0..$c_size {
-                            for d in 0..$d_size {
-                                //println!("{:?} - {:?}", grads_a[a][b][c][d], grads_b[a][b][c][d]);
-                                diffs[a][b][c][d] = grads_a[a][b][c][d] - grads_b[a][b][c][d];
-                            }
-                        }
-                    }
-                }
-                diffs
             }
         };
     }
@@ -513,295 +504,6 @@ pub mod layers {
                     }
                 }
                 scaled_grads
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! binary_conv3x3 {
-        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
-            fn $name(input: &[[[u64; $in_chans]; $y_size]; $x_size], weights: &[[[u64; $in_chans]; 9]; $out_chans * 64]) -> [[[u64; $out_chans]; $y_size - 2]; $x_size - 2] {
-                let mut output = [[[0u64; $out_chans]; $y_size - 2]; $x_size - 2];
-                let threshold = (9 * (64 / 2) * $in_chans) as u32;
-                for x in 0..$x_size - 2 {
-                    // for all the pixels in the output, inset by one
-                    for y in 0..$y_size - 2 {
-                        for ow in 0..$out_chans {
-                            // for each word of the output channels,
-                            for ob in 0..64 {
-                                // for each of the 64 bits of that output word,
-                                let wi = ow * 64 + ob;
-                                let mut sum = 0; // sum holds all the 3 * 3 * input_chans * 64 bits.
-                                for iw in 0..$in_chans {
-                                    // for each word of the input,
-                                    // we take each of the 9 pixels of the input patch and xor the weight for that [output_chan, pixel, input_chan], with the input
-                                    sum += (weights[wi][0][iw] ^ input[x + 0][y + 0][iw]).count_ones()
-                                        + (weights[wi][1][iw] ^ input[x + 1][y + 0][iw]).count_ones()
-                                        + (weights[wi][2][iw] ^ input[x + 2][y + 0][iw]).count_ones()
-                                        + (weights[wi][3][iw] ^ input[x + 0][y + 1][iw]).count_ones()
-                                        + (weights[wi][4][iw] ^ input[x + 1][y + 1][iw]).count_ones()
-                                        + (weights[wi][5][iw] ^ input[x + 2][y + 1][iw]).count_ones()
-                                        + (weights[wi][6][iw] ^ input[x + 0][y + 2][iw]).count_ones()
-                                        + (weights[wi][7][iw] ^ input[x + 1][y + 2][iw]).count_ones()
-                                        + (weights[wi][8][iw] ^ input[x + 2][y + 2][iw]).count_ones();
-                                }
-                                output[x][y][ow] = output[x][y][ow] | (((sum > threshold) as u64) << ob);
-                            }
-                        }
-                    }
-                }
-                output
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! binary_conv3x3_partial {
-        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
-            fn $name(
-                input: &[[[u64; $in_chans]; $y_size]; $x_size],
-                weights: &[[[u64; $in_chans]; 9]; $out_chans * 64],
-                output: &mut [[[u64; $out_chans]; $y_size - 2]; $x_size - 2],
-                ow: usize,
-                ob: usize,
-            ) {
-                let threshold = (9 * 32 * $in_chans) as u32;
-                let wi = ow * 64 + ob;
-                let mask = !(0b1u64 << ob);
-                for x in 0..$x_size - 2 {
-                    // for all the pixels in the output, inset by one
-                    for y in 0..$y_size - 2 {
-                        let mut sum = 0; // sum holds all the 3 * 3 * input_chans * 64 bits.
-                        for iw in 0..$in_chans {
-                            // for each word of the input,
-                            // we take each of the 9 pixels of the input patch and xor the weight for that [output_chan, pixel, input_chan], with the input
-                            sum += (weights[wi][0][iw] ^ input[x + 0][y + 0][iw]).count_ones()
-                                + (weights[wi][1][iw] ^ input[x + 1][y + 0][iw]).count_ones()
-                                + (weights[wi][2][iw] ^ input[x + 2][y + 0][iw]).count_ones()
-                                + (weights[wi][3][iw] ^ input[x + 0][y + 1][iw]).count_ones()
-                                + (weights[wi][4][iw] ^ input[x + 1][y + 1][iw]).count_ones()
-                                + (weights[wi][5][iw] ^ input[x + 2][y + 1][iw]).count_ones()
-                                + (weights[wi][6][iw] ^ input[x + 0][y + 2][iw]).count_ones()
-                                + (weights[wi][7][iw] ^ input[x + 1][y + 2][iw]).count_ones()
-                                + (weights[wi][8][iw] ^ input[x + 2][y + 2][iw]).count_ones();
-                        }
-                        output[x][y][ow] = output[x][y][ow] & mask; // set the bit to 0
-                        output[x][y][ow] = output[x][y][ow] | (((sum > threshold) as u64) << ob);
-                    }
-                }
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! fc_3dbits2ints {
-        ($name:ident, $x_size:expr, $y_size:expr, $z_size:expr, $output_size:expr) => {
-            fn $name(
-                input: &[[[u64; $z_size]; $y_size]; $x_size],
-                weights: &[[[[u64; $z_size]; $y_size]; $x_size]; $output_size],
-            ) -> [u32; $output_size] {
-                let mut output = [0u32; $output_size];
-                for x in 0..$x_size {
-                    for y in 0..$y_size {
-                        for z in 0..$z_size {
-                            for o in 0..$output_size {
-                                output[o] += (input[x][y][z] ^ weights[o][x][y][z]).count_ones();
-                            }
-                        }
-                    }
-                }
-                output
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! fc_3dbits2ints_partial {
-        ($name:ident, $x_size:expr, $y_size:expr, $z_size:expr, $output_size:expr) => {
-            fn $name(
-                input: &[[[u64; $z_size]; $y_size]; $x_size],
-                weights: &[[[[u64; $z_size]; $y_size]; $x_size]; $output_size],
-                output: &mut [u32; $output_size],
-                o: usize,
-            ) {
-                for x in 0..$x_size {
-                    for y in 0..$y_size {
-                        for z in 0..$z_size {
-                            output[o] += (input[x][y][z] ^ weights[o][x][y][z]).count_ones();
-                        }
-                    }
-                }
-            }
-        };
-    }
-
-    #[macro_export]
-    macro_rules! fc_3dbits2ints_goodness {
-        ($name:ident, $x_size:expr, $y_size:expr, $z_size:expr, $output_size:expr) => {
-            fn $name(
-                input: &[[[u64; $z_size]; $y_size]; $x_size],
-                weights: &[[[[u64; $z_size]; $y_size]; $x_size]; $output_size],
-                actual: usize,
-            ) -> u32 {
-                let mut goodness = 0;
-                for x in 0..$x_size {
-                    for y in 0..$y_size {
-                        for z in 0..$z_size {
-                            goodness += (input[x][y][z] ^ weights[actual][x][y][z]).count_ones();
-                        }
-                    }
-                }
-                output
-            }
-        };
-    }
-
-    #[macro_export]
-    macro_rules! fc_3dbits2ints_grads {
-        ($name:ident, $x_size:expr, $y_size:expr, $i_size:expr, $output_size:expr) => {
-            fn $name(
-                input: &[[[u64; $i_size]; $y_size]; $x_size],
-                pos_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size],
-                neg_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size],
-                actual: usize,
-            ) {
-                for o in 0..$output_size {
-                    for x in 0..$x_size {
-                        for y in 0..$y_size {
-                            for i in 0..$i_size {
-                                for b in 0..64 {
-                                    let mask = 0b1u64 << b;
-                                    let set = (input[x][y][i] & mask) == mask;
-                                    if o == actual {
-                                        if set {
-                                            neg_grads[o][x][y][i][b] += 1;
-                                        } else {
-                                            pos_grads[o][x][y][i][b] += 1;
-                                        }
-                                    } else {
-                                        if set {
-                                            neg_grads[o][x][y][i][b] -= 1;
-                                        } else {
-                                            pos_grads[o][x][y][i][b] -= 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! fc_3dbits2ints_grads_update {
-        ($name:ident, $x_size:expr, $y_size:expr, $i_size:expr, $output_size:expr) => {
-            fn $name(
-                input: &[[[u64; $i_size]; $y_size]; $x_size],
-                pos_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size],
-                neg_grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size],
-                actual: usize,
-                i: usize,
-                b: usize,
-            ) {
-                let mask = 0b1u64 << b;
-                for o in 0..$output_size {
-                    for x in 0..$x_size {
-                        for y in 0..$y_size {
-                            let set = (input[x][y][i] & mask) == mask;
-                            if o == actual {
-                                if set {
-                                    neg_grads[o][x][y][i][b] += 1;
-                                } else {
-                                    pos_grads[o][x][y][i][b] += 1;
-                                }
-                            } else {
-                                if set {
-                                    neg_grads[o][x][y][i][b] -= 1;
-                                } else {
-                                    pos_grads[o][x][y][i][b] -= 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! partial_fc_3dbits2ints_grads_zero {
-        ($name:ident, $x_size:expr, $y_size:expr, $i_size:expr, $output_size:expr) => {
-            fn $name(grads: &mut [[[[[i32; 64]; $i_size]; $y_size]; $x_size]; $output_size], i: usize, b: usize) {
-                for o in 0..$output_size {
-                    for x in 0..$x_size {
-                        for y in 0..$y_size {
-                            grads[o][x][y][i][b] = 0;
-                        }
-                    }
-                }
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! fc_3dbits2ints_grads_loss {
-        ($name:ident, $x_size:expr, $y_size:expr, $z_size:expr, $output_size:expr) => {
-            fn $name(
-                pos_grads: &[[[[[i32; 64]; $z_size]; $y_size]; $x_size]; $output_size],
-                neg_grads: &[[[[[i32; 64]; $z_size]; $y_size]; $x_size]; $output_size],
-            ) -> i32 {
-                let mut loss = 0;
-                for o in 0..$output_size {
-                    for x in 0..$x_size {
-                        for y in 0..$y_size {
-                            for z in 0..$z_size {
-                                for b in 0..64 {
-                                    loss += pos_grads[o][x][y][z][b].min(neg_grads[o][x][y][z][b]);
-                                }
-                            }
-                        }
-                    }
-                }
-                loss
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! fc_3dbits2ints_grads2params {
-        ($name:ident, $x_size:expr, $y_size:expr, $z_size:expr, $output_size:expr) => {
-            fn $name(
-                pos_grads: &[[[[[i32; 64]; $z_size]; $y_size]; $x_size]; $output_size],
-                neg_grads: &[[[[[i32; 64]; $z_size]; $y_size]; $x_size]; $output_size],
-            ) -> [[[[u64; $z_size]; $y_size]; $x_size]; $output_size] {
-                let mut params = [[[[0u64; $z_size]; $y_size]; $x_size]; $output_size];
-                for o in 0..$output_size {
-                    for x in 0..$x_size {
-                        for y in 0..$y_size {
-                            for z in 0..$z_size {
-                                for b in 0..64 {
-                                    let bit = pos_grads[o][x][y][z][b] > neg_grads[o][x][y][z][b];
-                                    params[o][x][y][z] = params[o][x][y][z] | ((bit as u64) << b);
-                                }
-                            }
-                        }
-                    }
-                }
-                params
-            }
-        };
-    }
-    #[macro_export]
-    macro_rules! softmax_loss {
-        ($name:ident, $input_type:ident, $size:expr, $scale:expr) => {
-            fn $name(input: &[$input_type; $size], target: usize) -> f64 {
-                let mut input_exp = [0f64; $size];
-                let mut sum_exp = 0f64;
-                for i in 0..$size {
-                    input_exp[i] = (input[i] as f64 * $scale).exp();
-                    sum_exp += input_exp[i];
-                    //println!("int: {:?} exp: {:?}", input[i] as f64 * $scale, input_exp[i]);
-                }
-                let mut softmax = [0f64; $size];
-                for i in 0..$size {
-                    softmax[i] = input_exp[i] / sum_exp;
-                }
-                softmax[target] -= 1f64;
-                softmax.iter().map(|x| x.powf(2f64)).sum()
             }
         };
     }

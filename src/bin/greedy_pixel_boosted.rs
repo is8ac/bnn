@@ -1,38 +1,28 @@
 #[macro_use]
 extern crate bitnn;
+extern crate time;
 
 use bitnn::datasets::cifar;
+use time::PreciseTime;
 
-const TRAINING_SIZE: usize = 5000;
+const TRAINING_SIZE: usize = 3000;
 const IMAGE_SIZE: usize = 32;
 const CHAN_0: usize = 1;
-const CHAN_1: usize = 3;
+const CHAN_1: usize = 2;
 const NUM_CLASSES: usize = 100;
 
 //xor_conv3x3_means!(l1_means, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, CHAN_1);
 
 //xor_conv3x3_onechan_pooled!(l1_conv_onechan, IMAGE_SIZE, IMAGE_SIZE, CHAN_0);
-xor_conv3x3_bitpacked!(
-    l1_conv_bitpacked,
-    IMAGE_SIZE,
-    IMAGE_SIZE,
-    CHAN_0,
-    CHAN_1,
-    ((CHAN_0 * 64 * 9) / 2) as u32
-);
 boosted_grads_3x3!(l1_grads, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, NUM_CLASSES, 20);
 bitpack_u64_3d!(l1_bitpack_params, f32, 3, 3, CHAN_0, 0f32);
 //xor_conv3x3_max!(l1_max_label, 1, NUM_CLASSES);
 
+xor_conv3x3_activations!(l1_activations, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, CHAN_1);
+median_activations!(l1_median_activations, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, CHAN_1);
+threshold_and_bitpack_image!(l1_image_bitpack, IMAGE_SIZE, IMAGE_SIZE, CHAN_1);
+
 //xor_conv3x3_onechan_pooled!(l2_conv_onechan, IMAGE_SIZE, IMAGE_SIZE, CHAN_1);
-//xor_conv3x3_bitpacked!(
-//    l2_conv_bitpacked,
-//    IMAGE_SIZE,
-//    IMAGE_SIZE,
-//    CHAN_1,
-//    CHAN_1,
-//    ((CHAN_1 * 64 * 9) / 2) as u32
-//);
 //boosted_grads_3x3!(l2_grads, IMAGE_SIZE, IMAGE_SIZE, CHAN_1, NUM_CLASSES, 20);
 //bitpack_u64_3d!(l2_bitpack_params, f32, 3, 3, CHAN_1, 0f32);
 //xor_conv3x3_max!(l2_max_label, 1, NUM_CLASSES);
@@ -40,10 +30,7 @@ bitpack_u64_3d!(l1_bitpack_params, f32, 3, 3, CHAN_0, 0f32);
 #[macro_export]
 macro_rules! eval_acc {
     ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $n_labels:expr) => {
-        fn $name(
-            images: &Vec<(u8, [[[u64; $in_chans]; 32]; 32])>,
-            filters: &[[[[u64; $in_chans]; 3]; 3]; $n_labels],
-        ) -> f32 {
+        fn $name(images: &Vec<(u8, [[[u64; $in_chans]; 32]; 32])>, filters: &[[[[u64; $in_chans]; 3]; 3]; $n_labels]) -> f32 {
             xor_conv3x3_onechan_pooled!(conv_onechan, IMAGE_SIZE, IMAGE_SIZE, $in_chans);
             let num_correct: u64 = images
                 .iter()
@@ -89,9 +76,12 @@ macro_rules! bitpack_filter_set {
 bitpack_filter_set!(l1_bitpack, CHAN_0, NUM_CLASSES);
 //bitpack_filter_set!(l2_bitpack, CHAN_1, NUM_CLASSES);
 
+//let start = PreciseTime::now();
+//println!("{} seconds just bitpack", start.to(PreciseTime::now()));
+
 fn main() {
     let test_data_path = String::from("/home/isaac/big/cache/datasets/cifar-100-binary/test.bin");
-    let test_images = cifar::load_images_64chan_100(&test_data_path, 500, true);
+    let test_images = cifar::load_images_64chan_100(&test_data_path, 1000, true);
 
     let data_path = String::from("/home/isaac/big/cache/datasets/cifar-100-binary/train.bin");
     let images = cifar::load_images_64chan_100(&data_path, TRAINING_SIZE, true);
@@ -125,17 +115,22 @@ fn main() {
         }
     }
     // now we must calculate the medians of each channel.
+    let activations: Vec<[[[[u32; 64]; CHAN_1]; IMAGE_SIZE]; IMAGE_SIZE]> =
+        images.iter().map(|x| l1_activations(&l1_filters, &x.1)).collect();
+    println!("done with activations");
 
+    let thresholds = l1_median_activations(&activations);
+    let mut l1_images: Vec<(u8, [[[u64; CHAN_1]; IMAGE_SIZE]; IMAGE_SIZE])> = activations
+        .iter()
+        .map(|x| l1_image_bitpack(&x, &thresholds))
+        .zip(images.iter().map(|(label, _)| label))
+        .map(|(image, &label)| (label, image))
+        .collect();
 
-    //let mut l1_images: Vec<(u8, [[[u64; CHAN_1]; 32]; 32])> = images
-    //    .iter()
-    //    .map(|(label, image)| (*label, l1_conv_bitpacked(&image, &l1_filters)))
-    //    .collect();
-
-    //let mut l1_test_images: Vec<(u8, [[[u64; CHAN_1]; 32]; 32])> = test_images
-    //    .iter()
-    //    .map(|(label, image)| (*label, l1_conv_bitpacked(&image, &l1_filters)))
-    //    .collect();
+    let mut l1_test_imags: Vec<(u8, [[[u64; CHAN_1]; IMAGE_SIZE]; IMAGE_SIZE])> = test_images
+        .iter()
+        .map(|(label, image)| (*label, l1_image_bitpack(&l1_activations(&l1_filters, &image), &thresholds)))
+        .collect();
 
     //for l in 0..20 {
     //    let mut all_filter_sets: Vec<[[[[u64; CHAN_1]; 3]; 3]; 100]> = Vec::new();
