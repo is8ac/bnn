@@ -5,7 +5,7 @@ extern crate time;
 use bitnn::datasets::cifar;
 use time::PreciseTime;
 
-const TRAINING_SIZE: usize = 3000;
+const TRAINING_SIZE: usize = 1000;
 const IMAGE_SIZE: usize = 32;
 const CHAN_0: usize = 1;
 const CHAN_1: usize = 2;
@@ -127,78 +127,10 @@ fn main() {
         .map(|(image, &label)| (label, image))
         .collect();
 
-    let mut l1_test_imags: Vec<(u8, [[[u64; CHAN_1]; IMAGE_SIZE]; IMAGE_SIZE])> = test_images
+    let mut l1_test_images: Vec<(u8, [[[u64; CHAN_1]; IMAGE_SIZE]; IMAGE_SIZE])> = test_images
         .iter()
         .map(|(label, image)| (*label, l1_image_bitpack(&l1_activations(&l1_filters, &image), &thresholds)))
         .collect();
-
-    //for l in 0..20 {
-    //    let mut all_filter_sets: Vec<[[[[u64; CHAN_1]; 3]; 3]; 100]> = Vec::new();
-    //    for b in 0..9 {
-    //        let grads = l2_grads(&l1_images, &all_filter_sets);
-    //        let filters = l2_bitpack(&grads);
-    //        println!(
-    //            "{:?} {:?} l2 acc: {:?}%",
-    //            l,
-    //            b,
-    //            l2_eval(&l1_test_images, &filters) * 100f32
-    //        );
-    //        all_filter_sets.push(filters);
-    //    }
-    //    let mut filters: Vec<[[[u64; CHAN_1]; 3]; 3]> = Vec::new();
-    //    for filter_set in all_filter_sets {
-    //        let mut filters_vec = filter_set.iter().map(|x| *x).collect();
-    //        filters.append(&mut filters_vec);
-    //    }
-    //    filters.sort();
-    //    filters.dedup();
-    //    println!("unique filters: {:?}", filters.len());
-    //    let mut l1_filters = [[[[[0u64; CHAN_1]; 3]; 3]; 64]; CHAN_1];
-    //    for cw in 0..CHAN_1 {
-    //        for b in 0..64 {
-    //            l1_filters[cw][b] = filters[(cw * 64) + b];
-    //        }
-    //    }
-    //    let mut total_ones = 0;
-    //    let mut total_words = 0;
-    //    for cw in 0..CHAN_1 {
-    //        for b in 0..64 {
-    //            for x in 0..3 {
-    //                for y in 0..3 {
-    //                    for c in 0..CHAN_1 {
-    //                        total_words += 1;
-    //                        total_ones += l1_filters[cw][b][x][y][c].count_ones();
-    //                        //println!("{:064b}", l1_filters[cw][b][x][y][c]);
-    //                    }
-    //                }
-    //            }
-    //        }
-    //    }
-    //    println!("filters: avg_ones: {:?}", total_ones as f32 / total_words as f32);
-
-    //    l1_images = l1_images
-    //        .iter()
-    //        .map(|(label, image)| (*label, l2_conv_bitpacked(image, &l1_filters)))
-    //        .collect();
-
-    //    l1_test_images = l1_test_images
-    //        .iter()
-    //        .map(|(label, image)| (*label, l2_conv_bitpacked(image, &l1_filters)))
-    //        .collect();
-
-    //    let mut total_ones = 0;
-    //    let mut total_words = 0;
-    //    for i in 0..1000 {
-    //        for x in 1..31 {
-    //            for y in 1..31 {
-    //                for c in 0..CHAN_1 {
-    //                    total_words += 1;
-    //                    total_ones += l1_images[i].1[x][y][c].count_ones();
-    //                    //println!("{:064b}", l1_images[i].1[x][y][c]);
-    //                }
-    //            }
-    //        }
-    //    }
-    //    println!("images: avg_ones: {:?}", total_ones as f32 / total_words as f32);
-    //}
+    println!("{:?}", l1_images.len());
+    println!("{:?}", l1_test_images.len());
 }
