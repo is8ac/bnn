@@ -5,27 +5,18 @@ extern crate time;
 use bitnn::datasets::cifar;
 use time::PreciseTime;
 
-const TRAINING_SIZE: usize = 1000;
+const TRAINING_SIZE: usize = 10000;
 const IMAGE_SIZE: usize = 32;
 const CHAN_0: usize = 1;
 const CHAN_1: usize = 2;
 const NUM_CLASSES: usize = 100;
 
-//xor_conv3x3_means!(l1_means, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, CHAN_1);
-
-//xor_conv3x3_onechan_pooled!(l1_conv_onechan, IMAGE_SIZE, IMAGE_SIZE, CHAN_0);
 boosted_grads_3x3!(l1_grads, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, NUM_CLASSES, 20);
 bitpack_u64_3d!(l1_bitpack_params, f32, 3, 3, CHAN_0, 0f32);
-//xor_conv3x3_max!(l1_max_label, 1, NUM_CLASSES);
 
 xor_conv3x3_activations!(l1_activations, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, CHAN_1);
 median_activations!(l1_median_activations, IMAGE_SIZE, IMAGE_SIZE, CHAN_0, CHAN_1);
 threshold_and_bitpack_image!(l1_image_bitpack, IMAGE_SIZE, IMAGE_SIZE, CHAN_1);
-
-//xor_conv3x3_onechan_pooled!(l2_conv_onechan, IMAGE_SIZE, IMAGE_SIZE, CHAN_1);
-//boosted_grads_3x3!(l2_grads, IMAGE_SIZE, IMAGE_SIZE, CHAN_1, NUM_CLASSES, 20);
-//bitpack_u64_3d!(l2_bitpack_params, f32, 3, 3, CHAN_1, 0f32);
-//xor_conv3x3_max!(l2_max_label, 1, NUM_CLASSES);
 
 #[macro_export]
 macro_rules! eval_acc {
@@ -50,7 +41,6 @@ macro_rules! eval_acc {
 }
 
 eval_acc!(l1_eval, 32, 32, CHAN_0, NUM_CLASSES);
-//eval_acc!(l2_eval, 32, 32, CHAN_1, NUM_CLASSES);
 
 macro_rules! bitpack_filter_set {
     ($name:ident, $in_chans:expr, $n_labels:expr) => {
@@ -74,14 +64,13 @@ macro_rules! bitpack_filter_set {
 }
 
 bitpack_filter_set!(l1_bitpack, CHAN_0, NUM_CLASSES);
-//bitpack_filter_set!(l2_bitpack, CHAN_1, NUM_CLASSES);
 
 //let start = PreciseTime::now();
 //println!("{} seconds just bitpack", start.to(PreciseTime::now()));
 
 fn main() {
     let test_data_path = String::from("/home/isaac/big/cache/datasets/cifar-100-binary/test.bin");
-    let test_images = cifar::load_images_64chan_100(&test_data_path, 1000, true);
+    let test_images = cifar::load_images_64chan_100(&test_data_path, 10000, true);
 
     let data_path = String::from("/home/isaac/big/cache/datasets/cifar-100-binary/train.bin");
     let images = cifar::load_images_64chan_100(&data_path, TRAINING_SIZE, true);

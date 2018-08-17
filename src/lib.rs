@@ -286,11 +286,7 @@ pub mod layers {
     #[macro_export]
     macro_rules! xor_conv3x3_isin_topn {
         ($name:ident, $in_chans:expr, $n_labels:expr, $n:expr) => {
-            fn $name(
-                input: &[[[u64; $in_chans]; 3]; 3],
-                filters: &[[[[u64; $in_chans]; 3]; 3]; $n_labels],
-                label: usize,
-            ) -> bool {
+            fn $name(input: &[[[u64; $in_chans]; 3]; 3], filters: &[[[[u64; $in_chans]; 3]; 3]; $n_labels], label: usize) -> bool {
                 let target_sum = xor_conv3x3_infer!($in_chans, filters[label], input);
                 let mut n_wrong = 0;
                 for target in 0..$n_labels {
@@ -303,6 +299,142 @@ pub mod layers {
                     }
                 }
                 true
+            }
+        };
+    }
+    #[macro_export]
+    macro_rules! bitpack_filter_set {
+        ($name:ident, $in_chans:expr, $n_labels:expr) => {
+            fn $name(grads: &[[[[[f32; 64]; $in_chans]; 3]; 3]; $n_labels]) -> [[[[u64; $in_chans]; 3]; 3]; $n_labels] {
+                let mut filters = [[[[0u64; $in_chans]; 3]; 3]; $n_labels];
+                for l in 0..$n_labels {
+                    for x in 0..3 {
+                        for y in 0..3 {
+                            for iw in 0..$in_chans {
+                                for b in 0..64 {
+                                    let bit = grads[l][x][y][iw][b] > 0f32;
+                                    filters[l][x][y][iw] = filters[l][x][y][iw] | ((bit as u64) << b);
+                                }
+                            }
+                        }
+                    }
+                }
+                filters
+            }
+        };
+    }
+
+    #[macro_export]
+    macro_rules! par_xor_conv3x3_median_activations {
+        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
+            fn $name(
+                filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans],
+                inputs: &Vec<&[[[u64; $in_chans]; $y_size]; $x_size]>,
+            ) -> [[u32; 64]; $out_chans] {
+                let thresholds_vec: Vec<[u32; 64]> = filters
+                    .par_iter()
+                    .map(|filter_word| {
+                        let thresholds_word_vec: Vec<u32> = filter_word
+                            .par_iter()
+                            .map(|filter| {
+                                let mut chan_activations: Vec<u32> = Vec::with_capacity(inputs.len() * $x_size * $y_size);
+                                for input in inputs {
+                                    for x in 0..$x_size - 2 {
+                                        for y in 0..$y_size - 2 {
+                                            let mut sum = 0;
+                                            for px in 0..3 {
+                                                for py in 0..3 {
+                                                    for iw in 0..$in_chans {
+                                                        sum += (filter[px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
+                                                    }
+                                                }
+                                            }
+                                            chan_activations.push(sum);
+                                        }
+                                    }
+                                }
+                                chan_activations.sort_unstable();
+                                chan_activations[(inputs.len() * $x_size * $y_size) / 2]
+                            })
+                            .collect();
+                        let mut thresholds_word = [0u32; 64];
+                        for i in 0..64 {
+                            thresholds_word[i] = thresholds_word_vec[i];
+                        }
+                        thresholds_word
+                    })
+                    .collect();
+                let mut thresholds = [[0u32; 64]; $out_chans];
+                for i in 0..$out_chans {
+                    thresholds[i] = thresholds_vec[i];
+                }
+                thresholds
+            }
+        };
+    }
+
+    #[macro_export]
+    macro_rules! xor_conv3x3_median_activations {
+        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
+            fn $name(
+                filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans],
+                inputs: &Vec<&[[[u64; $in_chans]; $y_size]; $x_size]>,
+            ) -> [[u32; 64]; $out_chans] {
+                let mut thresholds = [[0u32; 64]; $out_chans];
+                for ow in 0..$out_chans {
+                    for ob in 0..64 {
+                        let mut chan_activations: Vec<u32> = Vec::with_capacity(inputs.len() * $x_size * $y_size);
+                        for input in inputs {
+                            for x in 0..$x_size - 2 {
+                                for y in 0..$y_size - 2 {
+                                    let mut sum = 0;
+                                    for px in 0..3 {
+                                        for py in 0..3 {
+                                            for iw in 0..$in_chans {
+                                                sum += (filters[ow][ob][px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
+                                            }
+                                        }
+                                    }
+                                    chan_activations.push(sum);
+                                }
+                            }
+                        }
+                        chan_activations.sort_unstable();
+                        thresholds[ow][ob] = chan_activations[(inputs.len() * $x_size * $y_size) / 2];
+                    }
+                }
+                thresholds
+            }
+        };
+    }
+
+    #[macro_export]
+    macro_rules! fused_xor_conv3x3_and_bitpack {
+        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
+            fn $name(
+                input: &[[[u64; $in_chans]; $y_size]; $x_size],
+                filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans],
+                thresholds: &[[u32; 64]; $out_chans],
+            ) -> [[[u64; $out_chans]; $y_size]; $x_size] {
+                let mut output = [[[0u64; $out_chans]; $y_size]; $x_size];
+                for x in 0..$x_size - 2 {
+                    for y in 0..$y_size - 2 {
+                        for ow in 0..$out_chans {
+                            for ob in 0..64 {
+                                let mut sum = 0;
+                                for px in 0..3 {
+                                    for py in 0..3 {
+                                        for iw in 0..$in_chans {
+                                            sum += (filters[ow][ob][px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
+                                        }
+                                    }
+                                }
+                                output[x][y][ow] = output[x][y][ow] | (((sum > thresholds[ow][ob]) as u64) << ob);
+                            }
+                        }
+                    }
+                }
+                output
             }
         };
     }
@@ -347,8 +479,7 @@ pub mod layers {
                     for y in 0..$y_size {
                         for c in 0..$out_chans {
                             for b in 0..64 {
-                                output[x][y][c] =
-                                    output[x][y][c] | (((input[x][y][c][b] > thresholds[c][b]) as u64) << b);
+                                output[x][y][c] = output[x][y][c] | (((input[x][y][c][b] > thresholds[c][b]) as u64) << b);
                             }
                         }
                     }
@@ -358,33 +489,6 @@ pub mod layers {
         };
     }
 
-    #[macro_export]
-    macro_rules! median_activations {
-        ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
-            fn $name(
-                pixel_activations: &Vec<[[[[u32; 64]; $out_chans]; $y_size]; $x_size]>,
-            ) -> [[u32; 64]; $out_chans] {
-                let mut medians = [[0u32; 64]; $out_chans];
-                for c in 0..$out_chans {
-                    for b in 0..64 {
-                        let mut chan_activations: Vec<u32> = Vec::with_capacity(pixel_activations.len());
-                        for e in 0..pixel_activations.len() {
-                            for x in 0..$x_size {
-                                for y in 0..$y_size {
-                                    chan_activations.push(pixel_activations[e][x][y][c][b]);
-                                }
-                            }
-                        }
-                        chan_activations.sort();
-                        //println!("{:?}", chan_activations);
-                        //println!("{:?}", pixel_activations.len() / 2);
-                        medians[c][b] = chan_activations[(pixel_activations.len() * $x_size * $y_size) / 2];
-                    }
-                }
-                medians
-            }
-        };
-    }
     #[macro_export]
     macro_rules! xor_conv3x3_onechan_pooled {
         ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr) => {
@@ -423,6 +527,29 @@ pub mod layers {
                     }
                 }
                 params
+            }
+        };
+    }
+    #[macro_export]
+    macro_rules! or_pooling {
+        ($name:ident, $x_size:expr, $y_size:expr, $chans:expr) => {
+            fn $name(image: &[[[u64; $chans]; $y_size]; $x_size]) -> [[[u64; $chans]; $y_size / 2]; $x_size / 2] {
+                let mut pooled = [[[0u64; $chans]; $y_size / 2]; $x_size / 2];
+                for x in 0..($x_size / 2) {
+                    let x_base = x * 2;
+                    for y in 0..($y_size / 2) {
+                        let y_base = y * 2;
+                        for c in 0..$chans {
+                            //println!("x: {:?}, y: {:?}", x, y);
+                            pooled[x][y][c] = !image[x_base + 0][y_base + 0][c]
+                                | !image[x_base + 0][y_base + 1][c]
+                                | !image[x_base + 1][y_base + 0][c]
+                                | !image[x_base + 1][y_base + 1][c];
+                                //println!("{:064b}", pooled[x][y][c]);
+                        }
+                    }
+                }
+                pooled
             }
         };
     }
@@ -468,8 +595,7 @@ pub mod layers {
                                             // and for each bit,
                                             for ib in 0..64 {
                                                 // increment the counter for the bit of that label
-                                                label_sums[*label as usize][px][py][iw][ib] +=
-                                                    ((patch[px][py][iw] >> ib) & 0b1u64) as u32;
+                                                label_sums[*label as usize][px][py][iw][ib] += ((patch[px][py][iw] >> ib) & 0b1u64) as u32;
                                             }
                                         }
                                     }
