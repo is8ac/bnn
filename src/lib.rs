@@ -541,10 +541,10 @@ pub mod layers {
                         let y_base = y * 2;
                         for c in 0..$chans {
                             //println!("x: {:?}, y: {:?}", x, y);
-                            pooled[x][y][c] = !image[x_base + 0][y_base + 0][c]
-                                | !image[x_base + 0][y_base + 1][c]
-                                | !image[x_base + 1][y_base + 0][c]
-                                | !image[x_base + 1][y_base + 1][c];
+                            pooled[x][y][c] = image[x_base + 0][y_base + 0][c]
+                                | image[x_base + 0][y_base + 1][c]
+                                | image[x_base + 1][y_base + 0][c]
+                                | image[x_base + 1][y_base + 1][c];
                                 //println!("{:064b}", pooled[x][y][c]);
                         }
                     }
