@@ -1,4 +1,3 @@
-#[macro_use]
 extern crate bitnn;
 extern crate rayon;
 extern crate time;
@@ -6,9 +5,9 @@ extern crate time;
 use bitnn::datasets::mnist;
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::collections::HashSet;
-use time::PreciseTime;
+//use time::PreciseTime;
 
+#[allow(unused_macros)]
 macro_rules! avg_bits {
     ($examples:expr, $in_size:expr) => {{
         let sums: Box<[[u32; 64]; $in_size]> = $examples
@@ -46,6 +45,7 @@ macro_rules! avg_bits {
     }};
 }
 
+#[allow(unused_macros)]
 macro_rules! fc_split {
     ($name:ident, $in_size:expr, $n_labels:expr) => {
         fn $name(a: &Vec<&[u64; $in_size]>, b: &Vec<&[u64; $in_size]>) -> [u64; $in_size] {
@@ -63,7 +63,7 @@ macro_rules! fc_split {
         }
     };
 }
-
+#[allow(unused_macros)]
 macro_rules! fc_infer {
     ($in_size:expr, $weights:expr, $input:expr) => {{
         let mut sum = 0;
@@ -73,7 +73,7 @@ macro_rules! fc_infer {
         sum
     }};
 }
-
+#[allow(unused_macros)]
 macro_rules! fc_features {
     ($name:ident, $in_size:expr, $n_labels:expr) => {
         fn $name(examples: &Vec<&(usize, [u64; $in_size])>, level: usize) -> Vec<(u32, [u64; $in_size])> {
@@ -125,22 +125,22 @@ macro_rules! fc_features {
     };
 }
 
-macro_rules! pack_filters {
-    ($name:ident, $in_size:expr, $out_size:expr) => {
-        fn $name(input: Vec<(u32, [u64; $in_size])>) -> ([[u32; 64]; $out_size], [[[u64; $in_size]; 64]; $out_size]) {
-            let mut packed_weights = [[[0u64; $in_size]; 64]; $out_size];
-            let mut thresholds = [[0u32; 64]; $out_size];
-            for o in 0..$out_size {
-                for b in 0..64 {
-                    thresholds[o][b] = input[(o * 64) + b].0;
-                    packed_weights[o][b] = input[(o * 64) + b].1;
-                }
-            }
-            (thresholds, packed_weights)
-        }
-    };
-}
-
+//macro_rules! pack_filters {
+//    ($name:ident, $in_size:expr, $out_size:expr) => {
+//        fn $name(input: Vec<(u32, [u64; $in_size])>) -> ([[u32; 64]; $out_size], [[[u64; $in_size]; 64]; $out_size]) {
+//            let mut packed_weights = [[[0u64; $in_size]; 64]; $out_size];
+//            let mut thresholds = [[0u32; 64]; $out_size];
+//            for o in 0..$out_size {
+//                for b in 0..64 {
+//                    thresholds[o][b] = input[(o * 64) + b].0;
+//                    packed_weights[o][b] = input[(o * 64) + b].1;
+//                }
+//            }
+//            (thresholds, packed_weights)
+//        }
+//    };
+//}
+#[allow(unused_macros)]
 macro_rules! vector_fused_xor_popcount_threshold_and_bitpack {
     ($name:ident, $in_size:expr, $out_size:expr) => {
         fn $name(input: &[u64; $in_size], weights: &Vec<(u32, [u64; $in_size])>) -> [u64; $out_size] {
@@ -154,21 +154,21 @@ macro_rules! vector_fused_xor_popcount_threshold_and_bitpack {
     };
 }
 
-macro_rules! fused_xor_popcount_threshold_and_bitpack {
-    ($name:ident, $in_size:expr, $out_size:expr) => {
-        fn $name(input: &[u64; $in_size], weights: &[[[u64; $in_size]; 64]; $out_size], thresholds: &[[u32; 64]; $out_size]) -> [u64; $out_size] {
-            let mut output = [0u64; $out_size];
-            for o in 0..$out_size {
-                for b in 0..64 {
-                    let bit = fc_infer!($in_size, weights[o][b], input) > thresholds[o][b];
-                    output[o] = output[o] | ((bit as u64) << b);
-                }
-            }
-            output
-        }
-    };
-}
-
+//macro_rules! fused_xor_popcount_threshold_and_bitpack {
+//    ($name:ident, $in_size:expr, $out_size:expr) => {
+//        fn $name(input: &[u64; $in_size], weights: &[[[u64; $in_size]; 64]; $out_size], thresholds: &[[u32; 64]; $out_size]) -> [u64; $out_size] {
+//            let mut output = [0u64; $out_size];
+//            for o in 0..$out_size {
+//                for b in 0..64 {
+//                    let bit = fc_infer!($in_size, weights[o][b], input) > thresholds[o][b];
+//                    output[o] = output[o] | ((bit as u64) << b);
+//                }
+//            }
+//            output
+//        }
+//    };
+//}
+#[allow(unused_macros)]
 macro_rules! fc_is_correct {
     ($name:ident, $in_size:expr, $n_labels:expr) => {
         fn $name(input: &[u64; $in_size], label: usize, weights: &[[u64; $in_size]; $n_labels]) -> bool {
@@ -185,7 +185,7 @@ macro_rules! fc_is_correct {
         }
     };
 }
-
+#[allow(unused_macros)]
 macro_rules! readout_filters {
     ($name:ident, $in_size:expr, $n_labels:expr) => {
         fn $name(examples: &Vec<&(usize, [u64; $in_size])>) -> [[u64; $in_size]; $n_labels] {
@@ -215,58 +215,138 @@ fn remove_index_from_2d_vec(matrix: &mut HashMap<usize, HashMap<usize, f64>>, in
     }
 }
 
+macro_rules! cov_matrix_bitpacked {
+    ($name:ident, $in_size:expr) => {
+        fn $name(inputs: &Vec<[u64; $in_size]>) -> HashMap<usize, HashMap<usize, f64>> {
+            let len = inputs.len() as f64;
+            let n_features = $in_size * 64;
+            let mut matrix: HashMap<usize, HashMap<usize, f64>> = inputs
+                .par_iter()
+                .fold(
+                    || vec![vec![0i32; n_features]; n_features],
+                    |mut counts, input| {
+                        // for each datum, calculate the features, storing each as an i8 of either -1 or +1 for latter convenience.
+                        // fc_infer XORs the input with the provided filter and counts the bits set.
+                        // We convert the bits into an i8 of either -1 or +1.
+                        let features: Vec<i8> = (0..n_features)
+                            .map(|index| (((input[index / 64] >> (index % 64)) & 0b1u64) as u8) as i8 * 2 - 1)
+                            .collect();
+                        // For each permutaion of features, multiply and increment the counts accordingly.
+                        for a in 0..n_features {
+                            for b in a..n_features {
+                                counts[a][b] += (features[a] * features[b]) as i32;
+                            }
+                        }
+                        counts
+                    },
+                )
+                .reduce(
+                    || vec![vec![0i32; n_features]; n_features],
+                    |mut x, y| {
+                        for a in 0..n_features {
+                            for b in a..n_features {
+                                x[a][b] += y[a][b];
+                            }
+                        }
+                        x
+                    },
+                )
+                .iter()
+                .map(|x| x.iter().enumerate().map(|(index, &val)| (index, val.abs() as f64 / len)).collect())
+                .enumerate()
+                .collect();
+
+            for a in 0..n_features {
+                for b in a..n_features {
+                    let value = matrix[&a][&b];
+                    matrix.get_mut(&b).unwrap().insert(a, value);
+                }
+            }
+            matrix
+        }
+    };
+}
+
+#[allow(unused_macros)]
+macro_rules! cov_mask {
+    ($name:ident, $in_size:expr, $n_features:expr) => {
+        fn $name(inputs: &Vec<[u64; $in_size]>, target_len: usize) -> [bool; $n_features] {
+            cov_matrix_bitpacked!(cov_matrix, $in_size);
+            let mut matrix = cov_matrix(&inputs);
+            // Now, many times,
+            for _i in 0..$n_features - target_len {
+                // we find the index of the largest average covariance.
+                let (largest_index, _val): (usize, f64) = matrix
+                    .iter()
+                    .map(|(&index, vals)| {
+                        let sum: f64 = vals.iter().map(|(_, &val)| val).sum();
+                        (index, sum / $n_features as f64)
+                    })
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    .unwrap();
+                // and remove it from both dimentions of the matrix.
+                remove_index_from_2d_vec(&mut matrix, largest_index);
+            }
+            let mut indices: Vec<usize> = matrix.iter().map(|(&index, _)| index).collect();
+            indices.sort();
+            println!("{:?}", indices);
+            let mut filter = [false; $n_features];
+            for i in indices {
+                filter[i] = true;
+            }
+            filter
+        }
+    };
+}
+
 // cov_filter creates a function to generate a subset of the features which have low covariance.
 // inputs is the unlabeled raw data.
 // parameters is the filters and corresponding thresholds generated by some dataset fracturing algorithm.
+#[allow(unused_macros)]
 macro_rules! cov_filter {
     ($name:ident, $in_size:expr, $n_features:expr) => {
         fn $name(inputs: &Vec<[u64; $in_size]>, parameters: &[(u32, [u64; $in_size]); $n_features], target_len: usize) -> Vec<(u32, [u64; $in_size])> {
             let len = inputs.len() as f64;
             // First we must create a nested HashMap of the covariances betwene the features.
             let mut matrix: HashMap<usize, HashMap<usize, f64>> = inputs
-                                .par_iter()
-                                .fold(
-                                    || Box::new([[0i32; $n_features]; $n_features]),
-                                    |mut counts, input| {
-                                        // for each datum, calculate the features, storing each as an i8 of ethro -1 or +1 for latter convenience.
-                                        let features: Vec<i8> = parameters
-                                            .iter()
-                                            // fc_infer XORs the input with the provided filter and counts the bits set. We convert the bool into an i8 of either -1 or +1.
-                                            .map(|(threshold, filter)| ((fc_infer!($in_size, filter, input) > *threshold) as u8) as i8 * 2 - 1)
-                                            .collect();
-                                        // for each permutaion of features, multiply and increment the counts accordingly.
-                                        // Note that, as multiplication is commutative, we are doing twice as much work as we need to do. But it's cheap.
-                                        for a in 0..$n_features {
-                                            for b in 0..$n_features {
-                                                counts[a][b] += (features[a] * features[b]) as i32;
-                                            }
-                                        }
-                                        counts
-                                    },
-                                )
-                                // par_iter().fold() requires us to reduce the result.
-                                .reduce(
-                                    || Box::new([[0i32; $n_features]; $n_features]),
-                                    |mut x, y| {
-                                        for a in 0..$n_features {
-                                            for b in 0..$n_features {
-                                                x[a][b] += y[a][b];
-                                            }
-                                        }
-                                        x
-                                    },
-                                )
-                                // At this point, we have a n_features x n_features square array of i32s.
-                                // We must scale them by the number of elements.
-                                // Negative co covariance is still covariance, so we abs them as well.
-                                .iter()
-                                .map(|x| x.iter().enumerate().map(|(index, &val)| (index, val.abs() as f64 / len)).collect())
-                                .enumerate()
-                                .collect();
+                .par_iter()
+                .fold(
+                    || Box::new([[0i32; $n_features]; $n_features]),
+                    |mut counts, input| {
+                        // for each datum, calculate the features, storing each as an i8 of either -1 or +1 for latter convenience.
+                        let features: Vec<i8> = parameters
+                            .iter()
+                            .map(|(threshold, filter)| ((fc_infer!($in_size, filter, input) > *threshold) as u8) as i8 * 2 - 1)
+                            .collect();
+                        // for each permutaion of features, multiply and increment the counts accordingly.
+                        // Note that, as multiplication is commutative, we are doing twice as much work as we need to do. But it's cheap.
+                        for a in 0..$n_features {
+                            for b in 0..$n_features {
+                                counts[a][b] += (features[a] * features[b]) as i32;
+                            }
+                        }
+                        counts
+                    },
+                )
+                .reduce(
+                    || Box::new([[0i32; $n_features]; $n_features]),
+                    |mut x, y| {
+                        for a in 0..$n_features {
+                            for b in 0..$n_features {
+                                x[a][b] += y[a][b];
+                            }
+                        }
+                        x
+                    },
+                )
+                .iter()
+                .map(|x| x.iter().enumerate().map(|(index, &val)| (index, val.abs() as f64 / len)).collect())
+                .enumerate()
+                .collect();
             // Now, many times,
-            for i in 0..$n_features - target_len {
+            for _i in 0..$n_features - target_len {
                 // we find the index of the largest average avg covariance.
-                let (largest_index, val): (usize, f64) = matrix
+                let (largest_index, _val): (usize, f64) = matrix
                     .iter()
                     .map(|(&index, vals)| {
                         let sum: f64 = vals.iter().map(|(_, &val)| val).sum();
@@ -282,6 +362,7 @@ macro_rules! cov_filter {
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! vec2array {
     ($vector:expr, $size:expr, $type:expr) => {{
         let mut array = [$type; $size];
@@ -291,7 +372,7 @@ macro_rules! vec2array {
         array
     }};
 }
-
+#[allow(unused_macros)]
 macro_rules! print_acc {
     ($in_size:expr, $n_labels:expr, $examples:expr, $test_examples:expr) => {{
         readout_filters!(readouts, $in_size, $n_labels);
@@ -308,17 +389,21 @@ macro_rules! print_acc {
 }
 
 const TRAIN_SIZE: usize = 6000;
-const L1_SIZE: usize = 4;
-//const L2_SIZE: usize = 4;
-//const L3_SIZE: usize = 4;
+//const L1_POWER: usize = 7;
+//const L1_N_FILTERS: usize = 128;
+//const L1_SIZE: usize = L1_N_FILTERS / 64;
+//const L2_SIZE: usize = 2;
+//const L2_N_FILTERS: usize = 128;
 
-fc_features!(l1_features, 13, 10);
-cov_filter!(l1_cov_filter, 13, 256);
-vector_fused_xor_popcount_threshold_and_bitpack!(l1_fxoptbp, 13, L1_SIZE);
-//
+cov_mask!(l1_cov_mask, 13, 13 * 64);
+
+//fc_features!(l1_features, 13, 10);
+////cov_filter!(l1_cov_filter, 13, L1_N_FILTERS);
+//vector_fused_xor_popcount_threshold_and_bitpack!(l1_fxoptbp, 13, L1_SIZE);
+
 //fc_features!(l2_features, L1_SIZE, 10);
-//pack_filters!(l2_pack, L1_SIZE, L2_SIZE);
-//fused_xor_popcount_threshold_and_bitpack!(l2_fxoptbp, L1_SIZE, L2_SIZE);
+//cov_filter!(l2_cov_filter, L1_SIZE, L2_N_FILTERS);
+//vector_fused_xor_popcount_threshold_and_bitpack!(l2_fxoptbp, L1_SIZE, L2_SIZE);
 
 fn main() {
     let images = mnist::load_images_bitpacked(&String::from("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"), TRAIN_SIZE);
@@ -326,20 +411,26 @@ fn main() {
     let examples: Vec<(usize, [u64; 13])> = labels.iter().zip(images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
     let examples: Vec<&(usize, [u64; 13])> = examples.iter().collect();
     //print_acc!(13, 10, examples, examples);
+    println!("data loaded",);
 
-    let features_vec = l1_features(&examples, 8);
-    let features_array = vec2array!(features_vec, 256, (0u32, [0u64; 13]));
-    let parameters = l1_cov_filter(&images, &features_array, 64);
-    //println!("{:?}", parameters.len());
+    let mask = l1_cov_mask(&images, 400);
+    for val in mask.iter() {
+        print!("{:?}, ", val);
+    }
+    //let features_vec = l1_features(&examples, L1_POWER);
+    ////let features_array = vec2array!(features_vec, L1_N_FILTERS, (0u32, [0u64; 13]));
+    ////let parameters = l1_cov_filter(&images, &features_array, 128);
+    ////println!("{:?}", parameters.len());
 
-    let new_images: Vec<[u64; L1_SIZE]> = images.par_iter().map(|image| l1_fxoptbp(&image, &parameters)).collect();
-    let examples: Vec<(usize, [u64; L1_SIZE])> = labels.iter().zip(new_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
-    let examples: Vec<&(usize, [u64; L1_SIZE])> = examples.iter().collect();
-    print_acc!(L1_SIZE, 10, examples, examples);
+    //let new_images: Vec<[u64; L1_SIZE]> = images.par_iter().map(|image| l1_fxoptbp(&image, &features_vec)).collect();
+    //let examples: Vec<(usize, [u64; L1_SIZE])> = labels.iter().zip(new_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
+    //let examples: Vec<&(usize, [u64; L1_SIZE])> = examples.iter().collect();
+    //print_acc!(L1_SIZE, 10, examples, examples);
 
-    //let features_vec = l2_features(&examples, 8);
-    //let (thresholds, weights) = l2_pack(features_vec);
-    //let new_images: Vec<[u64; L2_SIZE]> = new_images.par_iter().map(|image| l2_fxoptbp(&image, &weights, &thresholds)).collect();
+    //let features_vec = l2_features(&examples, 7);
+    ////let features_array = vec2array!(features_vec, L2_N_FILTERS, (0u32, [0u64; L1_SIZE]));
+    ////let parameters = l2_cov_filter(&new_images, &features_array, 128);
+    //let new_images: Vec<[u64; L2_SIZE]> = new_images.par_iter().map(|image| l2_fxoptbp(&image, &features_vec)).collect();
     //let examples: Vec<(usize, [u64; L2_SIZE])> = labels.iter().zip(new_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
     //let examples: Vec<&(usize, [u64; L2_SIZE])> = examples.iter().collect();
     //print_acc!(L2_SIZE, 10, examples, examples);
