@@ -267,34 +267,45 @@ macro_rules! cov_matrix_bitpacked {
     };
 }
 
-#[allow(unused_macros)]
-macro_rules! cov_mask {
-    ($name:ident, $in_size:expr, $n_features:expr) => {
-        fn $name(inputs: &Vec<[u64; $in_size]>, target_len: usize) -> [bool; $n_features] {
-            cov_matrix_bitpacked!(cov_matrix, $in_size);
-            let mut matrix = cov_matrix(&inputs);
-            // Now, many times,
-            for _i in 0..$n_features - target_len {
+macro_rules! threshold_cov_matrix_filter {
+    ($name:ident) => {
+        fn $name(mut cov_matrix: HashMap<usize, HashMap<usize, f64>>, threshold: f64) -> Vec<usize> {
+            let mut val: (usize, f64) = (0, 123f64);
+            while val.1 > threshold {
                 // we find the index of the largest average covariance.
-                let (largest_index, _val): (usize, f64) = matrix
+                let n_features = cov_matrix.len() as f64;
+                val = cov_matrix
                     .iter()
                     .map(|(&index, vals)| {
                         let sum: f64 = vals.iter().map(|(_, &val)| val).sum();
-                        (index, sum / $n_features as f64)
+                        (index, sum / n_features)
                     })
                     .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
                     .unwrap();
                 // and remove it from both dimentions of the matrix.
-                remove_index_from_2d_vec(&mut matrix, largest_index);
+                if val.1 > threshold {
+                    remove_index_from_2d_vec(&mut cov_matrix, val.0);
+                }
             }
-            let mut indices: Vec<usize> = matrix.iter().map(|(&index, _)| index).collect();
-            indices.sort();
-            println!("{:?}", indices);
-            let mut filter = [false; $n_features];
-            for i in indices {
-                filter[i] = true;
+            cov_matrix.iter().map(|(&index, _)| index).collect()
+        }
+    };
+}
+
+#[allow(unused_macros)]
+macro_rules! cov_mask {
+    ($name:ident, $in_size:expr, $n_features:expr) => {
+        fn $name(inputs: &Vec<[u64; $in_size]>, threshold: f64) -> [u64; $in_size] {
+            cov_matrix_bitpacked!(cov_matrix, $in_size);
+            threshold_cov_matrix_filter!(threshold_filter);
+            let mut matrix = cov_matrix(&inputs);
+            let indices = threshold_filter(matrix, threshold);
+            print!("{:?} ", indices.len());
+            let mut mask = [0u64; $in_size];
+            for index in indices {
+                mask[index / 64] = mask[index / 64] | (0b1u64 << (index % 64));
             }
-            filter
+            mask
         }
     };
 }
@@ -372,6 +383,7 @@ macro_rules! vec2array {
         array
     }};
 }
+
 #[allow(unused_macros)]
 macro_rules! print_acc {
     ($in_size:expr, $n_labels:expr, $examples:expr, $test_examples:expr) => {{
@@ -384,11 +396,11 @@ macro_rules! print_acc {
             .map(|x| x as u64)
             .sum();
         let avg_correct = total_correct as f32 / $test_examples.len() as f32;
-        println!("acc: {:?}%", avg_correct * 100f32);
+        println!(" | {:?}%", avg_correct * 100f32);
     }};
 }
 
-const TRAIN_SIZE: usize = 6000;
+const TRAIN_SIZE: usize = 60000;
 //const L1_POWER: usize = 7;
 //const L1_N_FILTERS: usize = 128;
 //const L1_SIZE: usize = L1_N_FILTERS / 64;
@@ -405,18 +417,50 @@ cov_mask!(l1_cov_mask, 13, 13 * 64);
 //cov_filter!(l2_cov_filter, L1_SIZE, L2_N_FILTERS);
 //vector_fused_xor_popcount_threshold_and_bitpack!(l2_fxoptbp, L1_SIZE, L2_SIZE);
 
+fn print_image(image: &[u64; 13]) {
+    let mut bits = vec![];
+    for word in image {
+        let mut chars: Vec<char> = format!("{:064b}", word).chars().collect();
+        chars.reverse();
+        bits.append(&mut chars);
+    }
+    let rows = bits.chunks(28);
+    for row in rows {
+        let string: String = row.iter().collect();
+        println!("{:}", string);
+    }
+}
+
+macro_rules! apply_mask {
+    ($in_size:expr, $mask:expr, $input:expr) => {{
+        let mut output = [0u64; 13];
+        for i in 0..$in_size {
+            output[i] = $mask[i] & $input[i];
+        }
+        output
+    }};
+}
+
 fn main() {
     let images = mnist::load_images_bitpacked(&String::from("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"), TRAIN_SIZE);
     let labels = mnist::load_labels(&String::from("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"), TRAIN_SIZE);
     let examples: Vec<(usize, [u64; 13])> = labels.iter().zip(images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
     let examples: Vec<&(usize, [u64; 13])> = examples.iter().collect();
+    //println!("pre mask:");
     //print_acc!(13, 10, examples, examples);
-    println!("data loaded",);
 
-    let mask = l1_cov_mask(&images, 400);
-    for val in mask.iter() {
-        print!("{:?}, ", val);
-    }
+    //for &thresh in [0.12f64, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0].iter() {
+    //    let mask = l1_cov_mask(&images, thresh);
+
+    //    let new_images: Vec<[u64; 13]> = images.par_iter().map(|image| apply_mask!(13, mask, image)).collect();
+    //    let examples: Vec<(usize, [u64; 13])> = labels.iter().zip(new_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
+    //    let examples: Vec<&(usize, [u64; 13])> = examples.iter().collect();
+    //    print!("| {:?} ", thresh);
+    //    print_acc!(13, 10, examples, examples);
+    //}
+    let mask = l1_cov_mask(&images, 0.14);
+    print_image(&mask);
+
     //let features_vec = l1_features(&examples, L1_POWER);
     ////let features_array = vec2array!(features_vec, L1_N_FILTERS, (0u32, [0u64; 13]));
     ////let parameters = l1_cov_filter(&images, &features_array, 128);
