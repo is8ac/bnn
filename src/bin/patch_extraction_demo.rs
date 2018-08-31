@@ -230,8 +230,14 @@ fn main() {
     let start = PreciseTime::now();
     let patch_sets = extract_patches_set(&images);
     println!("patch extraction: {}", start.to(PreciseTime::now()));
-    let readout_weights = l1_readout(&patch_sets, 0.054);
     {
+        let readout_weights = l1_readout(&patch_sets, 0.054);
+        for (signs, mask) in readout_weights.iter() {
+            println!("filter", );
+            for word in mask.iter() {
+                println!("{:064b}", word);
+            }
+        }
         let data_path = String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/test_batch.bin");
         let images = cifar::load_images_64chan_10(&data_path, 10000);
         let patch_sets = extract_patches_set(&images);

@@ -10,36 +10,32 @@ use std::collections::HashMap;
 #[allow(unused_macros)]
 macro_rules! avg_bits {
     ($examples:expr, $in_size:expr) => {{
-        let sums: Box<[[u32; 64]; $in_size]> = $examples
+        let sums: Vec<u32> = $examples
             .par_iter()
             .fold(
-                || Box::new([[0u32; 64]; $in_size]),
+                || vec![0u32; $in_size * 64],
                 |mut counts, example| {
                     for i in 0..$in_size {
+                        let offset = i * 64;
                         for b in 0..64 {
-                            counts[i][b] += ((example[i] >> b) & 0b1u64) as u32;
+                            counts[offset + b] += ((example[i] >> b) & 0b1u64) as u32;
                         }
                     }
                     counts
                 },
-            )
-            .reduce(
-                || Box::new([[0u32; 64]; $in_size]),
+            ).reduce(
+                || vec![0u32; $in_size * 64],
                 |mut a, b| {
-                    for i in 0..$in_size {
-                        for bit in 0..64 {
-                            a[i][bit] += b[i][bit];
-                        }
+                    for i in 0..$in_size * 64 {
+                        a[i] += b[i];
                     }
                     a
                 },
             );
-        let mut avgs = [[0f32; 64]; $in_size];
-        let len = $examples.len() as f32;
-        for i in 0..$in_size {
-            for b in 0..64 {
-                avgs[i][b] = sums[i][b] as f32 / len;
-            }
+        let len = $examples.len() as f64;
+        let mut avgs = [0f64; $in_size * 64];
+        for i in 0..$in_size * 64 {
+            avgs[i] = sums[i] as f64 / len;
         }
         avgs
     }};
@@ -47,37 +43,41 @@ macro_rules! avg_bits {
 
 #[allow(unused_macros)]
 macro_rules! fc_split {
-    ($name:ident, $in_size:expr, $n_labels:expr) => {
-        fn $name(a: &Vec<&[u64; $in_size]>, b: &Vec<&[u64; $in_size]>) -> [u64; $in_size] {
+    ($name:ident, $in_size:expr) => {
+        fn $name(a: &Vec<&[u64; $in_size]>, b: &Vec<&[u64; $in_size]>, mask_thresh: f64) -> ([u64; $in_size], [u64; $in_size]) {
             let a_avg = avg_bits!(a, $in_size);
             let b_avg = avg_bits!(b, $in_size);
-            let mut filter = [0u64; $in_size];
-            for i in 0..$in_size {
-                for b in 0..64 {
-                    let grad = a_avg[i][b] - b_avg[i][b];
-                    let bit = grad > 0f32;
-                    filter[i] = filter[i] | ((bit as u64) << b);
-                }
+            let mut weights = ([0u64; $in_size], [0u64; $in_size]);
+            for i in 0..$in_size * 64 {
+                let word = i / 64;
+                let bit = i % 64;
+                let grad = a_avg[i] - b_avg[i];
+                let sign = grad > 0f64;
+                weights.1[word] = weights.1[word] | ((sign as u64) << bit);
+                let magn = grad.abs() > mask_thresh;
+                weights.0[word] = weights.0[word] | ((magn as u64) << bit);
             }
-            filter
+            weights
         }
     };
 }
+
 #[allow(unused_macros)]
 macro_rules! fc_infer {
-    ($in_size:expr, $weights:expr, $input:expr) => {{
+    ($in_size:expr, $input:expr, $mask:expr, $signs:expr) => {{
         let mut sum = 0;
         for i in 0..$in_size {
-            sum += ($weights[i] ^ $input[i]).count_ones();
+            sum += (($signs[i] ^ $input[i]) & $mask[i]).count_ones();
         }
         sum
     }};
 }
+
 #[allow(unused_macros)]
 macro_rules! fc_features {
     ($name:ident, $in_size:expr, $n_labels:expr) => {
-        fn $name(examples: &Vec<&(usize, [u64; $in_size])>, level: usize) -> Vec<(u32, [u64; $in_size])> {
-            fc_split!(split, $in_size, $n_labels);
+        fn $name(examples: &Vec<&(usize, [u64; $in_size])>, mask_thresh: f64, level: usize) -> Vec<([u64; $in_size], [u64; $in_size], u32)> {
+            fc_split!(split, $in_size);
             let label_dist: [u32; 10] = examples
                 .par_iter()
                 .fold(
@@ -86,8 +86,7 @@ macro_rules! fc_features {
                         counts[*label] += 1;
                         counts
                     },
-                )
-                .reduce(
+                ).reduce(
                     || [0u32; $n_labels],
                     |mut a, b| {
                         for i in 0..$n_labels {
@@ -96,29 +95,30 @@ macro_rules! fc_features {
                         a
                     },
                 );
-            //println!("{:?} {:?}", level, label_dist);
+            println!("{:?} {:?}", level, label_dist);
             let largest_label = label_dist.iter().enumerate().max_by_key(|(_, &count)| count).unwrap().0;
             let in_group: Vec<&[u64; $in_size]> = examples.par_iter().filter(|(label, _)| *label == largest_label).map(|(_, input)| input).collect();
             let out_group: Vec<&[u64; $in_size]> = examples.par_iter().filter(|(label, _)| *label != largest_label).map(|(_, input)| input).collect();
-            let filter = split(&out_group, &in_group);
-            let mut activations: Vec<u32> = examples.par_iter().map(|&(_, image)| fc_infer!($in_size, filter, image)).collect();
+            let weights = split(&out_group, &in_group, mask_thresh);
+            let mut activations: Vec<u32> = examples.par_iter().map(|&(_, input)| fc_infer!($in_size, input, weights.0, weights.1)).collect();
             activations.sort();
             let threshold = activations[examples.len() / 2];
             if level <= 0 {
-                return vec![(threshold, filter)];
+                return vec![(weights.0, weights.1, threshold)];
             }
+            println!("continuing {:?}", level);
             let over: Vec<&(usize, [u64; $in_size])> = examples
                 .par_iter()
                 .map(|&x| x)
-                .filter(|&(_, image)| fc_infer!($in_size, filter, image) >= threshold)
+                .filter(|&(_, input)| fc_infer!($in_size, input, weights.0, weights.1) >= threshold)
                 .collect();
             let under: Vec<&(usize, [u64; $in_size])> = examples
                 .par_iter()
                 .map(|&x| x)
-                .filter(|&(_, image)| fc_infer!($in_size, filter, image) < threshold)
+                .filter(|&(_, input)| fc_infer!($in_size, input, weights.0, weights.1) < threshold)
                 .collect();
-            let mut over_elems = $name(&over, level - 1);
-            let mut under_elems = $name(&under, level - 1);
+            let mut over_elems = $name(&over, mask_thresh, level - 1);
+            let mut under_elems = $name(&under, mask_thresh, level - 1);
             over_elems.append(&mut under_elems);
             over_elems
         }
@@ -140,13 +140,14 @@ macro_rules! fc_features {
 //        }
 //    };
 //}
+
 #[allow(unused_macros)]
 macro_rules! vector_fused_xor_popcount_threshold_and_bitpack {
     ($name:ident, $in_size:expr, $out_size:expr) => {
-        fn $name(input: &[u64; $in_size], weights: &Vec<(u32, [u64; $in_size])>) -> [u64; $out_size] {
+        fn $name(input: &[u64; $in_size], params: &Vec<([u64; $in_size], [u64; $in_size], u32)>) -> [u64; $out_size] {
             let mut output = [0u64; $out_size];
-            for (i, (thresh, filter)) in weights.iter().enumerate() {
-                let bit = fc_infer!($in_size, filter, input) > *thresh;
+            for (i, (mask, signs, thresh)) in params.iter().enumerate() {
+                let bit = fc_infer!($in_size, input, mask, signs) > *thresh;
                 output[i / 64] = output[i / 64] | ((bit as u64) << (i % 64));
             }
             output
@@ -171,11 +172,11 @@ macro_rules! vector_fused_xor_popcount_threshold_and_bitpack {
 #[allow(unused_macros)]
 macro_rules! fc_is_correct {
     ($name:ident, $in_size:expr, $n_labels:expr) => {
-        fn $name(input: &[u64; $in_size], label: usize, weights: &[[u64; $in_size]; $n_labels]) -> bool {
-            let target_sum = fc_infer!($in_size, weights[label], input);
+        fn $name(input: &[u64; $in_size], label: usize, weights: &[([u64; $in_size], [u64; $in_size]); $n_labels]) -> bool {
+            let target_sum = fc_infer!($in_size, input, weights[label].0, weights[label].1);
             for o in 0..$n_labels {
                 if o != label {
-                    let label_sum = fc_infer!($in_size, weights[o], input);
+                    let label_sum = fc_infer!($in_size, input, weights[o].0, weights[o].1);
                     if label_sum >= target_sum {
                         return false;
                     }
@@ -185,25 +186,28 @@ macro_rules! fc_is_correct {
         }
     };
 }
+
 #[allow(unused_macros)]
 macro_rules! readout_filters {
     ($name:ident, $in_size:expr, $n_labels:expr) => {
-        fn $name(examples: &Vec<&(usize, [u64; $in_size])>) -> [[u64; $in_size]; $n_labels] {
-            let mut filters = [[0u64; $in_size]; $n_labels];
+        fn $name(examples: &Vec<&(usize, [u64; $in_size])>, mask_thresh: f64) -> [([u64; $in_size], [u64; $in_size]); $n_labels] {
+            let mut weights = [([0u64; $in_size], [0u64; $in_size]); $n_labels];
             let nil_set: Vec<&[u64; $in_size]> = examples.par_iter().map(|(_, input)| input).collect();
             let nil_avg = avg_bits!(nil_set, $in_size);
             for o in 0..$n_labels {
                 let label_set: Vec<&[u64; $in_size]> = examples.par_iter().filter(|(label, _)| *label == o).map(|(_, input)| input).collect();
                 let label_avg = avg_bits!(label_set, $in_size);
-                for i in 0..$in_size {
-                    for b in 0..64 {
-                        let grad = nil_avg[i][b] - label_avg[i][b];
-                        let bit = grad > 0f32;
-                        filters[o][i] = filters[o][i] | ((bit as u64) << b);
-                    }
+                for i in 0..$in_size * 64 {
+                    let word = i / 64;
+                    let bit = i % 64;
+                    let grad = nil_avg[i] - label_avg[i];
+                    let sign = grad > 0f64;
+                    weights[o].1[word] = weights[o].1[word] | ((sign as u64) << bit);
+                    let magn = grad.abs() > mask_thresh;
+                    weights[o].0[word] = weights[o].0[word] | ((magn as u64) << bit);
                 }
             }
-            filters
+            weights
         }
     };
 }
@@ -239,8 +243,7 @@ macro_rules! cov_matrix_bitpacked {
                         }
                         counts
                     },
-                )
-                .reduce(
+                ).reduce(
                     || vec![vec![0i32; n_features]; n_features],
                     |mut x, y| {
                         for a in 0..n_features {
@@ -250,8 +253,7 @@ macro_rules! cov_matrix_bitpacked {
                         }
                         x
                     },
-                )
-                .iter()
+                ).iter()
                 .map(|x| x.iter().enumerate().map(|(index, &val)| (index, val.abs() as f64 / len)).collect())
                 .enumerate()
                 .collect();
@@ -279,8 +281,7 @@ macro_rules! threshold_cov_matrix_filter {
                     .map(|(&index, vals)| {
                         let sum: f64 = vals.iter().map(|(_, &val)| val).sum();
                         (index, sum / n_features)
-                    })
-                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    }).max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
                     .unwrap();
                 // and remove it from both dimentions of the matrix.
                 if val.1 > threshold {
@@ -300,7 +301,7 @@ macro_rules! cov_mask {
             threshold_cov_matrix_filter!(threshold_filter);
             let mut matrix = cov_matrix(&inputs);
             let indices = threshold_filter(matrix, threshold);
-            print!("{:?} ", indices.len());
+            println!("{:?} ", indices.len());
             let mut mask = [0u64; $in_size];
             for index in indices {
                 mask[index / 64] = mask[index / 64] | (0b1u64 << (index % 64));
@@ -338,8 +339,7 @@ macro_rules! cov_filter {
                         }
                         counts
                     },
-                )
-                .reduce(
+                ).reduce(
                     || Box::new([[0i32; $n_features]; $n_features]),
                     |mut x, y| {
                         for a in 0..$n_features {
@@ -349,8 +349,7 @@ macro_rules! cov_filter {
                         }
                         x
                     },
-                )
-                .iter()
+                ).iter()
                 .map(|x| x.iter().enumerate().map(|(index, &val)| (index, val.abs() as f64 / len)).collect())
                 .enumerate()
                 .collect();
@@ -362,8 +361,7 @@ macro_rules! cov_filter {
                     .map(|(&index, vals)| {
                         let sum: f64 = vals.iter().map(|(_, &val)| val).sum();
                         (index, sum / $n_features as f64)
-                    })
-                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    }).max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
                     .unwrap();
                 // and remove it from both dimentions of the matrix.
                 remove_index_from_2d_vec(&mut matrix, largest_index);
@@ -386,40 +384,44 @@ macro_rules! vec2array {
 
 #[allow(unused_macros)]
 macro_rules! print_acc {
-    ($in_size:expr, $n_labels:expr, $examples:expr, $test_examples:expr) => {{
+    ($prefix:expr, $in_size:expr, $n_labels:expr, $examples:expr, $test_examples:expr, $magn_threshold:expr) => {{
         readout_filters!(readouts, $in_size, $n_labels);
         fc_is_correct!(is_correct, $in_size, $n_labels);
-        let readout_filters = readouts(&$examples);
+        let readout_weights = readouts(&$examples, $magn_threshold);
+        //for l in 0..10 {
+        //    print_image(&readout_weights[l].0);
+        //    print_image(&readout_weights[l].1);
+        //}
         let total_correct: u64 = $test_examples
             .par_iter()
-            .map(|(label, image)| is_correct(&image, *label, &readout_filters))
+            .map(|(label, input)| is_correct(&input, *label, &readout_weights))
             .map(|x| x as u64)
             .sum();
         let avg_correct = total_correct as f32 / $test_examples.len() as f32;
-        println!(" | {:?}%", avg_correct * 100f32);
+        println!("{:}{:?}%", $prefix, avg_correct * 100f32);
     }};
 }
 
 const TRAIN_SIZE: usize = 60000;
-//const L1_POWER: usize = 7;
-//const L1_N_FILTERS: usize = 128;
-//const L1_SIZE: usize = L1_N_FILTERS / 64;
+const L1_POWER: usize = 6;
+const L1_N_FILTERS: usize = 64;
+const L1_SIZE: usize = 1;
 //const L2_SIZE: usize = 2;
 //const L2_N_FILTERS: usize = 128;
 
 cov_mask!(l1_cov_mask, 13, 13 * 64);
 
-//fc_features!(l1_features, 13, 10);
+fc_features!(l1_features, 13, 10);
 ////cov_filter!(l1_cov_filter, 13, L1_N_FILTERS);
-//vector_fused_xor_popcount_threshold_and_bitpack!(l1_fxoptbp, 13, L1_SIZE);
+vector_fused_xor_popcount_threshold_and_bitpack!(l1_fxoptbp, 13, L1_SIZE);
 
 //fc_features!(l2_features, L1_SIZE, 10);
 //cov_filter!(l2_cov_filter, L1_SIZE, L2_N_FILTERS);
 //vector_fused_xor_popcount_threshold_and_bitpack!(l2_fxoptbp, L1_SIZE, L2_SIZE);
 
-fn print_image(image: &[u64; 13]) {
+fn print_image(input: &[u64; 13]) {
     let mut bits = vec![];
-    for word in image {
+    for word in input {
         let mut chars: Vec<char> = format!("{:064b}", word).chars().collect();
         chars.reverse();
         bits.append(&mut chars);
@@ -446,30 +448,27 @@ fn main() {
     let labels = mnist::load_labels(&String::from("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"), TRAIN_SIZE);
     let examples: Vec<(usize, [u64; 13])> = labels.iter().zip(images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
     let examples: Vec<&(usize, [u64; 13])> = examples.iter().collect();
-    //println!("pre mask:");
-    //print_acc!(13, 10, examples, examples);
+    print_acc!("pre mask: ", 13, 10, examples, examples, 0f64);
 
-    //for &thresh in [0.12f64, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0].iter() {
-    //    let mask = l1_cov_mask(&images, thresh);
-
-    //    let new_images: Vec<[u64; 13]> = images.par_iter().map(|image| apply_mask!(13, mask, image)).collect();
-    //    let examples: Vec<(usize, [u64; 13])> = labels.iter().zip(new_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
-    //    let examples: Vec<&(usize, [u64; 13])> = examples.iter().collect();
-    //    print!("| {:?} ", thresh);
-    //    print_acc!(13, 10, examples, examples);
-    //}
     let mask = l1_cov_mask(&images, 0.14);
-    print_image(&mask);
 
-    //let features_vec = l1_features(&examples, L1_POWER);
-    ////let features_array = vec2array!(features_vec, L1_N_FILTERS, (0u32, [0u64; 13]));
-    ////let parameters = l1_cov_filter(&images, &features_array, 128);
-    ////println!("{:?}", parameters.len());
+    let new_images: Vec<[u64; 13]> = images.par_iter().map(|image| apply_mask!(13, mask, image)).collect();
+    let examples: Vec<(usize, [u64; 13])> = labels.iter().zip(new_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
+    let examples: Vec<&(usize, [u64; 13])> = examples.iter().collect();
+    print_acc!("post mask: ", 13, 10, examples, examples, 0f64);
 
-    //let new_images: Vec<[u64; L1_SIZE]> = images.par_iter().map(|image| l1_fxoptbp(&image, &features_vec)).collect();
-    //let examples: Vec<(usize, [u64; L1_SIZE])> = labels.iter().zip(new_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
-    //let examples: Vec<&(usize, [u64; L1_SIZE])> = examples.iter().collect();
-    //print_acc!(L1_SIZE, 10, examples, examples);
+    let features_vec = l1_features(&examples, 0.0, L1_POWER);
+    //let features_array = vec2array!(features_vec, L1_N_FILTERS, (0u32, [0u64; 13]));
+    //let parameters = l1_cov_filter(&images, &features_array, 128);
+    //println!("{:?}", parameters.len());
+
+    let new_images: Vec<[u64; L1_SIZE]> = images.par_iter().map(|image| l1_fxoptbp(&image, &features_vec)).collect();
+    let examples: Vec<(usize, [u64; L1_SIZE])> = labels.iter().zip(new_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
+    let examples: Vec<&(usize, [u64; L1_SIZE])> = examples.iter().collect();
+    for &thresh in [0.01f64, 0.02, 0.03, 0.1, 0.2].iter() {
+        print!("{:?} | ", thresh);
+        print_acc!("layer 1: ", L1_SIZE, 10, examples, examples, thresh);
+    }
 
     //let features_vec = l2_features(&examples, 7);
     ////let features_array = vec2array!(features_vec, L2_N_FILTERS, (0u32, [0u64; L1_SIZE]));

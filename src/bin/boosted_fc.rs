@@ -23,14 +23,33 @@ macro_rules! fc_is_correct {
             let target_sum = fc_infer!($in_size, weights[label], input);
             for o in 0..$n_labels {
                 if o != label {
-                    let sum = fc_infer!($in_size, weights[o], input);
-                    if sum >= target_sum {
-                        //println!("{:?} {:?}", target_sum, sum);
+                    let label_sum = fc_infer!($in_size, weights[o], input);
+                    //println!("{:?} {:?} {:?}", o, target_sum, label_sum);
+                    //println!("{:?} {:?}", label, o);
+                    if label_sum >= target_sum {
                         return false;
                     }
                 }
             }
+            //println!("falling", );
             true
+        }
+    };
+}
+
+macro_rules! fc_keep {
+    ($name:ident, $in_size:expr, $n_labels:expr) => {
+        fn $name(input: &[u64; $in_size], label: usize, weights: [[u64; $in_size]; $n_labels]) -> bool {
+            let target_sum = fc_infer!($in_size, weights[label], input);
+            for o in 0..$n_labels {
+                if o != label {
+                    let label_sum = fc_infer!($in_size, weights[o], input);
+                    if label_sum >= target_sum {
+                        return true;
+                    }
+                }
+            }
+            false
         }
     };
 }
@@ -51,8 +70,7 @@ macro_rules! fc_weights {
                         }
                         counts
                     },
-                )
-                .reduce(
+                ).reduce(
                     || Box::new([(0u32, [[0u32; 64]; $in_size]); $n_labels]),
                     |mut a, b| {
                         for l in 0..$n_labels {
@@ -81,6 +99,7 @@ macro_rules! fc_weights {
                     for l in 0..$n_labels {
                         let avg_bits = sums[l].1[i][b] as f32 / sums[l].0 as f32;
                         let grad = total_avg_bits - avg_bits;
+                        //println!("grad: {:?}", grad);
                         let bit = grad > 0f32;
                         weights[l][i] = weights[l][i] | ((bit as u64) << b);
                     }
@@ -94,7 +113,7 @@ macro_rules! fc_weights {
 macro_rules! fc_boosted_features {
     ($name:ident, $in_size:expr, $n_labels:expr, $boosting_iters:expr) => {
         fn $name(examples: &Vec<(usize, [u64; $in_size])>) -> [[[u64; $in_size]; $n_labels]; $boosting_iters] {
-            fc_is_correct!(correct, $in_size, $n_labels);
+            fc_keep!(keep, $in_size, $n_labels);
             fc_weights!(features, $in_size, $n_labels);
 
             let mut weights_set = [[[0u64; $in_size]; $n_labels]; $boosting_iters];
@@ -104,10 +123,16 @@ macro_rules! fc_boosted_features {
                 boosted_set = boosted_set
                     .iter()
                     .map(|&x| x)
-                    .filter(|(label, image)| !correct(&image, *label, weights_set[boosting - 1]))
+                    .filter(|(label, image)| keep(&image, *label, weights_set[boosting - 1]))
                     .collect();
-                println!("boosted: {:?}", boosted_set.len());
+                //println!("boosted: {:?}", boosted_set.len());
+                let freqs: [u32; 10] = boosted_set.iter().map(|(label, _)| label).fold([0u32; 10], |mut counts, &label| {
+                    counts[label] += 1;
+                    counts
+                });
+                println!("{:?} {:?}", boosted_set.len(), freqs);
                 weights_set[boosting] = features(&boosted_set);
+                println!("{:?}", weights_set[boosting]);
             }
             weights_set
         }
@@ -162,72 +187,92 @@ macro_rules! activation_medians {
 
 const TRAIN_SIZE: usize = 60000;
 
-const L1_B: usize = 14;
-const L2_W: usize = 2;
+const L1_B: usize = 20;
+const L2_W: usize = 3;
 const L2_B: usize = 20;
 
-fc_is_correct!(l1_is_correct, 13, 10);
 fc_boosted_features!(l1_boosted_features, 13, 10, L1_B);
 reflow!(l1_reflow, 13, 10, L1_B, L2_W);
-activation_medians!(l1_medians, 13, 2);
-fused_xor_popcount_threshold_and_bitpack!(l1_fxoptbp, 13, L2_W);
+activation_medians!(l1_medians, 13, L2_W);
 
+fc_boosted_features!(l2_boosted_features, L2_W, 10, L2_B);
+reflow!(l2_reflow, L2_W, 10, L2_B, L2_W);
+activation_medians!(l2_medians, L2_W, L2_W);
 
-fc_is_correct!(l2_is_correct, 2, 10);
-fc_boosted_features!(l2_boosted_features, 2, 10, L2_B);
-//reflow!(l2_reflow, 2, 10, L2_B, L2_W);
-//fused_xor_popcount_and_bitpack!(l2_xopcbp, 13, L2_W);
+macro_rules! update_examples {
+    ($images:expr, $labels:expr, $features:expr, $thresholds:expr, $in_size:expr, $out_size:expr) => {{
+        fused_xor_popcount_threshold_and_bitpack!(fxoptbp, $in_size, L2_W);
+
+        let new_images: Vec<[u64; $out_size]> = $images.par_iter().map(|image| fxoptbp(&image, &$features, &$thresholds)).collect();
+        let examples: Vec<(usize, [u64; $out_size])> = $labels.iter().zip(new_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
+        (new_images, examples)
+    }};
+}
+
+macro_rules! print_acc {
+    ($test_examples:expr, $weights:expr, $boostings:expr, $in_size:expr, $n_labels:expr) => {{
+        fc_is_correct!(is_correct, $in_size, $n_labels);
+        for i in 0..$boostings {
+            let total_correct: u64 = $test_examples
+                .par_iter()
+                .map(|(label, image)| is_correct(&image, *label, $weights[i]))
+                .map(|x| x as u64)
+                .sum();
+            let avg_correct = total_correct as f32 / $test_examples.len() as f32;
+            println!("{:?} acc: {:?}%", i, avg_correct * 100f32);
+        }
+    }};
+}
 
 fn main() {
-    let images = mnist::load_images_bitpacked(&String::from("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"), TRAIN_SIZE);
+    let images = mnist::load_images_bitpacked(&String::from("/home/isaac/big/cache/datasets/fashion_mnist/train-images-idx3-ubyte"), TRAIN_SIZE);
     let labels = mnist::load_labels(&String::from("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"), TRAIN_SIZE);
-    let l1_examples: Vec<(usize, [u64; 13])> = labels.iter().zip(images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
+    let examples: Vec<(usize, [u64; 13])> = labels.iter().zip(images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
 
-    let test_images = mnist::load_images_bitpacked(&String::from("/home/isaac/big/cache/datasets/mnist/t10k-images-idx3-ubyte"), 10000);
+    let test_images = mnist::load_images_bitpacked(&String::from("/home/isaac/big/cache/datasets/fashion_mnist/t10k-images-idx3-ubyte"), 10000);
     let test_labels = mnist::load_labels(&String::from("/home/isaac/big/cache/datasets/mnist/t10k-labels-idx1-ubyte"), 10000);
-    let test_examples: Vec<(usize, [u64; 13])> = test_labels
-        .iter()
-        .zip(test_images.iter())
-        .map(|(&label, &image)| (label as usize, image))
-        .collect();
+    let test_examples: Vec<(usize, [u64; 13])> = test_labels.iter().zip(test_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
 
-    let weights = l1_boosted_features(&l1_examples);
-    let l1_features = l1_reflow(&weights);
-    let thresholds = l1_medians(&images, &l1_features);
-    for i in 0..L1_B {
-        let total_correct: u64 = test_examples
-            .par_iter()
-            .map(|(label, image)| l1_is_correct(&image, *label, weights[i]))
-            .map(|x| x as u64)
-            .sum();
-        let avg_correct = total_correct as f32 / test_examples.len() as f32;
-        println!("{:?} acc: {:?}%", i, avg_correct * 100f32);
+    let weights = l1_boosted_features(&examples);
+    print_acc!(examples, weights, L1_B, 13, 10);
+    let features = l1_reflow(&weights);
+    let thresholds = l1_medians(&images, &features);
+    let (images, examples) = update_examples!(images, labels, features, thresholds, 13, L2_W);
+    let (test_images, test_examples) = update_examples!(test_images, test_labels, features, thresholds, 13, L2_W);
+
+    let weights = l2_boosted_features(&examples);
+    print_acc!(examples, weights, L2_B, L2_W, 10);
+    let features = l2_reflow(&weights);
+    let thresholds = l2_medians(&images, &features);
+    let (images, examples) = update_examples!(images, labels, features, thresholds, L2_W, L2_W);
+    let (test_images, test_examples) = update_examples!(test_images, test_labels, features, thresholds, L2_W, L2_W);
+
+    println!("starting l3",);
+    let weights = l2_boosted_features(&examples);
+    print_acc!(examples, weights, L2_B, L2_W, 10);
+    let features = l2_reflow(&weights);
+    let thresholds = l2_medians(&images, &features);
+    let (images, examples) = update_examples!(images, labels, features, thresholds, L2_W, L2_W);
+    let (test_images, test_examples) = update_examples!(test_images, test_labels, features, thresholds, L2_W, L2_W);
+
+    println!("starting l4",);
+    let weights = l2_boosted_features(&examples);
+    print_acc!(test_examples, weights, L2_B, L2_W, 10);
+    let features = l2_reflow(&weights);
+    let thresholds = l2_medians(&images, &features);
+    let (images, examples) = update_examples!(images, labels, features, thresholds, L2_W, L2_W);
+    //let (test_images, test_examples) = update_examples!(test_images, test_labels, features, thresholds, L2_W, L2_W);
+
+    for (label, image) in examples.iter().take(30) {
+        //println!("{:?} {:064b} {:064b} {:064b}", label, image[0], image[1], image[2]);
+        println!("{:?} {:064b}", label, image[0]);
     }
-    let l2_images: Vec<[u64; 2]> = images.par_iter().map(|image| l1_fxoptbp(&image, &l1_features, &thresholds)).collect();
-    let l2_examples: Vec<(usize, [u64; 2])> = labels
-        .iter()
-        .zip(l2_images.iter())
-        .map(|(&label, &image)| (label as usize, image))
-        .collect();
 
-    let l2_test_images: Vec<[u64; 2]> = test_images.par_iter().map(|image| l1_fxoptbp(&image, &l1_features, &thresholds)).collect();
-    let l2_test_examples: Vec<(usize, [u64; 2])> = test_labels
-        .iter()
-        .zip(l2_test_images.iter())
-        .map(|(&label, &image)| (label as usize, image))
-        .collect();
-
-    println!("images: {:?}", &l2_images[0..20]);
-
-    let weights = l2_boosted_features(&l2_examples);
-    //let l2_features = l1_reflow(&weights);
-    for i in 0..L2_B {
-        let total_correct: u64 = l2_test_examples
-            .par_iter()
-            .map(|(label, image)| l2_is_correct(&image, *label, weights[i]))
-            .map(|x| x as u64)
-            .sum();
-        let avg_correct = total_correct as f32 / test_examples.len() as f32;
-        println!("{:?} acc: {:?}%", i, avg_correct * 100f32);
-    }
+    //println!("starting l5",);
+    //let weights = l2_boosted_features(&examples);
+    //print_acc!(examples, weights, L2_B, L2_W, 10);
+    //let features = l2_reflow(&weights);
+    //let thresholds = l2_medians(&images, &features);
+    //let (images, examples) = update_examples!(images, labels, features, thresholds, L2_W, L2_W);
+    //let (test_images, test_examples) = update_examples!(test_images, test_labels, features, thresholds, L2_W, L2_W);
 }

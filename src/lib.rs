@@ -3,6 +3,41 @@ extern crate rand;
 
 #[macro_use]
 pub mod datasets {
+    pub mod fake {
+        extern crate image;
+        use image::{ImageBuffer, Rgb};
+
+        pub fn parse_rgb_u8(bits: u8) -> [u8; 3] {
+            let mut bytes = [0u8; 3];
+            for color in 0..3 {
+                bytes[color] = ((bits >> color) & 0b1u8) * 255;
+            }
+            bytes
+        }
+        pub fn diag_rgb_u8_packed() -> [[u8; 32]; 32] {
+            let mut image = [[0u8; 32]; 32];
+            for x in 0..32 {
+                for y in 0..32 {
+                    image[x][y] =
+                    ((((((x + (y % 3) + 0) as u8) % 3) == 0) as u8) << 0) |
+                    ((((((x + (y % 3) + 1) as u8) % 3) == 0) as u8) << 1) |
+                    ((((((x + (y % 3) + 2) as u8) % 3) == 0) as u8) << 2);
+                }
+            }
+            image
+        }
+        pub fn write_u8_packed_image(data: [[u8; 32]; 32], path: &String) {
+            let mut image = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(32u32, 32u32);
+            for x in 0..32 {
+                for y in 0..32 {
+                    let bits = data[x][y];
+                    let pixel_bytes = parse_rgb_u8(bits);
+                    image.get_pixel_mut(x as u32, y as u32).data = pixel_bytes;
+                }
+            }
+            image.save(path).unwrap();
+        }
+    }
     pub mod cifar {
         use std::fs::File;
         use std::io::prelude::*;
