@@ -1,9 +1,9 @@
-#[macro_use]
 extern crate bitnn;
 extern crate rayon;
 
 use bitnn::datasets::mnist;
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 fn unary7bit(input: u8) -> u8 {
     !(255 << (input / 36))
@@ -96,7 +96,7 @@ fn split_labels_set_by_filter<T: Copy + Send + Sync, D: Send + Sync>(examples: &
     examples
         .par_iter()
         .map(|by_label| {
-            vec![
+            let pair: Vec<Vec<Vec<T>>> = vec![
                 by_label
                     .par_iter()
                     .map(|label_examples| label_examples.iter().filter(|x| split_fn(data, x)).cloned().collect())
@@ -105,9 +105,13 @@ fn split_labels_set_by_filter<T: Copy + Send + Sync, D: Send + Sync>(examples: &
                     .par_iter()
                     .map(|label_examples| label_examples.iter().filter(|x| !split_fn(data, x)).cloned().collect())
                     .collect(),
-            ]
+            ];
+            pair
         }).flatten()
-        .collect()
+        .filter(|pair: &Vec<Vec<T>>| {
+            let sum_len: usize = pair.iter().map(|x| x.len()).sum();
+            sum_len > 0
+        }).collect()
 }
 
 fn count_bits(examples: &Vec<Vec<Vec<u64>>>) -> Vec<Vec<(usize, [u32; 64])>> {
@@ -117,13 +121,55 @@ fn count_bits(examples: &Vec<Vec<Vec<u64>>>) -> Vec<Vec<(usize, [u32; 64])>> {
         .collect()
 }
 
+fn avg_bits(bit_sums: &Vec<(usize, [u32; 64])>) -> Vec<[f64; 64]> {
+    bit_sums
+        .par_iter()
+        .map(|(len, counts)| {
+            let mut avg = [0f64; 64];
+            let float_len = *len as f64;
+            if float_len == 0f64 {
+                avg
+            } else {
+                for i in 0..64 {
+                    avg[i] = counts[i] as f64 / float_len;
+                }
+                avg
+            }
+        }).collect()
+}
+
+fn remove_index_from_2d_vec(matrix: &mut HashMap<usize, HashMap<usize, f64>>, index: usize) {
+    matrix.remove(&index);
+    for (_, map) in matrix {
+        map.remove(&index);
+    }
+}
+
+//for _i in 0..$n_features - target_len {
+//    // we find the index of the largest average avg covariance.
+//    let (largest_index, _val): (usize, f64) = matrix
+//        .iter()
+//        .map(|(&index, vals)| {
+//            let sum: f64 = vals.iter().map(|(_, &val)| val).sum();
+//            (index, sum / $n_features as f64)
+//        }).max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+//        .unwrap();
+//    // and remove it from both dimentions of the matrix.
+//    remove_index_from_2d_vec(&mut matrix, largest_index);
+//}
+//matrix.iter().map(|(&index, _)| parameters[index]).collect()
+
+//fn ternary_similarly_matrix(weights: &Vec<(u64, u64)>, target_count: usize) -> Vec<usize> {
+//    let mut matrix: HashMap<usize, HashMap<usize, f64>> =
+//}
+
 map_2d!(mnist_u8_map, 28, 28);
 fixed_dim_extract_3x3_patchs!(mnist_extract_u64_packed_patches, 28, 28);
 
-const TRAIN_SIZE: usize = 6000;
+const TRAIN_SIZE: usize = 60000;
 
 fn split_fn((weights, filter, threshold): &(u64, u64, u32), patch: &u64) -> bool {
-    ((patch ^ weights) & filter).count_ones() > *threshold
+    (patch ^ weights).count_ones() > *threshold
 }
 
 fn main() {
@@ -132,44 +178,80 @@ fn main() {
     let labels = mnist::load_labels(&String::from("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"), TRAIN_SIZE);
     let examples: Vec<(usize, [[u8; 28]; 28])> = labels.iter().zip(unary_images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
     let examples_sets = split_images_by_label(&examples);
-    let patches_set: Vec<Vec<Vec<u64>>> = vec![examples_sets.par_iter().map(|x| mnist_extract_u64_packed_patches(&x, &patch_pack_7bit)).collect()];
+    let mut patch_shards: Vec<Vec<Vec<u64>>> = vec![examples_sets.par_iter().map(|x| mnist_extract_u64_packed_patches(&x, &patch_pack_7bit)).collect()];
+    let lens: Vec<Vec<usize>> = patch_shards.iter().map(|x| x.iter().map(|y| y.len()).collect()).collect();
+    println!("shards: {:?}", lens);
 
-    let mut shard_label_bit_sums = count_bits(&patches_set);
+    let mut params = vec![];
 
-    let (target_len, target_bit_sums) = shard_label_bit_sums[0].remove(0);
-    let (global_bit_len, global_bit_sums): (usize, [u32; 64]) = shard_label_bit_sums[0].par_iter().cloned().reduce(
-        || (0, [0u32; 64]),
-        |mut a, b| {
-            a.0 += b.0;
-            for i in 0..64 {
-                a.1[i] += b.1[i];
-            }
-            a
-        },
-    );
-    let global_avg_bits: Vec<f64> = global_bit_sums.iter().map(|&sum| sum as f64 / global_bit_len as f64).collect();
-    let target_avg_bits: Vec<f64> = target_bit_sums.iter().map(|&sum| sum as f64 / target_len as f64).collect();
-    //println!("{:?}", global_avg_bits);
-    //println!("{:?}", target_avg_bits);
-
-    let mut weights = 0u64;
-    let mut filter = 0u64;
-    let mask_thresh = 0.05;
-    for i in 0..64 {
-        let grad = global_avg_bits[i] - target_avg_bits[i];
-        let sign = grad > 0f64;
-        weights = weights | ((sign as u64) << i);
-        let magn = grad.abs() > mask_thresh;
-        filter = filter | ((magn as u64) << i);
-    }
-    println!("{:064b}", weights);
-    println!("{:064b}", filter);
-
-    let mut activations: Vec<u32> = patches_set.par_iter().flatten().flatten().map(|patch| (patch ^ weights).count_ones()).collect();
+    let filter = !0b0u64;
+    let weights = patch_pack_7bit([
+        !0b0, 0b0, 0b0,
+        !0b0, 0b0, 0b0,
+        !0b0, 0b0, 0b0,
+        ]);
+    let mut activations: Vec<u32> = patch_shards.par_iter().flatten().flatten().map(|patch| (patch ^ weights).count_ones()).collect();
     activations.sort();
     let threshold = activations[activations.len() / 2];
-    println!("{:?}", threshold);
+    println!("{:064b} {:}", weights, threshold);
 
-    let patch_shards = split_labels_set_by_filter(&patches_set, &(weights, filter, threshold), split_fn);
-    println!("{:?}", patch_shards.len());
+    params.push((weights, filter, threshold));
+    patch_shards = split_labels_set_by_filter::<u64, _>(&patch_shards, &(weights, filter, threshold), split_fn);
+    println!("n shards: {:?}", patch_shards.len());
+
+    for i in 0..3 {
+        for label in 0..10 {
+            let mut shard_label_bit_sums = count_bits(&patch_shards);
+            //let label = 0;
+            let target_bit_sums: Vec<(usize, [u32; 64])> = shard_label_bit_sums.iter_mut().map(|x| x.remove(label)).collect();
+            let global_bit_sums: Vec<(usize, [u32; 64])> = shard_label_bit_sums
+                .iter()
+                .map(|x| {
+                    x.par_iter().cloned().reduce(
+                        || (0, [0u32; 64]),
+                        |mut a, b| {
+                            a.0 += b.0;
+                            for i in 0..64 {
+                                a.1[i] += b.1[i];
+                            }
+                            a
+                        },
+                    )
+                }).collect();
+
+            let global_avg_bits: Vec<[f64; 64]> = avg_bits(&global_bit_sums);
+            let target_avg_bits: Vec<[f64; 64]> = avg_bits(&target_bit_sums);
+
+            let grads: Vec<f64> = global_avg_bits
+                .iter()
+                .zip(target_avg_bits.iter())
+                .map(|(global, target)| global.iter().zip(target.iter()).map(|(g, t)| g - t).collect()) // for each bit, subtract the proportion in the target patches from the proportion in the global patches.
+                .fold(vec![0f64; 64], |acc, grads: Vec<f64>| acc.iter().zip(grads.iter()).map(|(acc, grad)| acc + grad).collect()); // for all the shards, sum the grads of the corresponding bits.
+
+            let mut weights = 0u64;
+            let mut filter = 0u64;
+            let mask_thresh = 0.000;
+            // now we can pack the grads back into a u64.
+            for (i, &grad) in grads.iter().enumerate() {
+                let sign = grad > 0f64;
+                weights = weights | ((sign as u64) << i);
+                let magn = grad.abs() > mask_thresh;
+                filter = filter | ((magn as u64) << i);
+            }
+
+            let mut activations: Vec<u32> = patch_shards.par_iter().flatten().flatten().map(|patch| (patch ^ weights).count_ones()).collect();
+            activations.sort();
+            let threshold = activations[activations.len() / 2];
+
+            params.push((weights, filter, threshold));
+            patch_shards = split_labels_set_by_filter::<u64, _>(&patch_shards, &(weights, filter, threshold), split_fn);
+            //println!("n shards: {:?}", patch_shards.len());
+            println!("{:064b} {:}\t{:}", weights, threshold, patch_shards.len());
+            let lens: Vec<Vec<usize>> = patch_shards.iter().map(|x| x.iter().map(|y| y.len()).collect()).collect();
+            //println!("shards: {:?}", lens);
+        }
+    }
+    //for (weights, _, threshold) in &params {
+    //    println!("{:064b} {:}", weights, threshold);
+    //}
 }
