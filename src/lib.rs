@@ -1,5 +1,6 @@
 extern crate image;
 extern crate rand;
+extern crate rayon;
 
 #[macro_use]
 pub mod datasets {
@@ -18,10 +19,9 @@ pub mod datasets {
             let mut image = [[0u8; 32]; 32];
             for x in 0..32 {
                 for y in 0..32 {
-                    image[x][y] =
-                    ((((((x + (y % 3) + 0) as u8) % 3) == 0) as u8) << 0) |
-                    ((((((x + (y % 3) + 1) as u8) % 3) == 0) as u8) << 1) |
-                    ((((((x + (y % 3) + 2) as u8) % 3) == 0) as u8) << 2);
+                    image[x][y] = ((((((x + (y % 3) + 0) as u8) % 3) == 0) as u8) << 0)
+                        | ((((((x + (y % 3) + 1) as u8) % 3) == 0) as u8) << 1)
+                        | ((((((x + (y % 3) + 2) as u8) % 3) == 0) as u8) << 2);
                 }
             }
             image
@@ -229,6 +229,218 @@ pub mod datasets {
 
 #[macro_use]
 pub mod layers {
+    use rayon::prelude::*;
+
+    pub trait Patch {
+        fn hamming_distance(&self, &Self) -> u32;
+        fn bit_increment(&self, &mut [u32]);
+        fn bit_len() -> usize;
+        fn bitpack(&[bool]) -> Self;
+    }
+
+    macro_rules! primitive_patch {
+        ($type:ty, $len:expr) => {
+            impl Patch for $type {
+                fn hamming_distance(&self, other: &$type) -> u32 {
+                    (self ^ other).count_ones()
+                }
+                fn bit_increment(&self, counters: &mut [u32]) {
+                    if counters.len() != $len {
+                        panic!("counters is the wrong len");
+                    }
+                    for i in 0..$len {
+                        counters[i] += ((self >> i) & 0b1 as $type) as u32;
+                    }
+                }
+                fn bit_len() -> usize {
+                    $len
+                }
+                fn bitpack(bools: &[bool]) -> $type {
+                    if bools.len() != $len {
+                        panic!("counters is the wrong len");
+                    }
+                    let mut val = 0 as $type;
+                    for i in 0..$len {
+                        val = val | ((bools[i] as $type) << i);
+                    }
+                    val
+                }
+            }
+        };
+    }
+
+    primitive_patch!(u8, 8);
+    primitive_patch!(u16, 16);
+    primitive_patch!(u32, 32);
+    primitive_patch!(u64, 64);
+    primitive_patch!(u128, 128);
+
+    macro_rules! array_patch {
+        ($len:expr) => {
+            impl<T: Patch + Copy + Default> Patch for [T; $len] {
+                fn hamming_distance(&self, other: &[T; $len]) -> u32 {
+                    let mut distance = 0;
+                    for i in 0..$len {
+                        distance += self[i].hamming_distance(&other[i]);
+                    }
+                    distance
+                }
+                fn bit_increment(&self, counters: &mut [u32]) {
+                    if counters.len() != ($len * T::bit_len()) {
+                        panic!("counters is the wrong len");
+                    }
+                    for i in 0..$len {
+                        self[i].bit_increment(&mut counters[i * T::bit_len()..(i + 1) * T::bit_len()]);
+                    }
+                }
+                fn bit_len() -> usize {
+                    $len * T::bit_len()
+                }
+                fn bitpack(bools: &[bool]) -> [T; $len] {
+                    if bools.len() != ($len * T::bit_len()) {
+                        panic!("counters is the wrong len");
+                    }
+                    let mut val = [T::default(); $len];
+                    for i in 0..$len {
+                        val[i] = T::bitpack(&bools[i * T::bit_len()..(i + 1) * T::bit_len()]);
+                    }
+                    val
+                }
+            }
+        };
+    }
+
+    array_patch!(1);
+    array_patch!(2);
+    array_patch!(3);
+    array_patch!(4);
+    array_patch!(9);
+
+
+    pub mod bitvecmul {
+        macro_rules! primitive_bit_vecmul {
+            ($name:ident, $type:ty, $len:expr) => {
+                pub fn $name<T: super::Patch>(weights: &[(T, u32); $len], input: &T) -> $type {
+                    let mut output = 0 as $type;
+                    for b in 0..$len {
+                        output = output | ((((weights[b].0).hamming_distance(input) >= weights[b].1) as $type) << b);
+                    }
+                    output
+                }
+            };
+        }
+
+        primitive_bit_vecmul!(bvm_u3, u8, 3);
+        primitive_bit_vecmul!(bvm_u7, u8, 7);
+        primitive_bit_vecmul!(bvm_u8, u8, 8);
+        primitive_bit_vecmul!(bvm_u14, u16, 14);
+        primitive_bit_vecmul!(bvm_u16, u16, 16);
+        primitive_bit_vecmul!(bvm_u32, u32, 32);
+        primitive_bit_vecmul!(bvm_u64, u64, 64);
+        primitive_bit_vecmul!(bvm_u128, u128, 128);
+    }
+
+    pub mod unary {
+        macro_rules! to_unary {
+            ($name:ident, $type:ty, $len:expr) => {
+                pub fn $name(input: u8) -> $type {
+                    !((!0) << (input / (255 / $len)))
+                }
+            };
+        }
+
+        to_unary!(to_3, u8, 3);
+        to_unary!(to_4, u8, 4);
+        to_unary!(to_5, u8, 5);
+        to_unary!(to_7, u8, 7);
+        to_unary!(to_14, u16, 14);
+    }
+
+    pub mod pack_3x3 {
+        macro_rules! pack_3x3 {
+            ($name:ident, $in_type:ty, $out_type:ty, $out_len:expr) => {
+                pub fn $name(pixels: [$in_type; 9]) -> $out_type {
+                    let mut word = 0 as $out_type;
+                    for i in 0..9 {
+                        word = word | ((pixels[i] as $out_type) << (i * ($out_len / 9)))
+                    }
+                    word
+                }
+            };
+        }
+
+        pack_3x3!(p3, u8, u32, 32);
+        pack_3x3!(p7, u8, u64, 64);
+        pack_3x3!(p14, u16, u128, 128);
+    }
+
+    pub trait Extract2dPatches<T> {
+        fn extract_3x3_patches(&self) -> Vec<[T; 9]>;
+    }
+
+    macro_rules! extract_3x3_patches {
+        ($x_size:expr, $y_size:expr) => {
+            impl<T: Copy> Extract2dPatches<T> for [[T; $y_size]; $x_size] {
+                fn extract_3x3_patches(&self) -> Vec<[T; 9]> {
+                    let mut patches = Vec::with_capacity(($x_size - 2) * ($y_size - 2));
+                    for x in 0..$x_size - 2 {
+                        for y in 0..$y_size - 2 {
+                            patches.push([
+                                self[x + 0][y + 0],
+                                self[x + 1][y + 0],
+                                self[x + 2][y + 0],
+                                self[x + 0][y + 1],
+                                self[x + 1][y + 1],
+                                self[x + 2][y + 1],
+                                self[x + 0][y + 2],
+                                self[x + 1][y + 2],
+                                self[x + 2][y + 2],
+                            ]);
+                        }
+                    }
+                    patches
+                }
+            }
+        };
+    }
+    extract_3x3_patches!(28, 28);
+    extract_3x3_patches!(32, 32);
+    extract_3x3_patches!(64, 64);
+
+    pub mod pixelmap {
+        macro_rules! pixel_map_2d {
+            ($name:ident, $x_size:expr, $y_size:expr) => {
+                pub fn $name<I: Copy, O: Copy + Default>(input: &[[I; $y_size]; $x_size], map_fn: &Fn(I) -> O) -> [[O; $y_size]; $x_size] {
+                    let mut output = [[O::default(); $y_size]; $x_size];
+                    for x in 0..$x_size {
+                        for y in 0..$y_size {
+                            output[x][y] = map_fn(input[x][y]);
+                        }
+                    }
+                    output
+                }
+            };
+        }
+
+        pixel_map_2d!(pm_28, 28, 28);
+        pixel_map_2d!(pm_32, 32, 32);
+        pixel_map_2d!(pm_64, 64, 64);
+    }
+
+    pub fn count_bits<T: Patch + Sync>(patches: &Vec<T>) -> Vec<u32> {
+        patches
+            .par_iter()
+            .fold(
+                || vec![0u32; T::bit_len()],
+                |mut counts, example| {
+                    example.bit_increment(&mut counts);
+                    counts
+                },
+            )
+            .reduce(|| vec![0u32; T::bit_len()], |a, b| a.iter().zip(b.iter()).map(|(a, b)| a + b).collect())
+    }
+
+
     #[macro_export]
     macro_rules! log_dist_1d {
         ($type:ty, $prefix:expr, $size:expr) => {
@@ -405,13 +617,15 @@ pub mod layers {
                                 }
                                 chan_activations.sort_unstable();
                                 chan_activations[(inputs.len() * $x_size * $y_size) / 2]
-                            }).collect();
+                            })
+                            .collect();
                         let mut thresholds_word = [0u32; 64];
                         for i in 0..64 {
                             thresholds_word[i] = thresholds_word_vec[i];
                         }
                         thresholds_word
-                    }).collect();
+                    })
+                    .collect();
                 let mut thresholds = [[0u32; 64]; $out_chans];
                 for i in 0..$out_chans {
                     thresholds[i] = thresholds_vec[i];
@@ -708,7 +922,8 @@ pub mod layers {
                         }
                         counts
                     },
-                ).reduce(
+                )
+                .reduce(
                     || vec![0u32; $in_size * 64],
                     |mut a, b| {
                         for i in 0..$in_size * 64 {
@@ -741,7 +956,8 @@ pub mod layers {
                         }
                         counts
                     },
-                ).reduce(
+                )
+                .reduce(
                     || vec![0u32; $in_size * 64],
                     |mut a, b| {
                         for i in 0..$in_size * 64 {
@@ -762,5 +978,58 @@ pub mod layers {
             }
             array
         }};
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::layers::{bitvecmul, pack_3x3, unary};
+    use super::layers::{Extract2dPatches, Patch};
+    #[test]
+    fn patch_count() {
+        let mut counters = vec![0u32; 32];
+        [0b1011_1111u8, 0b0100_0000u8, 0b0100_0000u8, 0b1000_1010u8].bit_increment(&mut counters);
+        let bools: Vec<_> = counters.iter().map(|&x| x != 0).collect();
+        let avg = <[u16; 2]>::bitpack(&bools);
+
+        let mut counters2 = vec![0u32; 32];
+        avg.bit_increment(&mut counters2);
+        println!("{:?}", counters);
+        assert_eq!(counters, counters2)
+    }
+    #[test]
+    fn patch_dist() {
+        assert_eq!(123u8.hamming_distance(&123u8), 0);
+        assert_eq!(0b1010_1000u8.hamming_distance(&0b1010_0111u8), 4);
+        assert_eq!([0b1111_0000u8, 0b1111_0000u8].hamming_distance(&[0b0000_1100u8, 0b1111_1111u8]), 6 + 4);
+    }
+    #[test]
+    fn bit_vecmul() {
+        let input = [0u128; 3];
+        let weights = [([0u128; 3], 0u32); 7];
+        let output = bitvecmul::bvm_u7(&weights, &input);
+        assert_eq!(output, 0b0111_1111u8);
+    }
+    #[test]
+    fn unary() {
+        assert_eq!(unary::to_3(128), 0b0000_0001u8);
+        assert_eq!(unary::to_3(255), 0b0000_0111u8);
+        assert_eq!(unary::to_7(255), 0b0111_1111u8);
+        assert_eq!(unary::to_7(0), 0b0000_0000u8);
+    }
+    #[test]
+    fn pack() {
+        assert_eq!(
+            pack_3x3::p3([0b11u8, 0b1u8, 0b1u8, 0b1u8, 0b1u8, 0b1u8, 0b1u8, 0b111u8, 0b1u8]),
+            0b001111001_001001001_001001011u32
+        );
+    }
+    #[test]
+    fn extract_patches() {
+        let value = 0b1011_0111u8;
+        let layer = [[value; 28]; 28];
+        let patches: Vec<_> = layer.extract_3x3_patches().iter().map(|&x| x).collect();
+        assert_eq!(patches.len(), 676);
+        assert_eq!(patches[0], [value; 9])
     }
 }
