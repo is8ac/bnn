@@ -72,6 +72,30 @@ pub mod datasets {
             }
             bytes
         }
+        pub fn load_images_10(path: &String, size: usize) -> Vec<(usize, [[[u8; 3]; 32]; 32])> {
+            let path = Path::new(path);
+            let mut file = File::open(&path).expect("can't open data");
+
+            let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
+            let mut label: [u8; 1] = [0; 1];
+            let mut images: Vec<(usize, [[[u8; 3]; 32]; 32])> = Vec::new();
+            for _ in 0..size {
+                file.read_exact(&mut label).expect("can't read label");
+                file.read_exact(&mut image_bytes).expect("can't read images");
+                let mut image = [[[0u8; 3]; 32]; 32];
+                for x in 0..32 {
+                    for y in 0..32 {
+                        image[x][y] = [
+                            image_bytes[(0 * 1024) + (y * 32) + x],
+                            image_bytes[(1 * 1024) + (y * 32) + x],
+                            image_bytes[(2 * 1024) + (y * 32) + x],
+                        ];
+                    }
+                }
+                images.push((label[0] as usize, image));
+            }
+            return images;
+        }
         pub fn load_images_64chan_10(path: &String, size: usize) -> Vec<(u8, [[[u64; 1]; 32]; 32])> {
             let path = Path::new(path);
             let mut file = File::open(&path).expect("can't open data");
@@ -314,8 +338,11 @@ pub mod layers {
     array_patch!(2);
     array_patch!(3);
     array_patch!(4);
+    array_patch!(5);
+    array_patch!(6);
+    array_patch!(7);
+    array_patch!(8);
     array_patch!(9);
-
 
     pub mod bitvecmul {
         macro_rules! primitive_bit_vecmul {
@@ -354,6 +381,10 @@ pub mod layers {
         to_unary!(to_5, u8, 5);
         to_unary!(to_7, u8, 7);
         to_unary!(to_14, u16, 14);
+
+        pub fn rgb_to_u14(pixels: [u8; 3]) -> u16 {
+            to_4(pixels[0]) as u16 | ((to_5(pixels[1]) as u16) << 4) | ((to_5(pixels[2]) as u16) << 9)
+        }
     }
 
     pub mod pack_3x3 {
@@ -374,14 +405,26 @@ pub mod layers {
         pack_3x3!(p14, u16, u128, 128);
     }
 
-    pub trait Extract2dPatches<T> {
-        fn extract_3x3_patches(&self) -> Vec<[T; 9]>;
+    pub trait Layer2d<T> {
+        fn to_pixels(&self) -> Vec<T>;
+        fn to_3x3_patches(&self) -> Vec<[T; 9]>;
+        fn from_pixels_1_padding(&Vec<T>) -> Self;
+        fn from_pixels_0_padding(&Vec<T>) -> Self;
     }
 
-    macro_rules! extract_3x3_patches {
+    macro_rules! layer_2d {
         ($x_size:expr, $y_size:expr) => {
-            impl<T: Copy> Extract2dPatches<T> for [[T; $y_size]; $x_size] {
-                fn extract_3x3_patches(&self) -> Vec<[T; 9]> {
+            impl<T: Copy + Default> Layer2d<T> for [[T; $y_size]; $x_size] {
+                fn to_pixels(&self) -> Vec<T> {
+                    let mut patches = Vec::with_capacity($x_size * $y_size);
+                    for x in 0..$x_size {
+                        for y in 0..$y_size {
+                            patches.push(self[x][y]);
+                        }
+                    }
+                    patches
+                }
+                fn to_3x3_patches(&self) -> Vec<[T; 9]> {
                     let mut patches = Vec::with_capacity(($x_size - 2) * ($y_size - 2));
                     for x in 0..$x_size - 2 {
                         for y in 0..$y_size - 2 {
@@ -400,12 +443,39 @@ pub mod layers {
                     }
                     patches
                 }
+                fn from_pixels_0_padding(pixels: &Vec<T>) -> [[T; $y_size]; $x_size] {
+                    if pixels.len() != ($x_size * $y_size) {
+                        panic!("pixels is wrong len")
+                    }
+                    let mut output = [[T::default(); $y_size]; $x_size];
+                    for x in 0..$x_size {
+                        for y in 0..$y_size {
+                            output[x][y] = pixels[x * $y_size + y];
+                        }
+                    }
+                    output
+                }
+                fn from_pixels_1_padding(pixels: &Vec<T>) -> [[T; $y_size]; $x_size] {
+                    if pixels.len() != (($x_size - 2) * ($y_size - 2)) {
+                        panic!("pixels is wrong len")
+                    }
+                    let mut output = [[T::default(); $y_size]; $x_size];
+                    for x in 0..($x_size - 2) {
+                        for y in 0..($y_size - 2) {
+                            println!("{:?} {:?}", x, y);
+                            output[x + 1][y + 1] = pixels[x * ($y_size - 2) + y];
+                        }
+                    }
+                    output
+                }
             }
         };
     }
-    extract_3x3_patches!(28, 28);
-    extract_3x3_patches!(32, 32);
-    extract_3x3_patches!(64, 64);
+    layer_2d!(4, 4);
+    layer_2d!(5, 5);
+    layer_2d!(28, 28);
+    layer_2d!(32, 32);
+    layer_2d!(64, 64);
 
     pub mod pixelmap {
         macro_rules! pixel_map_2d {
@@ -437,9 +507,11 @@ pub mod layers {
                     counts
                 },
             )
-            .reduce(|| vec![0u32; T::bit_len()], |a, b| a.iter().zip(b.iter()).map(|(a, b)| a + b).collect())
+            .reduce(
+                || vec![0u32; T::bit_len()],
+                |a, b| a.iter().zip(b.iter()).map(|(a, b)| a + b).collect(),
+            )
     }
-
 
     #[macro_export]
     macro_rules! log_dist_1d {
@@ -592,7 +664,10 @@ pub mod layers {
     #[macro_export]
     macro_rules! par_xor_conv3x3_median_activations {
         ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
-            fn $name(filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans], inputs: &Vec<&[[[u64; $in_chans]; $y_size]; $x_size]>) -> [[u32; 64]; $out_chans] {
+            fn $name(
+                filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans],
+                inputs: &Vec<&[[[u64; $in_chans]; $y_size]; $x_size]>,
+            ) -> [[u32; 64]; $out_chans] {
                 let thresholds_vec: Vec<[u32; 64]> = filters
                     .par_iter()
                     .map(|filter_word| {
@@ -638,7 +713,10 @@ pub mod layers {
     #[macro_export]
     macro_rules! xor_conv3x3_median_activations {
         ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
-            fn $name(filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans], inputs: &Vec<&[[[u64; $in_chans]; $y_size]; $x_size]>) -> [[u32; 64]; $out_chans] {
+            fn $name(
+                filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans],
+                inputs: &Vec<&[[[u64; $in_chans]; $y_size]; $x_size]>,
+            ) -> [[u32; 64]; $out_chans] {
                 let mut thresholds = [[0u32; 64]; $out_chans];
                 for ow in 0..$out_chans {
                     for ob in 0..64 {
@@ -701,7 +779,10 @@ pub mod layers {
     #[macro_export]
     macro_rules! xor_conv3x3_activations {
         ($name:ident, $x_size:expr, $y_size:expr, $in_chans:expr, $out_chans:expr) => {
-            fn $name(filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans], input: &[[[u64; $in_chans]; $y_size]; $x_size]) -> [[[[u32; 64]; $out_chans]; $y_size]; $x_size] {
+            fn $name(
+                filters: &[[[[[u64; $in_chans]; 3]; 3]; 64]; $out_chans],
+                input: &[[[u64; $in_chans]; $y_size]; $x_size],
+            ) -> [[[[u32; 64]; $out_chans]; $y_size]; $x_size] {
                 let mut activations = [[[[0u32; 64]; $out_chans]; $y_size]; $x_size];
                 for x in 0..$x_size - 2 {
                     for y in 0..$y_size - 2 {
@@ -710,7 +791,8 @@ pub mod layers {
                                 for px in 0..3 {
                                     for py in 0..3 {
                                         for iw in 0..$in_chans {
-                                            activations[x + 1][y + 1][ow][ob] += (filters[ow][ob][px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
+                                            activations[x + 1][y + 1][ow][ob] +=
+                                                (filters[ow][ob][px][py][iw] ^ input[x + px][y + py][iw]).count_ones();
                                         }
                                     }
                                 }
@@ -725,7 +807,10 @@ pub mod layers {
     #[macro_export]
     macro_rules! threshold_and_bitpack_image {
         ($name:ident, $x_size:expr, $y_size:expr, $out_chans:expr) => {
-            fn $name(input: &[[[[u32; 64]; $out_chans]; $y_size]; $x_size], thresholds: &[[u32; 64]; $out_chans]) -> [[[u64; $out_chans]; $y_size]; $x_size] {
+            fn $name(
+                input: &[[[[u32; 64]; $out_chans]; $y_size]; $x_size],
+                thresholds: &[[u32; 64]; $out_chans],
+            ) -> [[[u64; $out_chans]; $y_size]; $x_size] {
                 let mut output = [[[0u64; $out_chans]; $y_size]; $x_size];
                 for x in 0..$x_size {
                     for y in 0..$y_size {
@@ -793,8 +878,10 @@ pub mod layers {
                         let y_base = y * 2;
                         for c in 0..$chans {
                             //println!("x: {:?}, y: {:?}", x, y);
-                            pooled[x][y][c] =
-                                image[x_base + 0][y_base + 0][c] | image[x_base + 0][y_base + 1][c] | image[x_base + 1][y_base + 0][c] | image[x_base + 1][y_base + 1][c];
+                            pooled[x][y][c] = image[x_base + 0][y_base + 0][c]
+                                | image[x_base + 0][y_base + 1][c]
+                                | image[x_base + 1][y_base + 0][c]
+                                | image[x_base + 1][y_base + 1][c];
                             //println!("{:064b}", pooled[x][y][c]);
                         }
                     }
@@ -810,7 +897,11 @@ pub mod layers {
                 examples: &Vec<(u8, [[[u64; $in_chans]; $y_size]; $x_size])>,
                 filter_sets: &Vec<[[[[u64; $in_chans]; 3]; 3]; $n_labels]>,
             ) -> [[[[[f32; 64]; $in_chans]; 3]; 3]; $n_labels] {
-                fn is_hard(patch: &[[[u64; $in_chans]; 3]; 3], filter_sets: &Vec<[[[[u64; $in_chans]; 3]; 3]; $n_labels]>, label: u8) -> bool {
+                fn is_hard(
+                    patch: &[[[u64; $in_chans]; 3]; 3],
+                    filter_sets: &Vec<[[[[u64; $in_chans]; 3]; 3]; $n_labels]>,
+                    label: u8,
+                ) -> bool {
                     xor_conv3x3_isin_topn!(is_correct, $in_chans, $n_labels, $n);
                     for filter_set in filter_sets {
                         if is_correct(&patch, &filter_set, label as usize) {
@@ -984,7 +1075,7 @@ pub mod layers {
 #[cfg(test)]
 mod tests {
     use super::layers::{bitvecmul, pack_3x3, unary};
-    use super::layers::{Extract2dPatches, Patch};
+    use super::layers::{Layer2d, Patch};
     #[test]
     fn patch_count() {
         let mut counters = vec![0u32; 32];
@@ -1001,7 +1092,10 @@ mod tests {
     fn patch_dist() {
         assert_eq!(123u8.hamming_distance(&123u8), 0);
         assert_eq!(0b1010_1000u8.hamming_distance(&0b1010_0111u8), 4);
-        assert_eq!([0b1111_0000u8, 0b1111_0000u8].hamming_distance(&[0b0000_1100u8, 0b1111_1111u8]), 6 + 4);
+        assert_eq!(
+            [0b1111_0000u8, 0b1111_0000u8].hamming_distance(&[0b0000_1100u8, 0b1111_1111u8]),
+            6 + 4
+        );
     }
     #[test]
     fn bit_vecmul() {
@@ -1028,8 +1122,29 @@ mod tests {
     fn extract_patches() {
         let value = 0b1011_0111u8;
         let layer = [[value; 28]; 28];
-        let patches: Vec<_> = layer.extract_3x3_patches().iter().map(|&x| x).collect();
+        let patches: Vec<_> = layer.to_3x3_patches().iter().map(|&x| x).collect();
         assert_eq!(patches.len(), 676);
         assert_eq!(patches[0], [value; 9])
+    }
+    #[test]
+    fn rgb_pack() {
+        assert_eq!(unary::rgb_to_u14([255, 255, 255]), 0b0011_1111_1111_1111u16);
+        assert_eq!(unary::rgb_to_u14([128, 128, 128]), 0b0000_0110_0011_0011u16);
+        assert_eq!(unary::rgb_to_u14([0, 0, 0]), 0b0u16);
+    }
+    #[test]
+    fn layer_pixels() {
+        let layer = [[0b1001100u8; 28]; 28];
+        let patches = layer.to_pixels();
+        let new_layer = <[[u8; 28]; 28]>::from_pixels_0_padding(&patches);
+        assert_eq!(layer, new_layer);
+
+        let layer = [[!0u8; 5], [0u8; 5], [!0u8; 5], [0u8; 5], [!0u8; 5]];
+        let patches = layer.to_3x3_patches();
+        let pixels: Vec<u8> = patches.iter().map(|x| x[4]).collect();
+        assert_eq!(patches.len(), 9);
+        let new_layer = <[[u8; 5]; 5]>::from_pixels_1_padding(&pixels);
+        let target_new_layer = [[0u8; 5], [0u8; 5], [0u8, !0u8, !0u8, !0u8, 0u8], [0u8; 5], [0u8; 5]];
+        assert_eq!(new_layer, target_new_layer);
     }
 }
