@@ -372,8 +372,12 @@ pub mod featuregen {
             }
         };
     }
+    gen_n_threshold_masked!(tm_1, 1);
+    gen_n_threshold_masked!(tm_2, 2);
     gen_n_threshold_masked!(tm_3, 3);
     gen_n_threshold_masked!(tm_4, 4);
+    gen_n_threshold_masked!(tm_5, 5);
+    gen_n_threshold_masked!(tm_6, 6);
 }
 
 #[macro_use]

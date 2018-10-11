@@ -19,31 +19,6 @@ fn split_by_label<T: Copy>(examples: &Vec<(usize, T)>, len: usize) -> Vec<Vec<T>
 
 const TRAIN_SIZE: usize = 60_000;
 
-//fn eval_acc<T>() -> f64{
-//    let mut readout_features: Vec<([u64; 13], [u64; 13])> = vec![];
-//    for class in 0..10 {
-//        let (base_point, mask) = featuregen::gen_basepoint(&shards, 0.0, class);
-//        readout_features.push((base_point, mask));
-//    }
-//    let test_images = mnist::load_images_bitpacked(&String::from("/home/isaac/big/cache/datasets/mnist/t10k-images-idx3-ubyte"), 10000);
-//    let test_labels = mnist::load_labels(&String::from("/home/isaac/big/cache/datasets/mnist/t10k-labels-idx1-ubyte"), 10000);
-//    let test_correct: u64 = test_labels
-//        .iter()
-//        .zip(test_images.iter())
-//        .map(|(&label, &image)| {
-//            let max: usize = readout_features
-//                .iter()
-//                .map(|(class_feature, mask)| class_feature.masked_hamming_distance(&image, &mask))
-//                .enumerate()
-//                .max_by_key(|(_, dist)| *dist)
-//                .unwrap()
-//                .0;
-//            (max == label) as u64
-//        })
-//        .sum();
-//    test_correct as f64 / test_images.len()
-//}
-
 fn pack_u32_u128(input: [u32; 4]) -> u128 {
     let mut output = 0u128;
     for i in 0..4 {
@@ -52,90 +27,44 @@ fn pack_u32_u128(input: [u32; 4]) -> u128 {
     output
 }
 
+const L1_FEATURE_ITERS: usize = 4;
+const l1_UNARY_SIZE: usize = 6;
+
 fn main() {
-    let images = mnist::load_images_bitpacked(
-        &String::from("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"),
-        TRAIN_SIZE,
-    );
-    let labels = mnist::load_labels(
-        &String::from("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"),
-        TRAIN_SIZE,
-    );
-    let examples: Vec<_> = labels
-        .iter()
-        .zip(images.iter())
-        .map(|(&label, &image)| (label as usize, image))
-        .collect();
+    let images = mnist::load_images_bitpacked(&String::from("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"), TRAIN_SIZE);
+    let labels = mnist::load_labels(&String::from("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"), TRAIN_SIZE);
+    let examples: Vec<_> = labels.iter().zip(images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
     let mut shards = vec![split_by_label(&examples, 10)];
-    //if false {
-    //    let mut readout_features: Vec<([u64; 13], [u64; 13])> = vec![];
-    //    for class in 0..10 {
-    //        let (base_point, mask) = featuregen::gen_basepoint(&shards, 0.0, class);
-    //        readout_features.push((base_point, mask));
-    //    }
-    //    let test_images = mnist::load_images_bitpacked(&String::from("/home/isaac/big/cache/datasets/mnist/t10k-images-idx3-ubyte"), 10000);
-    //    let test_labels = mnist::load_labels(&String::from("/home/isaac/big/cache/datasets/mnist/t10k-labels-idx1-ubyte"), 10000);
-    //    let test_correct: u64 = test_labels
-    //        .iter()
-    //        .zip(test_images.iter())
-    //        .map(|(&label, &image)| {
-    //            let max: usize = readout_features
-    //                .iter()
-    //                .map(|(class_feature, mask)| class_feature.masked_hamming_distance(&image, &mask))
-    //                .enumerate()
-    //                .max_by_key(|(_, dist)| *dist)
-    //                .unwrap()
-    //                .0;
-    //            (max == label) as u64
-    //        })
-    //        .sum();
-    //    println!("l0 acc: {:?}%", test_correct as f64 / 10000.0 * 100.0);
-    //}
-    let mut features_vec: Vec<([u64; 13], [u64; 13], [u32; 4])> = vec![];
+    let mut features_vec: Vec<([u64; 13], [u64; 13])> = vec![];
     let nil_mask = [!0u64; 13];
-    for i in 0..3 {
+    for i in 0..L1_FEATURE_ITERS {
         for class in 0..10 {
-            let (base_point, mask) = featuregen::gen_basepoint(&shards, 0.0000000, class);
+            let (base_point, mask) = featuregen::gen_basepoint(&shards, 0.000000, class);
             //let mask = nil_mask;
+            features_vec.push((base_point, mask));
             let split_threshold = featuregen::gen_threshold_masked(&images, &base_point, &mask);
-            let thresholds = featuregen::tm_4(&images, &base_point, &mask);
-            features_vec.push((base_point, mask, thresholds));
-            shards = featuregen::split_labels_set_by_distance(&shards, &base_point, &mask, split_threshold, 5);
-            println!(
-                "{:064b} {:064b} {:?} \t {:?} \t {:?}",
-                base_point[3],
-                mask[3],
-                thresholds,
-                shards.len(),
-                class
-            );
+            shards = featuregen::split_labels_set_by_distance(&shards, &base_point, &mask, split_threshold, 4);
+            println!("{:064b} {:064b} {:?} \t {:?}", base_point[3], mask[3], shards.len(), class);
         }
     }
-    let mut base_points = [([0u64; 13], [0u64; 13]); 32];
-    let mut thresholds = [[0u32; 32]; 4];
-    for (i, (base, mask, ths)) in features_vec.iter().enumerate() {
-        base_points[i] = (*base, *mask);
-        for t in 0..4 {
-            thresholds[t][i] = ths[t];
-        }
-        //println!("{:064b} {:064b} {:?}", features[i].0[3], features[i].1[3], features[i].2);
-    }
-    let l2_examples: Vec<(usize, u128)> = examples
+    let l1_thresholds: Vec<[u32; l1_UNARY_SIZE]> = features_vec.iter().map(|(base, mask)| featuregen::tm_6(&images, &base, &mask)).collect();
+    let l2_examples: Vec<(usize, [u128; 2])> = examples
         .iter()
         .map(|(label, image)| {
-            let distances = bitvecmul::mbvm_u32(&base_points, &image);
-            let mut words = [0u32; 4];
-            for i in 0..4 {
-                let bools: Vec<bool> = distances.iter().zip(thresholds[i].iter()).map(|(d, t)| d > t).collect();
-                words[i] = <u32>::bitpack(&bools.as_slice());
+            let distances = bitvecmul::vmbvm(&features_vec, &image);
+            let mut bools = vec![false; 256];
+            for c in 0..(L1_FEATURE_ITERS * 10) {
+                for i in 0..l1_UNARY_SIZE {
+                    bools[(c * l1_UNARY_SIZE) + i] = distances[c] > l1_thresholds[c][i];
+                }
             }
-            (*label, pack_u32_u128(words))
+            (*label, <[u128; 2]>::bitpack(&bools.as_slice()))
         }).collect();
     let mut shards = vec![split_by_label(&l2_examples, 10)];
     {
-        let mut readout_features: Vec<(u128, u128)> = vec![];
+        let mut readout_features: Vec<([u128; 2], [u128; 2])> = vec![];
         for class in 0..10 {
-            let (base_point, mask) = featuregen::gen_basepoint(&shards, 0.00002, class);
+            let (base_point, mask) = featuregen::gen_basepoint(&shards, 0.0000, class);
             //println!("{:0128b}", base_point);
             readout_features.push((base_point, mask));
         }
@@ -145,13 +74,16 @@ fn main() {
             .iter()
             .zip(test_images.iter())
             .map(|(&label, &image)| {
-                let distances = bitvecmul::mbvm_u32(&base_points, &image);
-                let mut words = [0u32; 4];
-                for i in 0..4 {
-                    let bools: Vec<bool> = distances.iter().zip(thresholds[i].iter()).map(|(d, t)| d > t).collect();
-                    words[i] = <u32>::bitpack(&bools.as_slice());
-                }
-                let l2_state = pack_u32_u128(words);
+                let l2_state = {
+                    let distances = bitvecmul::vmbvm(&features_vec, &image);
+                    let mut bools = vec![false; 256];
+                    for c in 0..(L1_FEATURE_ITERS * 10) {
+                        for i in 0..l1_UNARY_SIZE {
+                            bools[(c * l1_UNARY_SIZE) + i] = distances[c] > l1_thresholds[c][i];
+                        }
+                    }
+                    <[u128; 2]>::bitpack(&bools.as_slice())
+                };
                 let max: usize = readout_features
                     .iter()
                     .map(|(class_feature, mask)| class_feature.masked_hamming_distance(&l2_state, &mask))
