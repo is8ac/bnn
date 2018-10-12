@@ -378,6 +378,20 @@ pub mod featuregen {
     gen_n_threshold_masked!(tm_4, 4);
     gen_n_threshold_masked!(tm_5, 5);
     gen_n_threshold_masked!(tm_6, 6);
+
+    pub fn vec_threshold<T: Patch + Sync>(patches: &Vec<T>, base_point: &T, mask: &T, n: usize) -> Vec<u32> {
+        let mut bit_distances: Vec<u32> = patches
+            .par_iter()
+            .map(|y| y.masked_hamming_distance(&base_point, &mask))
+            .collect();
+        bit_distances.par_sort();
+        let mut split_points = vec![0u32; n];
+        for i in 0..n {
+            split_points[i] = bit_distances[(bit_distances.len() / (n + 1)) * (i + 1)];
+        }
+        split_points
+    }
+
 }
 
 #[macro_use]
