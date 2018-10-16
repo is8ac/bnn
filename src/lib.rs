@@ -253,7 +253,7 @@ pub mod datasets {
 
 pub mod featuregen {
     use super::layers;
-    use super::layers::{pack_3x3, pixelmap, unary, Layer2d, Patch};
+    use super::layers::Patch;
     use rayon::prelude::*;
 
     // split_labels_set_by_filter takes examples and a split func. It returns the
@@ -317,34 +317,24 @@ pub mod featuregen {
 
     pub fn gen_basepoint<T: Patch + Sync>(shards: &Vec<Vec<Vec<T>>>, magn_threshold: f64, label: usize) -> (T, T) {
         let len: u64 = shards
-            .iter()
+            .par_iter()
             .map(|shard| {
                 let sum: u64 = shard.iter().map(|class: &Vec<T>| class.len() as u64).sum();
                 sum
             }).sum();
-        let mut sum_bits: Vec<Vec<(usize, Vec<u32>)>> = shards
-            .iter()
-            .map(|labels| labels.iter().map(|label_patches| (label_patches.len(), layers::count_bits(&label_patches))).collect())
-            .collect();
 
-        let grads: Vec<f64> = sum_bits
-            .iter_mut()
-            .map(|shard| {
-                let target = shard.remove(label);
-                let other = shard.iter().fold((0usize, vec![0u32; T::bit_len()]), |(a_len, a_vals), (b_len, b_vals)| {
-                    (a_len + b_len, a_vals.iter().zip(b_vals.iter()).map(|(x, y)| x + y).collect())
-                });
-                (target, other)
-            }).filter(|((target_len, _), (other_len, _))| (*target_len > 0) & (*other_len > 0))
-            .map(|((target_len, target_sums), (other_len, other_sums))| {
-                let other_avg = avg_bit_sums(other_len, &other_sums);
-                let target_avg = avg_bit_sums(target_len, &target_sums);
-                other_avg
-                    .iter()
-                    .zip(target_avg.iter())
-                    .map(|(a, b)| (a - b) * (target_len.min(other_len) as f64 / len as f64))
-                    .collect()
-            }).fold(vec![0f64; T::bit_len()], |acc, grads: Vec<f64>| acc.iter().zip(grads.iter()).map(|(a, b)| a + b).collect());
+        let grads: Vec<f64> = shards
+            .iter()
+            .filter(|x| {
+                let class_len = x[label].len();
+                if class_len > 0 {
+                    let total_len: usize = x.iter().map(|y| y.len()).sum();
+                    return (total_len - class_len) > 0;
+                }
+                class_len > 0
+            }).map(|shard| grads_one_shard(&shard, label))
+            .map(|grads| grads.iter().map(|&grad| grad * len as f64).collect())
+            .fold(vec![0f64; T::bit_len()], |acc, grads: Vec<f64>| acc.iter().zip(grads.iter()).map(|(a, b)| a + b).collect());
         let sign_bits: Vec<bool> = grads.iter().map(|x| *x > 0f64).collect();
         let magn_bits: Vec<bool> = grads.iter().map(|x| x.abs() > magn_threshold).collect();
 
@@ -406,6 +396,28 @@ pub mod layers {
         fn bitpack(&[bool]) -> Self;
     }
 
+    impl<A: Patch, B: Patch> Patch for (A, B) {
+        fn hamming_distance(&self, other: &Self) -> u32 {
+            self.0.hamming_distance(&other.0) + self.1.hamming_distance(&other.1)
+        }
+        fn masked_hamming_distance(&self, other: &Self, mask: &Self) -> u32 {
+            self.0.masked_hamming_distance(&other.0, &mask.0) + self.1.masked_hamming_distance(&other.1, &mask.1)
+        }
+        fn bit_increment(&self, counters: &mut [u32]) {
+            self.0.bit_increment(&mut counters[0..A::bit_len()]);
+            self.1.bit_increment(&mut counters[A::bit_len()..]);
+        }
+        fn bit_len() -> usize {
+            A::bit_len() + B::bit_len()
+        }
+        fn bitpack(bools: &[bool]) -> Self {
+            if bools.len() != (A::bit_len() + B::bit_len()) {
+                panic!("pair bitpack: counters is {:?}, should be {:?}", bools.len(), A::bit_len() + B::bit_len());
+            }
+            (A::bitpack(&bools[..A::bit_len()]), B::bitpack(&bools[A::bit_len()..]))
+        }
+    }
+
     macro_rules! primitive_patch {
         ($type:ty, $len:expr) => {
             impl Patch for $type {
@@ -417,7 +429,7 @@ pub mod layers {
                 }
                 fn bit_increment(&self, counters: &mut [u32]) {
                     if counters.len() != $len {
-                        panic!("counters is the wrong len");
+                        panic!("primitive increment: counters is {:?}, should be {:?}", counters.len(), $len);
                     }
                     for i in 0..$len {
                         counters[i] += ((self >> i) & 0b1 as $type) as u32;
@@ -428,7 +440,7 @@ pub mod layers {
                 }
                 fn bitpack(bools: &[bool]) -> $type {
                     if bools.len() != $len {
-                        panic!("counters is the wrong len");
+                        panic!("primitive bitpack: counters is {:?}, should be {:?}", bools.len(), $len);
                     }
                     let mut val = 0 as $type;
                     for i in 0..$len {
@@ -465,7 +477,7 @@ pub mod layers {
                 }
                 fn bit_increment(&self, counters: &mut [u32]) {
                     if counters.len() != ($len * T::bit_len()) {
-                        panic!("counters is the wrong len");
+                        panic!("array increment: counters is {:?}, should be {:?}", counters.len(), $len * T::bit_len());
                     }
                     for i in 0..$len {
                         self[i].bit_increment(&mut counters[i * T::bit_len()..(i + 1) * T::bit_len()]);
@@ -476,7 +488,7 @@ pub mod layers {
                 }
                 fn bitpack(bools: &[bool]) -> [T; $len] {
                     if bools.len() != ($len * T::bit_len()) {
-                        panic!("counters is the wrong len");
+                        panic!("array bitpack: bools is {:?}, should be {:?}", bools.len(), $len * T::bit_len());
                     }
                     let mut val = [T::default(); $len];
                     for i in 0..$len {
@@ -1309,13 +1321,13 @@ mod tests {
         assert_eq!(0b1010_1000u8.hamming_distance(&0b1010_0111u8), 4);
         assert_eq!([0b1111_0000u8, 0b1111_0000u8].hamming_distance(&[0b0000_1100u8, 0b1111_1111u8]), 6 + 4);
     }
-    #[test]
-    fn bit_vecmul() {
-        let input = [0u128; 3];
-        let weights = [([0u128; 3], 0u32); 7];
-        let output = bitvecmul::bvm_u7(&weights, &input);
-        assert_eq!(output, 0b0111_1111u8);
-    }
+    //#[test]
+    //fn bit_vecmul() {
+    //    let input = [0u128; 3];
+    //    let weights = [([0u128; 3], 0u32); 7];
+    //    let output = bitvecmul::bvm_u7(&weights, &input);
+    //    assert_eq!(output, 0b0111_1111u8);
+    //}
     #[test]
     fn unary() {
         assert_eq!(unary::to_3(128), 0b0000_0001u8);
