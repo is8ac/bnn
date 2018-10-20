@@ -1,8 +1,8 @@
 extern crate bitnn;
 extern crate rayon;
 
-use bitnn::datasets::mnist;
 use rayon::prelude::*;
+use bitnn::datasets::mnist;
 use std::collections::HashMap;
 
 fn unary7bit(input: u8) -> u8 {

@@ -32,9 +32,9 @@ macro_rules! eval_acc {
                         .enumerate()
                         .max_by_key(|(_, activation)| *activation)
                         .unwrap()
-                        .0 as u8 == *label) as u64
-                })
-                .sum();
+                        .0 as u8
+                        == *label) as u64
+                }).sum();
             num_correct as f32 / images.len() as f32
         }
     };
@@ -104,8 +104,7 @@ fn main() {
         }
     }
     // now we must calculate the medians of each channel.
-    let activations: Vec<[[[[u32; 64]; CHAN_1]; IMAGE_SIZE]; IMAGE_SIZE]> =
-        images.iter().map(|x| l1_activations(&l1_filters, &x.1)).collect();
+    let activations: Vec<[[[[u32; 64]; CHAN_1]; IMAGE_SIZE]; IMAGE_SIZE]> = images.iter().map(|x| l1_activations(&l1_filters, &x.1)).collect();
     println!("done with activations");
 
     let thresholds = l1_median_activations(&activations);
