@@ -394,6 +394,7 @@ pub mod layers {
         fn bit_increment(&self, &mut [u32]);
         fn bit_len() -> usize;
         fn bitpack(&[bool]) -> Self;
+        //fn bit_print(&self);
     }
 
     impl<A: Patch, B: Patch> Patch for (A, B) {
