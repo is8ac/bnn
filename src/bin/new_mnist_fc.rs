@@ -26,11 +26,15 @@ fn apply_unary<T: Patch, O: Patch>(input: &T, features_vec: &Vec<(T, T)>, thresh
     O::bitpack(&bools.as_slice())
 }
 
-fn gen_readout_features<T: Patch + Sync + Clone + Default>(by_class: &Vec<Vec<T>>) -> Vec<(T, T)> {
+fn gen_readout_features<T: Patch + Sync + Clone + Default>(by_class: &Vec<Vec<T>>, threshold: f64) -> Vec<(T, T)> {
+    let num_examples: usize = by_class.iter().map(|x| x.len()).sum();
+
     (0..by_class.len())
         .map(|class| {
             let grads = featuregen::grads_one_shard(by_class, class);
-            let (base_point, mask) = featuregen::grads_to_bits(&grads, 0.0);
+            let scaled_grads: Vec<f64> = grads.iter().map(|x| x / num_examples as f64).collect();
+            //println!("{:?}", scaled_grads);
+            let (base_point, mask) = featuregen::grads_to_bits(&scaled_grads, threshold);
             (base_point, mask)
         }).collect()
 }
@@ -44,7 +48,8 @@ fn eval_acc<T: Patch>(readout_features: &Vec<(T, T)>, test_inputs: &Vec<Vec<T>>,
             x.1.iter()
                 .map(move |input| {
                     x.0 == readout_features
-                        .iter().zip(biases.iter())
+                        .iter()
+                        .zip(biases.iter())
                         .map(|((base_point, mask), bias)| input.masked_hamming_distance(&base_point, &mask) as i32 - bias)
                         .enumerate()
                         .max_by_key(|(_, dist)| *dist)
@@ -101,16 +106,7 @@ fn bias<T: Patch>(readout_features: &Vec<(T, T)>, test_inputs: &Vec<Vec<T>>) -> 
     avg_activations
 }
 
-// - (Vec<usize>, Vec<T>)
-// - Vec<(usize, T)>
-// - Vec<Vec<T>>
-// - Vec<Vec<Vec<T>>>
-
-fn gen_hidden_features<T: Patch + Copy + Sync + Default + Send>(
-    train_inputs: &Vec<Vec<T>>,
-    n_features_iters: usize,
-    unary_size: usize,
-) -> (Vec<(T, T)>, Vec<Vec<u32>>) {
+fn gen_hidden_features<T: Patch + Copy + Sync + Default + Send>(train_inputs: &Vec<Vec<T>>, n_features_iters: usize, unary_size: usize) -> (Vec<(T, T)>, Vec<Vec<u32>>) {
     let flat_inputs: Vec<T> = train_inputs.iter().flatten().cloned().collect();
     let mut shards: Vec<Vec<Vec<T>>> = vec![train_inputs.clone().to_owned()];
     let mut features_vec: Vec<(T, T)> = vec![];
@@ -153,24 +149,27 @@ fn main() {
     let l0_test_inputs = split_by_label(&test_examples, 10);
 
     let (l1_features_vec, l1_thresholds) = gen_hidden_features(&l0_train_inputs, 5, 7);
-    let l1_train_inputs = apply_features_fc::<_, [u128; 3]>(&l0_train_inputs, &l1_features_vec, &l1_thresholds);
-    let l1_test_inputs = apply_features_fc::<_, [u128; 3]>(&l0_test_inputs, &l1_features_vec, &l1_thresholds);
+    let l1_train_inputs = apply_features_fc::<_, [u128; 4]>(&l0_train_inputs, &l1_features_vec, &l1_thresholds);
+    let l1_test_inputs = apply_features_fc::<_, [u128; 4]>(&l0_test_inputs, &l1_features_vec, &l1_thresholds);
 
-    //let l1z_train_inputs = nzip(&l0_train_inputs, &l1_train_inputs);
-    //let l1z_test_inputs = nzip(&l0_test_inputs, &l1_test_inputs);
-    let l1_readout_features = gen_readout_features(&l1_train_inputs);
-    let biases = bias(&l1_readout_features, &l1_test_inputs);
-    let acc = eval_acc(&l1_readout_features, &l1_test_inputs, &biases);
+    let l1z_train_inputs = nzip(&l0_train_inputs, &l1_train_inputs);
+    let l1z_test_inputs = nzip(&l0_test_inputs, &l1_test_inputs);
+    let l1_readout_features = gen_readout_features(&l1z_train_inputs, 0.0);
+    let biases = bias(&l1_readout_features, &l1z_test_inputs);
+    let acc = eval_acc(&l1_readout_features, &l1z_test_inputs, &biases);
     println!("acc: {:?}%", acc * 100.0);
     //confusion_matrix(&l1_readout_features, &l1_test_inputs);
 
-    let (l2_features_vec, l2_thresholds) = gen_hidden_features(&l1_train_inputs, 5, 7);
-    let l2_train_inputs = apply_features_fc::<_, [u128; 3]>(&l1_train_inputs, &l2_features_vec, &l2_thresholds);
-    let l2_test_inputs = apply_features_fc::<_, [u128; 3]>(&l1_test_inputs, &l2_features_vec, &l2_thresholds);
+    let (l2_features_vec, l2_thresholds) = gen_hidden_features(&l1z_train_inputs, 6, 6);
+    let l2_train_inputs = apply_features_fc::<_, [u128; 4]>(&l1z_train_inputs, &l2_features_vec, &l2_thresholds);
+    let l2_test_inputs = apply_features_fc::<_, [u128; 4]>(&l1z_test_inputs, &l2_features_vec, &l2_thresholds);
 
-    let l2_readout_features = gen_readout_features(&l2_train_inputs);
-    let biases = bias(&l2_readout_features, &l2_test_inputs);
-    let acc = eval_acc(&l2_readout_features, &l2_test_inputs, &biases);
+    let l2z_train_inputs = nzip(&l1z_train_inputs, &l2_train_inputs);
+    let l2z_test_inputs = nzip(&l1z_test_inputs, &l2_test_inputs);
+
+    let l2_readout_features = gen_readout_features(&l2z_train_inputs, 0.0);
+    let biases = bias(&l2_readout_features, &l2z_test_inputs);
+    let acc = eval_acc(&l2_readout_features, &l2z_test_inputs, &biases);
     println!("acc: {:?}%", acc * 100.0);
     //confusion_matrix(&l2_readout_features, &l2_test_inputs);
 }
