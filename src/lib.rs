@@ -571,6 +571,7 @@ pub mod layers {
     array_patch!(8);
     array_patch!(9);
     array_patch!(13);
+    array_patch!(16);
     array_patch!(32);
     array_patch!(49);
     array_patch!(64);

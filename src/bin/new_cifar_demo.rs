@@ -76,6 +76,21 @@ fn load_data() -> Vec<(usize, [[[u8; 3]; 32]; 32])> {
     images
 }
 
+fn apply_features_conv<A: Patch + Copy + Default, I: Layer2d<A>, B: Patch + Copy + Default, O: Layer2d<B>>(
+    inputs: &Vec<Vec<I>>,
+    features_vec: &Vec<([A; 9], [A; 9])>,
+    thresholds: &Vec<Vec<u32>>,
+) -> Vec<Vec<O>> {
+    inputs
+        .iter()
+        .map(|class| {
+            class
+                .iter()
+                .map(|image| O::from_pixels_1_padding(&image.to_3x3_patches().iter().map(|&pixels| featuregen::apply_unary(&pixels, features_vec, thresholds)).collect()))
+                .collect()
+        }).collect()
+}
+
 fn main() {
     let examples = load_data();
     let u14_packed_images: Vec<(usize, [[u16; 32]; 32])> = examples.par_iter().map(|(label, image)| (*label, pixelmap::pm_32(&image, &unary::rgb_to_u14))).collect();
@@ -85,17 +100,7 @@ fn main() {
         .map(|imgs| imgs.iter().map(|image| image.to_3x3_patches()).flatten().map(|pixels| pack_3x3::p14(pixels)).collect())
         .collect();
 
-    let l0_readout_features = featuregen::gen_readout_features(&l0_patches, 0.0);
-    let biases = bias(&l0_readout_features, &l0_patches);
-    let acc = eval_acc(&l0_readout_features, &l0_patches, &biases);
-    println!("acc: {:?}%", acc * 100.0);
-
     let (l1_features_vec, l1_thresholds) = featuregen::gen_hidden_features(&l0_patches, 3, 4, 20);
-    let l1_train_inputs = apply_features_fc::<_, u128>(&l0_patches, &l1_features_vec, &l1_thresholds);
-    let l1_readout_features = featuregen::gen_readout_features(&l1_train_inputs, 0.0);
-    let biases = bias(&l1_readout_features, &l1_train_inputs);
-    let acc = eval_acc(&l1_readout_features, &l1_train_inputs, &biases);
-    println!("acc: {:?}%", acc * 100.0);
 
     let l1_images: Vec<Vec<_>> = l0_images
         .par_iter()
@@ -119,33 +124,10 @@ fn main() {
         .map(|imgs| imgs.iter().map(|image| image.to_3x3_patches()).flatten().collect())
         .collect();
 
-    let l1_readout_features = featuregen::gen_readout_features(&l1_patches, 0.0);
-    let biases = bias(&l1_readout_features, &l1_patches);
-    let acc = eval_acc(&l1_readout_features, &l1_patches, &biases);
-    println!("l1 acc: {:?}%", acc * 100.0);
-
     let (l2_features_vec, l2_thresholds) = featuregen::gen_hidden_features(&l1_patches, 4, 6, 7);
-    let l2_train_inputs = apply_features_fc::<_, [u128; 2]>(&l1_patches, &l2_features_vec, &l2_thresholds);
-    let l2_readout_features = featuregen::gen_readout_features(&l2_train_inputs, 0.0);
-    let biases = bias(&l2_readout_features, &l2_train_inputs);
-    let acc = eval_acc(&l2_readout_features, &l2_train_inputs, &biases);
-    println!("acc: {:?}%", acc * 100.0);
 
-    let l2_images: Vec<Vec<_>> = l1_pooled_images
-        .par_iter()
-        .map(|class| {
-            class
-                .iter()
-                .map(|image| {
-                    <[[[u128; 2]; 16]; 16]>::from_pixels_1_padding(
-                        &image
-                            .to_3x3_patches()
-                            .iter()
-                            .map(|&pixels| featuregen::apply_unary(&pixels, &l2_features_vec, &l2_thresholds))
-                            .collect(),
-                    )
-                }).collect()
-        }).collect();
+    let l2_images = apply_features_conv::<_, _, [u128; 2], [[_; 16]; 16]>(&l1_pooled_images, &l2_features_vec, &l2_thresholds);
+
     let l2_pooled_images: Vec<Vec<[[_; 8]; 8]>> = l2_images.par_iter().map(|class| class.iter().map(|image| pixelmap::pool_or_16(image)).collect()).collect();
 
     let l2_patches: Vec<Vec<_>> = l2_pooled_images
@@ -153,105 +135,25 @@ fn main() {
         .map(|imgs| imgs.iter().map(|image| image.to_3x3_patches()).flatten().collect())
         .collect();
 
-    let l2_readout_features = featuregen::gen_readout_features(&l2_patches, 0.0);
-    let biases = bias(&l2_readout_features, &l2_patches);
-    let acc = eval_acc(&l2_readout_features, &l2_patches, &biases);
-    println!("l2 acc: {:?}%", acc * 100.0);
-
     let (l3_features_vec, l3_thresholds) = featuregen::gen_hidden_features(&l2_patches, 5, 5, 3);
-    let l3_train_inputs = apply_features_fc::<_, [u128; 3]>(&l2_patches, &l3_features_vec, &l3_thresholds);
-    let l3_readout_features = featuregen::gen_readout_features(&l3_train_inputs, 0.0);
-    let biases = bias(&l3_readout_features, &l3_train_inputs);
-    let acc = eval_acc(&l3_readout_features, &l3_train_inputs, &biases);
-    println!("acc: {:?}%", acc * 100.0);
 
-    let l3_images: Vec<Vec<_>> = l2_pooled_images
-        .par_iter()
-        .map(|class| {
-            class
-                .iter()
-                .map(|image| {
-                    <[[[u128; 3]; 8]; 8]>::from_pixels_1_padding(
-                        &image
-                            .to_3x3_patches()
-                            .iter()
-                            .map(|&pixels| featuregen::apply_unary(&pixels, &l3_features_vec, &l3_thresholds))
-                            .collect(),
-                    )
-                }).collect()
-        }).collect();
+    let l3_images = apply_features_conv::<_, _, [u128; 3], [[_; 8]; 8]>(&l2_pooled_images, &l3_features_vec, &l3_thresholds);
     let l3_pooled_images: Vec<Vec<[[_; 4]; 4]>> = l3_images.par_iter().map(|class| class.iter().map(|image| pixelmap::pool_or_8(image)).collect()).collect();
-
-    let l3_patches: Vec<Vec<_>> = l3_pooled_images
+    let l3_flat_images: Vec<Vec<[_; 16]>> = l3_pooled_images
         .par_iter()
-        .map(|imgs| imgs.iter().map(|image| image.to_3x3_patches()).flatten().collect())
+        .map(|class| class.iter().map(|image| pack_3x3::flatten_4x4(&image)).collect())
         .collect();
 
-    let l3_readout_features = featuregen::gen_readout_features(&l3_patches, 0.0);
-    let biases = bias(&l3_readout_features, &l3_patches);
-    let acc = eval_acc(&l3_readout_features, &l3_patches, &biases);
+    let l3_readout_features = featuregen::gen_readout_features(&l3_flat_images, 0.0);
+    let biases = bias(&l3_readout_features, &l3_flat_images);
+    let acc = eval_acc(&l3_readout_features, &l3_flat_images, &biases);
     println!("l3 acc: {:?}%", acc * 100.0);
 
-    let (l4_features_vec, l4_thresholds) = featuregen::gen_hidden_features(&l3_patches, 5, 6, 2);
-    let l4_train_inputs = apply_features_fc::<_, [u128; 3]>(&l3_patches, &l4_features_vec, &l4_thresholds);
+    let (l4_features_vec, l4_thresholds) = featuregen::gen_hidden_features(&l3_flat_images, 5, 6, 2);
+    let l4_train_inputs = apply_features_fc::<_, [u128; 3]>(&l3_flat_images, &l4_features_vec, &l4_thresholds);
     let l4_readout_features = featuregen::gen_readout_features(&l4_train_inputs, 0.0);
     let biases = bias(&l4_readout_features, &l4_train_inputs);
     let acc = eval_acc(&l4_readout_features, &l4_train_inputs, &biases);
     println!("acc: {:?}%", acc * 100.0);
-
-    let test_set = cifar::load_images_10(&String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/test_batch.bin"), 10000);
-    let u14_packed_test_images: Vec<(usize, [[u16; 32]; 32])> = test_set.par_iter().map(|(label, image)| (*label, pixelmap::pm_32(&image, &unary::rgb_to_u14))).collect();
-
-    let start = PreciseTime::now();
-
-    let l1_test_images: Vec<(usize, _)> = u14_packed_test_images
-        .par_iter()
-        .map(|(label, image)| {
-            (
-                *label,
-                <[[u128; 32]; 32]>::from_pixels_1_padding(
-                    &image
-                        .to_3x3_patches()
-                        .iter()
-                        .map(|&pixels| featuregen::apply_unary(&pack_3x3::p14(pixels), &l1_features_vec, &l1_thresholds))
-                        .collect(),
-                ),
-            )
-        }).collect();
-    let l1_pooled_images: Vec<(usize, [[_; 16]; 16])> = l1_test_images.par_iter().map(|(label, image)| (*label, pixelmap::pool_or_32(&image))).collect();
-    let l2_test_images: Vec<(usize, _)> = l1_pooled_images
-        .par_iter()
-        .map(|(label, image)| {
-            (
-                *label,
-                <[[[u128; 2]; 16]; 16]>::from_pixels_1_padding(
-                    &image
-                        .to_3x3_patches()
-                        .iter()
-                        .map(|&pixels| featuregen::apply_unary(&pixels, &l2_features_vec, &l2_thresholds))
-                        .collect(),
-                ),
-            )
-        }).collect();
-    let l2_pooled_images: Vec<(usize, [[_; 8]; 8])> = l2_test_images.par_iter().map(|(label, image)| (*label, pixelmap::pool_or_16(&image))).collect();
-    let l3_test_images: Vec<(usize, _)> = l2_pooled_images
-        .par_iter()
-        .map(|(label, image)| {
-            (
-                *label,
-                <[[[u128; 3]; 8]; 8]>::from_pixels_1_padding(
-                    &image
-                        .to_3x3_patches()
-                        .iter()
-                        .map(|&pixels| featuregen::apply_unary(&pixels, &l3_features_vec, &l3_thresholds))
-                        .collect(),
-                ),
-            )
-        }).collect();
-    let l3_pooled_images: Vec<(usize, [[_; 4]; 4])> = l3_test_images.par_iter().map(|(label, image)| (*label, pixelmap::pool_or_8(&image))).collect();
-    //let l4_test_inputs = apply_features_fc::<_, [u128; 3]>(&l3_patches, &l4_features_vec, &l4_thresholds);
-    //let l4_train_inputs =      l3_.map(|x| x.iter().map(|input| featuregen::apply_unary(input, &features_vec, thresholds)).collect())
-
-    println!("inf time: {}", start.to(PreciseTime::now()));
 }
 // 29.28%
