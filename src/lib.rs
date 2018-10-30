@@ -253,8 +253,68 @@ pub mod datasets {
 
 pub mod featuregen {
     use super::layers;
-    use super::layers::Patch;
+    use super::layers::{bitvecmul, Patch};
     use rayon::prelude::*;
+
+    // Takes patches split by class, and generates n_features_iters features for each.
+    // Returns both a vec of features and a vec of unary activations.
+    // Splits after each new feature.
+    pub fn gen_hidden_features<T: Patch + Copy + Sync + Send>(
+        train_inputs: &Vec<Vec<T>>,
+        n_features_iters: usize,
+        unary_size: usize,
+        culling_threshold: usize,
+    ) -> (Vec<(T, T)>, Vec<Vec<u32>>) {
+        let flat_inputs: Vec<T> = train_inputs.iter().flatten().cloned().collect();
+        let mut shards: Vec<Vec<Vec<T>>> = vec![train_inputs.clone().to_owned()];
+        let mut features_vec: Vec<(T, T)> = vec![];
+        let mut thresholds: Vec<Vec<u32>> = vec![];
+        for i in 0..n_features_iters {
+            for class in 0..train_inputs.len() {
+                let (base_point, mask) = gen_basepoint(&shards, 0.0, class);
+                features_vec.push((base_point, mask));
+                let (split_threshold, unary_thresholds) = vec_threshold(&flat_inputs, &base_point, &mask, unary_size);
+                shards = split_labels_set_by_distance(&shards, &base_point, &mask, split_threshold, culling_threshold);
+                thresholds.push(unary_thresholds);
+                println!("{:?} \t {:?}", shards.len(), class);
+            }
+        }
+        //let thresholds: Vec<Vec<u32>> = features_vec.par_iter().map(|(base, mask)| vec_threshold(&flat_inputs, &base, &mask, unary_size)).collect();
+        (features_vec, thresholds)
+    }
+    // splits labels examples by class.
+    pub fn split_by_label<T: Copy>(examples: &Vec<(usize, T)>, len: usize) -> Vec<Vec<T>> {
+        let mut by_label: Vec<Vec<T>> = (0..len).map(|_| Vec::new()).collect();
+        for (label, example) in examples {
+            by_label[*label].push(*example);
+        }
+        let _: Vec<_> = by_label.iter_mut().map(|x| x.shrink_to_fit()).collect();
+        by_label
+    }
+
+    pub fn apply_unary<T: Patch, O: Patch>(input: &T, features_vec: &Vec<(T, T)>, thresholds: &Vec<Vec<u32>>) -> O {
+        let distances = bitvecmul::vmbvm(&features_vec, &input);
+        let mut bools = vec![false; O::bit_len()];
+        for c in 0..distances.len() {
+            for i in 0..thresholds[0].len() {
+                bools[(c * thresholds[0].len()) + i] = distances[c] > thresholds[c][i];
+            }
+        }
+        O::bitpack(&bools.as_slice())
+    }
+
+    pub fn gen_readout_features<T: Patch + Sync + Clone>(by_class: &Vec<Vec<T>>, threshold: f64) -> Vec<(T, T)> {
+        let num_examples: usize = by_class.iter().map(|x| x.len()).sum();
+
+        (0..by_class.len())
+            .map(|class| {
+                let grads = grads_one_shard(by_class, class);
+                let scaled_grads: Vec<f64> = grads.iter().map(|x| x / num_examples as f64).collect();
+                //println!("{:?}", scaled_grads);
+                let (base_point, mask) = grads_to_bits(&scaled_grads, threshold);
+                (base_point, mask)
+            }).collect()
+    }
 
     // split_labels_set_by_filter takes examples and a split func. It returns the
     // examples is a vec of shards of labels of examples of patches.
@@ -277,8 +337,13 @@ pub mod featuregen {
                         .collect(),
                     by_label
                         .par_iter()
-                        .map(|label_examples| label_examples.iter().filter(|x| x.masked_hamming_distance(base_point, mask) <= threshold).cloned().collect())
-                        .collect(),
+                        .map(|label_examples| {
+                            label_examples
+                                .iter()
+                                .filter(|x| x.masked_hamming_distance(base_point, mask) <= threshold)
+                                .cloned()
+                                .collect()
+                        }).collect(),
                 ];
                 pair
             }).flatten()
@@ -352,34 +417,15 @@ pub mod featuregen {
         bit_distances.par_sort();
         bit_distances[bit_distances.len() / 2]
     }
-    macro_rules! gen_n_threshold_masked {
-        ($name:ident, $n:expr) => {
-            pub fn $name<T: Patch + Sync>(patches: &Vec<T>, base_point: &T, mask: &T) -> [u32; $n] {
-                let mut bit_distances: Vec<u32> = patches.par_iter().map(|y| y.masked_hamming_distance(&base_point, &mask)).collect();
-                bit_distances.par_sort();
-                let mut split_points = [0u32; $n];
-                for i in 0..$n {
-                    split_points[i] = bit_distances[(bit_distances.len() / ($n + 1)) * (i + 1)];
-                }
-                split_points
-            }
-        };
-    }
-    gen_n_threshold_masked!(tm_1, 1);
-    gen_n_threshold_masked!(tm_2, 2);
-    gen_n_threshold_masked!(tm_3, 3);
-    gen_n_threshold_masked!(tm_4, 4);
-    gen_n_threshold_masked!(tm_5, 5);
-    gen_n_threshold_masked!(tm_6, 6);
 
-    pub fn vec_threshold<T: Patch + Sync>(patches: &Vec<T>, base_point: &T, mask: &T, n: usize) -> Vec<u32> {
+    pub fn vec_threshold<T: Patch + Sync>(patches: &Vec<T>, base_point: &T, mask: &T, n: usize) -> (u32, Vec<u32>) {
         let mut bit_distances: Vec<u32> = patches.par_iter().map(|y| y.masked_hamming_distance(&base_point, &mask)).collect();
         bit_distances.par_sort();
         let mut split_points = vec![0u32; n];
         for i in 0..n {
             split_points[i] = bit_distances[(bit_distances.len() / (n + 1)) * (i + 1)];
         }
-        split_points
+        (bit_distances[bit_distances.len() / 2], split_points)
     }
 
 }
@@ -394,6 +440,7 @@ pub mod layers {
         fn bit_increment(&self, &mut [u32]);
         fn bit_len() -> usize;
         fn bitpack(&[bool]) -> Self;
+        fn bit_or(&self, &Self) -> Self;
         //fn bit_print(&self);
     }
 
@@ -416,6 +463,9 @@ pub mod layers {
                 panic!("pair bitpack: counters is {:?}, should be {:?}", bools.len(), A::bit_len() + B::bit_len());
             }
             (A::bitpack(&bools[..A::bit_len()]), B::bitpack(&bools[A::bit_len()..]))
+        }
+        fn bit_or(&self, other: &Self) -> Self {
+            (self.0.bit_or(&other.0), self.1.bit_or(&other.1))
         }
     }
 
@@ -448,6 +498,9 @@ pub mod layers {
                         val = val | ((bools[i] as $type) << i);
                     }
                     val
+                }
+                fn bit_or(&self, other: &$type) -> $type {
+                    self | other
                 }
             }
         };
@@ -497,6 +550,13 @@ pub mod layers {
                     }
                     val
                 }
+                fn bit_or(&self, other: &Self) -> Self {
+                    let mut output = [T::default(); $len];
+                    for i in 0..$len {
+                        output[i] = self[i].bit_or(&other[i]);
+                    }
+                    output
+                }
             }
         };
     }
@@ -512,6 +572,7 @@ pub mod layers {
     array_patch!(9);
     array_patch!(13);
     array_patch!(32);
+    array_patch!(49);
     array_patch!(64);
 
     pub mod bitvecmul {
@@ -623,6 +684,7 @@ pub mod layers {
                 }
             };
         }
+        array_pack_u8_u128!(array_pack_u8_u128_49, 49);
 
         macro_rules! flatten_2d {
             ($name:ident, $x_size:expr, $y_size:expr) => {
@@ -638,8 +700,10 @@ pub mod layers {
                 }
             };
         }
-        flatten_2d!(flatten_28x28, 28, 28);
+        flatten_2d!(flatten_4x4, 4, 4);
+        flatten_2d!(flatten_8x8, 8, 8);
         flatten_2d!(flatten_16x16, 16, 16);
+        flatten_2d!(flatten_28x28, 28, 28);
         flatten_2d!(flatten_32x32, 32, 32);
     }
 
@@ -695,7 +759,7 @@ pub mod layers {
                 }
                 fn from_pixels_1_padding(pixels: &Vec<T>) -> [[T; $y_size]; $x_size] {
                     if pixels.len() != (($x_size - 2) * ($y_size - 2)) {
-                        panic!("pixels is wrong len")
+                        panic!("pixels should be {:}, but is {:}", (($x_size - 2) * ($y_size - 2)), pixels.len());
                     }
                     let mut output = [[T::default(); $y_size]; $x_size];
                     for x in 0..($x_size - 2) {
@@ -710,13 +774,14 @@ pub mod layers {
     }
     layer_2d!(4, 4);
     layer_2d!(5, 5);
+    layer_2d!(8, 8);
     layer_2d!(16, 16);
     layer_2d!(28, 28);
     layer_2d!(32, 32);
     layer_2d!(64, 64);
 
     pub mod pixelmap {
-        use std::ops::BitOr;
+        use super::Patch;
         macro_rules! pixel_map_2d {
             ($name:ident, $x_size:expr, $y_size:expr) => {
                 pub fn $name<I: Copy, O: Copy + Default>(input: &[[I; $y_size]; $x_size], map_fn: &Fn(I) -> O) -> [[O; $y_size]; $x_size] {
@@ -737,13 +802,16 @@ pub mod layers {
 
         macro_rules! or_pooling {
             ($name:ident, $x_size:expr, $y_size:expr) => {
-                pub fn $name<T: Copy + Default + BitOr<T, Output = T>>(image: &[[T; $y_size]; $x_size]) -> [[T; $y_size / 2]; $x_size / 2] {
+                pub fn $name<T: Copy + Default + Patch>(image: &[[T; $y_size]; $x_size]) -> [[T; $y_size / 2]; $x_size / 2] {
                     let mut pooled = [[T::default(); $y_size / 2]; $x_size / 2];
                     for x in 0..($x_size / 2) {
                         let x_base = x * 2;
                         for y in 0..($y_size / 2) {
                             let y_base = y * 2;
-                            pooled[x][y] = image[x_base + 0][y_base + 0] | image[x_base + 0][y_base + 1] | image[x_base + 1][y_base + 0] | image[x_base + 1][y_base + 1];
+                            pooled[x][y] = image[x_base + 0][y_base + 0]
+                                .bit_or(&image[x_base + 0][y_base + 1])
+                                .bit_or(&image[x_base + 1][y_base + 0])
+                                .bit_or(&image[x_base + 1][y_base + 1]);
                         }
                     }
                     pooled
@@ -751,6 +819,8 @@ pub mod layers {
             };
         }
         or_pooling!(pool_or_32, 32, 32);
+        or_pooling!(pool_or_16, 16, 16);
+        or_pooling!(pool_or_8, 8, 8);
     }
 
     pub fn count_bits<T: Patch + Sync>(patches: &Vec<T>) -> Vec<u32> {
@@ -1115,7 +1185,8 @@ pub mod layers {
                         let y_base = y * 2;
                         for c in 0..$chans {
                             //println!("x: {:?}, y: {:?}", x, y);
-                            pooled[x][y][c] = image[x_base + 0][y_base + 0][c] | image[x_base + 0][y_base + 1][c] | image[x_base + 1][y_base + 0][c] | image[x_base + 1][y_base + 1][c];
+                            pooled[x][y][c] =
+                                image[x_base + 0][y_base + 0][c] | image[x_base + 0][y_base + 1][c] | image[x_base + 1][y_base + 0][c] | image[x_base + 1][y_base + 1][c];
                             //println!("{:064b}", pooled[x][y][c]);
                         }
                     }

@@ -1,10 +1,12 @@
 extern crate bitnn;
 extern crate rayon;
+extern crate time;
 use rayon::prelude::*;
 
 use bitnn::datasets::cifar;
 use bitnn::featuregen;
 use bitnn::layers::{bitvecmul, pack_3x3, pixelmap, unary, Layer2d, Patch};
+use time::PreciseTime;
 
 fn eval_acc<T: Patch>(readout_features: &Vec<(T, T)>, test_inputs: &Vec<Vec<T>>, biases: &Vec<i32>) -> f64 {
     let num_examples: usize = test_inputs.iter().map(|x| x.len()).sum();
@@ -58,7 +60,7 @@ fn nzip<X: Clone, Y: Clone>(a_vec: &Vec<Vec<X>>, b_vec: &Vec<Vec<Y>>) -> Vec<Vec
 }
 
 fn load_data() -> Vec<(usize, [[[u8; 3]; 32]; 32])> {
-    let size: usize = 10000;
+    let size: usize = 1000;
     let paths = vec![
         String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/data_batch_1.bin"),
         //String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/data_batch_2.bin"),
@@ -157,7 +159,7 @@ fn main() {
     println!("l2 acc: {:?}%", acc * 100.0);
 
     let (l3_features_vec, l3_thresholds) = featuregen::gen_hidden_features(&l2_patches, 5, 5, 3);
-    let l3_train_inputs = apply_features_fc::<_, [u128; 4]>(&l2_patches, &l3_features_vec, &l3_thresholds);
+    let l3_train_inputs = apply_features_fc::<_, [u128; 3]>(&l2_patches, &l3_features_vec, &l3_thresholds);
     let l3_readout_features = featuregen::gen_readout_features(&l3_train_inputs, 0.0);
     let biases = bias(&l3_readout_features, &l3_train_inputs);
     let acc = eval_acc(&l3_readout_features, &l3_train_inputs, &biases);
@@ -169,7 +171,7 @@ fn main() {
             class
                 .iter()
                 .map(|image| {
-                    <[[[u128; 4]; 8]; 8]>::from_pixels_1_padding(
+                    <[[[u128; 3]; 8]; 8]>::from_pixels_1_padding(
                         &image
                             .to_3x3_patches()
                             .iter()
@@ -189,4 +191,67 @@ fn main() {
     let biases = bias(&l3_readout_features, &l3_patches);
     let acc = eval_acc(&l3_readout_features, &l3_patches, &biases);
     println!("l3 acc: {:?}%", acc * 100.0);
+
+    let (l4_features_vec, l4_thresholds) = featuregen::gen_hidden_features(&l3_patches, 5, 6, 2);
+    let l4_train_inputs = apply_features_fc::<_, [u128; 3]>(&l3_patches, &l4_features_vec, &l4_thresholds);
+    let l4_readout_features = featuregen::gen_readout_features(&l4_train_inputs, 0.0);
+    let biases = bias(&l4_readout_features, &l4_train_inputs);
+    let acc = eval_acc(&l4_readout_features, &l4_train_inputs, &biases);
+    println!("acc: {:?}%", acc * 100.0);
+
+    let test_set = cifar::load_images_10(&String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/test_batch.bin"), 10000);
+    let u14_packed_test_images: Vec<(usize, [[u16; 32]; 32])> = test_set.par_iter().map(|(label, image)| (*label, pixelmap::pm_32(&image, &unary::rgb_to_u14))).collect();
+
+    let start = PreciseTime::now();
+
+    let l1_test_images: Vec<(usize, _)> = u14_packed_test_images
+        .par_iter()
+        .map(|(label, image)| {
+            (
+                *label,
+                <[[u128; 32]; 32]>::from_pixels_1_padding(
+                    &image
+                        .to_3x3_patches()
+                        .iter()
+                        .map(|&pixels| featuregen::apply_unary(&pack_3x3::p14(pixels), &l1_features_vec, &l1_thresholds))
+                        .collect(),
+                ),
+            )
+        }).collect();
+    let l1_pooled_images: Vec<(usize, [[_; 16]; 16])> = l1_test_images.par_iter().map(|(label, image)| (*label, pixelmap::pool_or_32(&image))).collect();
+    let l2_test_images: Vec<(usize, _)> = l1_pooled_images
+        .par_iter()
+        .map(|(label, image)| {
+            (
+                *label,
+                <[[[u128; 2]; 16]; 16]>::from_pixels_1_padding(
+                    &image
+                        .to_3x3_patches()
+                        .iter()
+                        .map(|&pixels| featuregen::apply_unary(&pixels, &l2_features_vec, &l2_thresholds))
+                        .collect(),
+                ),
+            )
+        }).collect();
+    let l2_pooled_images: Vec<(usize, [[_; 8]; 8])> = l2_test_images.par_iter().map(|(label, image)| (*label, pixelmap::pool_or_16(&image))).collect();
+    let l3_test_images: Vec<(usize, _)> = l2_pooled_images
+        .par_iter()
+        .map(|(label, image)| {
+            (
+                *label,
+                <[[[u128; 3]; 8]; 8]>::from_pixels_1_padding(
+                    &image
+                        .to_3x3_patches()
+                        .iter()
+                        .map(|&pixels| featuregen::apply_unary(&pixels, &l3_features_vec, &l3_thresholds))
+                        .collect(),
+                ),
+            )
+        }).collect();
+    let l3_pooled_images: Vec<(usize, [[_; 4]; 4])> = l3_test_images.par_iter().map(|(label, image)| (*label, pixelmap::pool_or_8(&image))).collect();
+    //let l4_test_inputs = apply_features_fc::<_, [u128; 3]>(&l3_patches, &l4_features_vec, &l4_thresholds);
+    //let l4_train_inputs =      l3_.map(|x| x.iter().map(|input| featuregen::apply_unary(input, &features_vec, thresholds)).collect())
+
+    println!("inf time: {}", start.to(PreciseTime::now()));
 }
+// 29.28%
