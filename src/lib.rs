@@ -279,7 +279,7 @@ pub mod featuregen {
                 let (split_threshold, unary_thresholds) = vec_threshold(&flat_inputs, &base_point, unary_size);
                 shards = split_labels_set_by_distance(&shards, &base_point, split_threshold, culling_threshold);
                 thresholds.push(unary_thresholds);
-                println!("{:?} \t {:?}", shards.len(), class);
+                //println!("{:?} \t {:?}", shards.len(), class);
             }
         }
         (features_vec, thresholds)
