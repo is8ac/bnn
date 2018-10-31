@@ -266,19 +266,18 @@ pub mod featuregen {
         n_features_iters: usize,
         unary_size: usize,
         culling_threshold: usize,
-        mask_threshold: f64,
-    ) -> (Vec<(T, T)>, Vec<Vec<u32>>) {
+    ) -> (Vec<T>, Vec<Vec<u32>>) {
         let feature_gen_start = PreciseTime::now();
         let flat_inputs: Vec<T> = train_inputs.iter().flatten().cloned().collect();
         let mut shards: Vec<Vec<Vec<T>>> = vec![train_inputs.clone().to_owned()];
-        let mut features_vec: Vec<(T, T)> = vec![];
+        let mut features_vec: Vec<T> = vec![];
         let mut thresholds: Vec<Vec<u32>> = vec![];
         for i in 0..n_features_iters {
             for class in 0..train_inputs.len() {
-                let (base_point, mask) = gen_basepoint(&shards, mask_threshold, class);
-                features_vec.push((base_point, mask));
-                let (split_threshold, unary_thresholds) = vec_threshold(&flat_inputs, &base_point, &mask, unary_size);
-                shards = split_labels_set_by_distance(&shards, &base_point, &mask, split_threshold, culling_threshold);
+                let base_point = gen_basepoint(&shards, class);
+                features_vec.push(base_point);
+                let (split_threshold, unary_thresholds) = vec_threshold(&flat_inputs, &base_point, unary_size);
+                shards = split_labels_set_by_distance(&shards, &base_point, split_threshold, culling_threshold);
                 thresholds.push(unary_thresholds);
                 println!("{:?} \t {:?}", shards.len(), class);
             }
@@ -295,8 +294,8 @@ pub mod featuregen {
         by_label
     }
 
-    pub fn apply_unary<T: Patch, O: Patch>(input: &T, features_vec: &Vec<(T, T)>, thresholds: &Vec<Vec<u32>>) -> O {
-        let distances = bitvecmul::vmbvm(&features_vec, &input);
+    pub fn apply_unary<T: Patch, O: Patch>(input: &T, features_vec: &Vec<T>, thresholds: &Vec<Vec<u32>>) -> O {
+        let distances = bitvecmul::vbvm(&features_vec, &input);
         let mut bools = vec![false; O::bit_len()];
         for c in 0..distances.len() {
             for i in 0..thresholds[0].len() {
@@ -326,7 +325,6 @@ pub mod featuregen {
     pub fn split_labels_set_by_distance<T: Copy + Send + Sync + Patch>(
         examples: &Vec<Vec<Vec<T>>>,
         base_point: &T,
-        mask: &T,
         threshold: u32,
         filter_thresh_len: usize,
     ) -> Vec<Vec<Vec<T>>> {
@@ -339,7 +337,7 @@ pub mod featuregen {
                         .map(|label_examples| {
                             label_examples
                                 .iter()
-                                .filter(|x| x.masked_hamming_distance(base_point, mask) > threshold)
+                                .filter(|x| x.hamming_distance(base_point) > threshold)
                                 .cloned()
                                 .collect()
                         }).collect(),
@@ -348,7 +346,7 @@ pub mod featuregen {
                         .map(|label_examples| {
                             label_examples
                                 .iter()
-                                .filter(|x| x.masked_hamming_distance(base_point, mask) <= threshold)
+                                .filter(|x| x.hamming_distance(base_point) <= threshold)
                                 .cloned()
                                 .collect()
                         }).collect(),
@@ -397,7 +395,7 @@ pub mod featuregen {
         (base_point, mask)
     }
 
-    pub fn gen_basepoint<T: Patch + Sync>(shards: &Vec<Vec<Vec<T>>>, magn_threshold: f64, label: usize) -> (T, T) {
+    pub fn gen_basepoint<T: Patch + Sync>(shards: &Vec<Vec<Vec<T>>>, label: usize) -> T {
         let len: u64 = shards
             .par_iter()
             .map(|shard| {
@@ -424,11 +422,8 @@ pub mod featuregen {
             );
 
         let sign_bits: Vec<bool> = grads.iter().map(|x| *x > 0f64).collect();
-        let magn_bits: Vec<bool> = grads.iter().map(|x| x.abs() > magn_threshold).collect();
 
-        let base_point = T::bitpack(&sign_bits);
-        let mask = T::bitpack(&magn_bits);
-        (base_point, mask)
+        T::bitpack(&sign_bits)
     }
     pub fn gen_threshold<T: Patch + Sync>(patches: &Vec<T>, base_point: &T) -> u32 {
         let mut bit_distances: Vec<u32> = patches.par_iter().map(|y| y.hamming_distance(&base_point)).collect();
@@ -441,8 +436,8 @@ pub mod featuregen {
         bit_distances[bit_distances.len() / 2]
     }
 
-    pub fn vec_threshold<T: Patch + Sync>(patches: &Vec<T>, base_point: &T, mask: &T, n: usize) -> (u32, Vec<u32>) {
-        let mut bit_distances: Vec<u32> = patches.par_iter().map(|y| y.masked_hamming_distance(&base_point, &mask)).collect();
+    pub fn vec_threshold<T: Patch + Sync>(patches: &Vec<T>, base_point: &T, n: usize) -> (u32, Vec<u32>) {
+        let mut bit_distances: Vec<u32> = patches.par_iter().map(|y| y.hamming_distance(&base_point)).collect();
         bit_distances.par_sort();
         let mut split_points = vec![0u32; n];
         for i in 0..n {
@@ -653,6 +648,13 @@ pub mod layers {
             weights
                 .iter()
                 .map(|(signs, mask)| input.masked_hamming_distance(&signs, &mask))
+                .collect()
+        }
+        // Vec Masked Bit Vector Multiply
+        pub fn vbvm<T: super::Patch>(weights: &Vec<T>, input: &T) -> Vec<u32> {
+            weights
+                .iter()
+                .map(|signs| input.hamming_distance(&signs))
                 .collect()
         }
     }

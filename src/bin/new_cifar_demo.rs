@@ -50,7 +50,7 @@ fn bias<T: Patch>(readout_features: &Vec<(T, T)>, inputs: &Vec<Vec<T>>) -> Vec<i
 
 fn apply_features_fc<T: Patch + Sync + Send, O: Patch + Sync + Send>(
     inputs: &Vec<Vec<T>>,
-    features_vec: &Vec<(T, T)>,
+    features_vec: &Vec<T>,
     thresholds: &Vec<Vec<u32>>,
 ) -> Vec<Vec<O>> {
     inputs
@@ -89,7 +89,7 @@ fn load_data() -> Vec<(usize, [[[u8; 3]; 32]; 32])> {
 
 fn apply_features_conv<A: Patch + Copy + Default, I: Layer2d<A>, B: Patch + Copy + Default, O: Layer2d<B>>(
     inputs: &Vec<Vec<I>>,
-    features_vec: &Vec<([A; 9], [A; 9])>,
+    features_vec: &Vec<[A; 9]>,
     thresholds: &Vec<Vec<u32>>,
 ) -> Vec<Vec<O>> {
     inputs
@@ -131,7 +131,7 @@ fn main() {
         }).collect();
 
     let featuregen_start = PreciseTime::now();
-    let (l1_features_vec, l1_thresholds) = featuregen::gen_hidden_features(&l0_patches, 3, 4, 20, 0.0);
+    let (l1_features_vec, l1_thresholds) = featuregen::gen_hidden_features(&l0_patches, 3, 4, 20);
     println!("l1 featuregen: {}", featuregen_start.to(PreciseTime::now()));
 
     let l1_apply_start = PreciseTime::now();
@@ -162,7 +162,7 @@ fn main() {
         .collect();
 
     let featuregen_start = PreciseTime::now();
-    let (l2_features_vec, l2_thresholds) = featuregen::gen_hidden_features(&l1_patches, 4, 6, 7, 0.0);
+    let (l2_features_vec, l2_thresholds) = featuregen::gen_hidden_features(&l1_patches, 4, 6, 7);
     println!("l2 featuregen: {}", featuregen_start.to(PreciseTime::now()));
 
     let l2_images = apply_features_conv::<_, _, [u128; 2], [[_; 16]; 16]>(&l1_pooled_images, &l2_features_vec, &l2_thresholds);
@@ -178,7 +178,7 @@ fn main() {
         .collect();
 
     let featuregen_start = PreciseTime::now();
-    let (l3_features_vec, l3_thresholds) = featuregen::gen_hidden_features(&l2_patches, 5, 5, 3, 0.0);
+    let (l3_features_vec, l3_thresholds) = featuregen::gen_hidden_features(&l2_patches, 5, 5, 3);
     println!("l3 featuregen: {}", featuregen_start.to(PreciseTime::now()));
 
     let l3_images = apply_features_conv::<_, _, [u128; 3], [[_; 8]; 8]>(&l2_pooled_images, &l3_features_vec, &l3_thresholds);
@@ -197,7 +197,7 @@ fn main() {
     println!("l3 acc: {:?}%", acc * 100.0);
 
     let featuregen_start = PreciseTime::now();
-    let (l4_features_vec, l4_thresholds) = featuregen::gen_hidden_features(&l3_flat_images, 5, 6, 2, 0.0);
+    let (l4_features_vec, l4_thresholds) = featuregen::gen_hidden_features(&l3_flat_images, 5, 6, 2);
     println!("l4 featuregen: {}", featuregen_start.to(PreciseTime::now()));
 
     let l4_train_inputs = apply_features_fc::<_, [u128; 3]>(&l3_flat_images, &l4_features_vec, &l4_thresholds);
@@ -208,5 +208,3 @@ fn main() {
     println!("{} seconds all", start.to(PreciseTime::now()));
 }
 // 32%
-
-// 33.66
