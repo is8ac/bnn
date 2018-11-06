@@ -397,11 +397,6 @@ pub mod featuregen {
         bit_distances.par_sort();
         bit_distances[bit_distances.len() / 2]
     }
-    pub fn gen_threshold_masked<T: Patch + Sync>(patches: &Vec<T>, base_point: &T, mask: &T) -> u32 {
-        let mut bit_distances: Vec<u32> = patches.par_iter().map(|y| y.masked_hamming_distance(&base_point, &mask)).collect();
-        bit_distances.par_sort();
-        bit_distances[bit_distances.len() / 2]
-    }
 
     pub fn vec_threshold<T: Patch + Sync>(patches: &Vec<T>, base_point: &T, n: usize) -> (u32, Vec<u32>) {
         let mut bit_distances: Vec<u32> = patches.par_iter().map(|y| y.hamming_distance(&base_point)).collect();
@@ -421,7 +416,6 @@ pub mod layers {
 
     pub trait Patch {
         fn hamming_distance(&self, &Self) -> u32;
-        fn masked_hamming_distance(&self, &Self, &Self) -> u32;
         fn bit_increment(&self, &mut [u32]);
         fn bit_len() -> usize;
         fn bitpack(&[bool]) -> Self;
@@ -433,9 +427,6 @@ pub mod layers {
     impl<A: Patch, B: Patch> Patch for (A, B) {
         fn hamming_distance(&self, other: &Self) -> u32 {
             self.0.hamming_distance(&other.0) + self.1.hamming_distance(&other.1)
-        }
-        fn masked_hamming_distance(&self, other: &Self, mask: &Self) -> u32 {
-            self.0.masked_hamming_distance(&other.0, &mask.0) + self.1.masked_hamming_distance(&other.1, &mask.1)
         }
         fn bit_increment(&self, counters: &mut [u32]) {
             self.0.bit_increment(&mut counters[0..A::bit_len()]);
@@ -475,9 +466,6 @@ pub mod layers {
                 fn hamming_distance(&self, other: &$type) -> u32 {
                     (self ^ other).count_ones()
                 }
-                fn masked_hamming_distance(&self, other: &$type, mask: &$type) -> u32 {
-                    ((self ^ other) & mask).count_ones()
-                }
                 fn bit_increment(&self, counters: &mut [u32]) {
                     if counters.len() != $len {
                         panic!("primitive increment: counters is {:?}, should be {:?}", counters.len(), $len);
@@ -503,7 +491,7 @@ pub mod layers {
                     self | other
                 }
                 fn flip_bit(&mut self, index: usize) {
-                    *self ^= (1 << index)
+                    *self ^= 1 << index
                 }
                 fn get_bit(&self, index: usize) -> bool {
                     ((self >> index) & 0b1) == 1
@@ -525,13 +513,6 @@ pub mod layers {
                     let mut distance = 0;
                     for i in 0..$len {
                         distance += self[i].hamming_distance(&other[i]);
-                    }
-                    distance
-                }
-                fn masked_hamming_distance(&self, other: &[T; $len], mask: &[T; $len]) -> u32 {
-                    let mut distance = 0;
-                    for i in 0..$len {
-                        distance += self[i].masked_hamming_distance(&other[i], &mask[i]);
                     }
                     distance
                 }
@@ -610,29 +591,11 @@ pub mod layers {
         primitive_bit_vecmul!(bvm_u64, u64, 64);
         primitive_bit_vecmul!(bvm_u128, u128, 128);
 
-        macro_rules! primitive_bit_vecmul_masked {
-            ($name:ident, $len:expr) => {
-                pub fn $name<T: super::Patch>(weights: &[(T, T); $len], input: &T) -> [u32; $len] {
-                    let mut output = [0u32; $len];
-                    for i in 0..$len {
-                        output[i] = input.masked_hamming_distance(&weights[i].0, &weights[i].1);
-                    }
-                    output
-                }
-            };
-        }
-        primitive_bit_vecmul_masked!(mbvm_u32, 32);
-        primitive_bit_vecmul_masked!(mbvm_u64, 64);
-        primitive_bit_vecmul_masked!(mbvm_u128, 128);
+         // Vec Masked Bit Vector Multiply
+         pub fn vbvm<T: super::Patch>(weights: &Vec<T>, input: &T) -> Vec<u32> {
+             weights.iter().map(|signs| input.hamming_distance(&signs)).collect()
+ }
 
-        // Vec Masked Bit Vector Multiply
-        pub fn vmbvm<T: super::Patch>(weights: &Vec<(T, T)>, input: &T) -> Vec<u32> {
-            weights.iter().map(|(signs, mask)| input.masked_hamming_distance(&signs, &mask)).collect()
-        }
-        // Vec Masked Bit Vector Multiply
-        pub fn vbvm<T: super::Patch>(weights: &Vec<T>, input: &T) -> Vec<u32> {
-            weights.iter().map(|signs| input.hamming_distance(&signs)).collect()
-        }
     }
 
     pub mod unary {
