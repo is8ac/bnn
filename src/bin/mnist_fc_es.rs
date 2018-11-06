@@ -110,7 +110,9 @@ impl<T: Patch + Default + Copy + Sync + Send> ReadoutHead10<T> {
                             }
                         };
                         // do we want mut_act to be smaller or larger?
-                        (if *sign { new_diff > 0 } else { new_diff < 0 }) as i64
+                        // same as this statement:
+                        //(if *sign { new_diff > 0 } else { new_diff < 0 }) as i64
+                        ((*sign ^ (new_diff < 0)) & (new_diff != 0)) as i64
                     }).sum();
                 if new_sum_correct > sum_correct {
                     println!("new: {:?} {:?}", new_sum_correct, sum_correct);
@@ -118,13 +120,13 @@ impl<T: Patch + Default + Copy + Sync + Send> ReadoutHead10<T> {
                     // actually flip the bit
                     self.weights[mut_class].flip_bit(b);
                     // now update each
-                    for i in activation_diffs.iter_mut() {
+                    activation_diffs.par_iter_mut().map(|i| {
                         if i.0.get_bit(b) ^ new_weights_bit {
                             i.1 += 2;
                         } else {
                             i.1 -= 2;
                         }
-                    }
+                    }).collect::<Vec<_>>();
                 }
             }
             println!("true acc: {:?}%", self.acc(&examples) * 100f64);
@@ -138,12 +140,14 @@ fn main() {
     let examples: Vec<(usize, _)> = labels.iter().zip(images.iter()).map(|(&label, &image)| (label as usize, image)).collect();
     let mut readout = ReadoutHead10::new_from_split(&examples);
 
-    for i in 0..10 {
+    let total_start = PreciseTime::now();
+    for i in 0..2 {
         println!("round {:}", i);
         let start = PreciseTime::now();
         readout.bitwise_ascend_acc(&examples);
         println!("{}", start.to(PreciseTime::now()));
     }
+    println!("total: {}", total_start.to(PreciseTime::now()));
 
     let test_images = mnist::load_images_bitpacked(&String::from("/home/isaac/big/cache/datasets/mnist/t10k-images-idx3-ubyte"), 10000);
     let test_labels = mnist::load_labels(&String::from("/home/isaac/big/cache/datasets/mnist/t10k-labels-idx1-ubyte"), 10000);
