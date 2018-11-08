@@ -571,6 +571,7 @@ pub mod layers {
 
     pub trait WeightsMatrix<I: Patch, O: Patch> {
         fn mul(&self, &I) -> O;
+        fn output_bit_len() -> usize;
     }
 
     macro_rules! primitive_weights_matrix {
@@ -582,6 +583,9 @@ pub mod layers {
                         val = val | (((self[i].0.hamming_distance(&input) > self[i].1) as $type) << i);
                     }
                     val
+                }
+                fn output_bit_len() -> usize {
+                    $len
                 }
             }
         };
@@ -605,6 +609,9 @@ pub mod layers {
                         }
                     }
                     val
+                }
+                fn output_bit_len() -> usize {
+                    $len * $unary_bits
                 }
             }
         };
@@ -638,6 +645,9 @@ pub mod layers {
                     }
                     val
                 }
+                fn output_bit_len() -> usize {
+                    $len * O::output_bit_len()
+                }
             }
         };
     }
@@ -645,8 +655,6 @@ pub mod layers {
     array_weights_matrix!(2);
     array_weights_matrix!(3);
     array_weights_matrix!(4);
-
-
 
     pub mod bitvecmul {
         macro_rules! primitive_bit_vecmul {
