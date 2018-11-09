@@ -413,8 +413,9 @@ pub mod featuregen {
 #[macro_use]
 pub mod layers {
     use rayon::prelude::*;
+    use std::marker::Sized;
 
-    pub trait Patch: Send + Sync {
+    pub trait Patch: Send + Sync + Sized {
         fn hamming_distance(&self, &Self) -> u32;
         fn bit_increment(&self, &mut [u32]);
         fn bit_len() -> usize;
@@ -422,6 +423,9 @@ pub mod layers {
         fn bit_or(&self, &Self) -> Self;
         fn flip_bit(&mut self, usize);
         fn get_bit(&self, usize) -> bool;
+        fn mul<O: Patch, W: WeightsMatrix<Self, O>>(&self, weights: &W) -> O {
+            weights.mul(&self)
+        }
     }
 
     impl<A: Patch, B: Patch> Patch for (A, B) {
