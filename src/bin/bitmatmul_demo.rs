@@ -1,79 +1,49 @@
 extern crate bitnn;
 
-use bitnn::layers::{Patch, WeightsMatrix};
+use bitnn::layers::{Layer2D, Patch, Pool2x2, WeightsMatrix};
 
-trait Layer2D<I, IP: Patch + Default + Copy, O, OP: Patch> {
-    fn conv_3x3<W: WeightsMatrix<[[IP; 3]; 3], OP>>(&self, &W) -> O;
-    fn conv_1x1<W: WeightsMatrix<IP, OP>>(&self, &W) -> O;
+trait ArrayPack<I> {
+    fn from_vec_padded(&Vec<I>) -> Self;
+    fn from_vec_cropped(&Vec<I>) -> Self;
 }
 
-macro_rules! layer2d_trait {
-    ($x_len:expr, $y_len:expr) => {
-        impl<IP: Patch + Copy + Default, OP: Patch + Default + Copy> Layer2D<[[IP; $y_len]; $x_len], IP, [[OP; $y_len]; $x_len], OP> for [[IP; $y_len]; $x_len] {
-            fn conv_3x3<W: WeightsMatrix<[[IP; 3]; 3], OP>>(&self, weights: &W) -> [[OP; $y_len]; $x_len] {
-                let mut output = [[OP::default(); $y_len]; $x_len];
-                for x in 0..($x_len - 2) {
-                    for y in 0..($y_len - 2) {
-                        let patch = [
-                            [self[x + 0][y + 0], self[x + 1][y + 1], self[x + 2][y + 2]],
-                            [self[x + 0][y + 0], self[x + 1][y + 1], self[x + 2][y + 2]],
-                            [self[x + 0][y + 0], self[x + 1][y + 1], self[x + 2][y + 2]],
-                        ];
-                        output[x + 1][y + 1] = weights.mul(&patch);
-                    }
+macro_rules! array_pack_trait {
+    ($len:expr) => {
+        impl<I: Default + Copy> ArrayPack<I> for [I; $len] {
+            fn from_vec_padded(input: &Vec<I>) -> [I; $len] {
+                if input.len() > $len {
+                    panic!("can't fit a vec of len {:} into an array of len {:}. Consider making the vec shorter or use a longer array.", input.len(), $len);
+                }
+                let mut output = [I::default(); $len];
+                for (i, elem) in input.iter().enumerate() {
+                    output[i] = *elem;
                 }
                 output
             }
-            fn conv_1x1<W: WeightsMatrix<IP, OP>>(&self, weights: &W) -> [[OP; $y_len]; $x_len] {
-                let mut output = [[OP::default(); $y_len]; $x_len];
-                for x in 0..$x_len {
-                    for y in 0..$y_len {
-                        output[x][y] = weights.mul(&self[x][y]);
-                    }
+            fn from_vec_cropped(input: &Vec<I>) -> [I; $len] {
+                if input.len() < $len {
+                    panic!("can't get an array of len {:} from an array of len {:}. Consider making the vec longer or use a smaller array.", $len, input.len());
+                }
+                let mut output = [I::default(); $len];
+                for i in 0..$len {
+                    output[i] = input[i];
                 }
                 output
             }
         }
     };
 }
+array_pack_trait!(8);
+array_pack_trait!(16);
+array_pack_trait!(32);
+array_pack_trait!(64);
+array_pack_trait!(128);
 
-layer2d_trait!(4, 4);
-layer2d_trait!(8, 8);
-layer2d_trait!(16, 16);
-layer2d_trait!(32, 32);
-
-trait Pool2x2<I, IP: Patch, O> {
-    fn or_pool_2x2(&self) -> O;
-}
-
-macro_rules! or_pool2x2_trait {
-    ($x_len:expr, $y_len:expr) => {
-        impl<P: Patch + Copy + Default> Pool2x2<[[P; $y_len]; $x_len], P, [[P; ($y_len / 2)]; ($x_len / 2)]> for [[P; $y_len]; $x_len] {
-            fn or_pool_2x2(&self) -> [[P; ($y_len / 2)]; ($x_len / 2)] {
-                let mut pooled = [[P::default(); $y_len / 2]; $x_len / 2];
-                for x in 0..($x_len / 2) {
-                    let x_base = x * 2;
-                    for y in 0..($y_len / 2) {
-                        let y_base = y * 2;
-                        pooled[x][y] = self[x_base + 0][y_base + 0]
-                            .bit_or(&self[x_base + 0][y_base + 1])
-                            .bit_or(&self[x_base + 1][y_base + 0])
-                            .bit_or(&self[x_base + 1][y_base + 1]);
-                    }
-                }
-                pooled
-            }
-        }
-    };
-}
-
-or_pool2x2_trait!(4, 4);
-or_pool2x2_trait!(8, 8);
-or_pool2x2_trait!(16, 16);
-or_pool2x2_trait!(32, 32);
-or_pool2x2_trait!(64, 64);
 
 fn main() {
+    let packed = <[u64; 16]>::from_vec_padded(&(0..15).map(|i|i + 5).collect());
+    let packed = <[u64; 16]>::from_vec_cropped(&(0..17).map(|i|i + 5).collect());
+    println!("{:?}", packed);
     let input: [[u8; 32]; 32] = [[0b1001_1010u8; 32]; 32];
 
     let weights3x3 = [([[0b1001_1001u8; 3]; 3], 3u32); 16];
