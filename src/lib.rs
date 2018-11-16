@@ -412,8 +412,11 @@ pub mod featuregen {
 
 #[macro_use]
 pub mod layers {
+    use super::featuregen;
     use rayon::prelude::*;
     use std::marker::Sized;
+    use std::mem::transmute;
+
 
     pub trait Patch: Send + Sync + Sized {
         fn hamming_distance(&self, &Self) -> u32;
@@ -424,7 +427,7 @@ pub mod layers {
         fn flip_bit(&mut self, usize);
         fn get_bit(&self, usize) -> bool;
         fn mul<O: Patch, W: WeightsMatrix<Self, O>>(&self, weights: &W) -> O {
-            weights.mul(&self)
+            weights.vecmul(&self)
         }
     }
 
@@ -569,19 +572,23 @@ pub mod layers {
     array_patch!(9);
     array_patch!(13);
     array_patch!(16);
+    array_patch!(28);
     array_patch!(32);
     array_patch!(49);
     array_patch!(64);
 
     pub trait WeightsMatrix<I: Patch, O: Patch> {
-        fn mul(&self, &I) -> O;
+        fn vecmul(&self, &I) -> O;
+        fn update_vecmul(&self, &I, &mut O, usize);
         fn output_bit_len() -> usize;
+        fn optimize<H: ObjectiveHeadFC<O>>(&mut self, &mut H, &Vec<(usize, I)>);
+        fn new_from_split(&Vec<(usize, I)>) -> Self;
     }
 
     macro_rules! primitive_weights_matrix {
         ($type:ty, $len:expr) => {
-            impl<I: Patch> WeightsMatrix<I, $type> for [(I, u32); $len] {
-                fn mul(&self, input: &I) -> $type {
+            impl<I: Patch + Default + Copy> WeightsMatrix<I, $type> for [(I, u32); $len] {
+                fn vecmul(&self, input: &I) -> $type {
                     let mut val = 0 as $type;
                     for i in 0..$len {
                         val = val | (((self[i].0.hamming_distance(&input) > self[i].1) as $type) << i);
@@ -591,20 +598,68 @@ pub mod layers {
                 fn output_bit_len() -> usize {
                     $len
                 }
+                fn update_vecmul(&self, input: &I, target: &mut $type, index: usize) {
+                    *target &= !(1 << index); // unset the bit
+                    *target |= (((self[index].0.hamming_distance(&input) > self[index].1) as $type) << index); // set it to the updated value.
+                }
+                fn optimize<H: ObjectiveHeadFC<$type>>(&mut self, head: &mut H, examples: &Vec<(usize, I)>) {
+                    for o in 0..$len {
+                        println!("o: {:?}", o);
+                        let mut cache: Vec<(usize, $type)> = examples.par_iter().map(|(class, input)| (*class, self.vecmul(input))).collect();
+                        head.update(&cache);
+                        head.update(&cache);
+                        let mut acc = head.acc(&cache);
+                        println!("acc: {:?}", acc);
+                        for b in 0..I::bit_len() {
+                            self[o].flip_bit(b);
+                            let _: Vec<_> = cache
+                                .par_iter_mut()
+                                .zip(examples.par_iter())
+                                .map(|(x, input)| self.update_vecmul(&input.1, &mut x.1, o))
+                                .collect();
+                            let new_acc = head.acc(&cache);
+                            //println!("{:?}", new_acc);
+                            if new_acc > acc {
+                                acc = new_acc;
+                                println!("{:?}", acc);
+                            } else {
+                                self[o].flip_bit(b);
+                            }
+                        }
+                    }
+                }
+                fn new_from_split(examples: &Vec<(usize, I)>) -> Self {
+                    let mut weights = [(I::default(), 0u32); $len];
+                    let train_inputs = featuregen::split_by_label(&examples, 10);
+
+                    let flat_inputs: Vec<I> = examples.iter().map(|(_, input)| *input).collect();
+                    let mut shards: Vec<Vec<Vec<I>>> = vec![train_inputs.clone().to_owned()];
+                    for i in 0..$len {
+                        let class = i % 10;
+                        let base_point = featuregen::gen_basepoint(&shards, class);
+                        let mut bit_distances: Vec<u32> = flat_inputs.par_iter().map(|y| y.hamming_distance(&base_point)).collect();
+                        bit_distances.par_sort();
+                        let threshold = bit_distances[bit_distances.len() / 2];
+                        weights[i] = (base_point, threshold);
+
+                        shards = featuregen::split_labels_set_by_distance(&shards, &base_point, threshold, 2);
+                    }
+                    weights
+                }
             }
         };
     }
 
-    primitive_weights_matrix!(u8, 8);
-    primitive_weights_matrix!(u16, 16);
+    //primitive_weights_matrix!(u8, 8);
+    //primitive_weights_matrix!(u16, 16);
     primitive_weights_matrix!(u32, 32);
     primitive_weights_matrix!(u64, 64);
     primitive_weights_matrix!(u128, 128);
 
     macro_rules! primitive_weights_matrix_unary {
         ($type:ty, $len:expr, $unary_bits:expr) => {
-            impl<I: Patch> WeightsMatrix<I, [$type; $unary_bits]> for [(I, [u32; $unary_bits]); $len] {
-                fn mul(&self, input: &I) -> [$type; $unary_bits] {
+            impl<I: Patch + Default + Copy> WeightsMatrix<I, [$type; $unary_bits]> for [(I, [u32; $unary_bits]); $len] {
+                fn vecmul(&self, input: &I) -> [$type; $unary_bits] {
                     let mut val = [0 as $type; $unary_bits];
                     for i in 0..$len {
                         let dist = self[i].0.hamming_distance(&input);
@@ -616,6 +671,67 @@ pub mod layers {
                 }
                 fn output_bit_len() -> usize {
                     $len * $unary_bits
+                }
+                fn update_vecmul(&self, input: &I, target: &mut [$type; $unary_bits], index: usize) {
+                    let dist = self[index].0.hamming_distance(&input);
+                    for b in 0..$unary_bits {
+                        //val[b] = val[b] | (((dist > self[i].1[b]) as $type) << i);
+                        target[b] &= !(1 << index); // unset the bit
+                        target[b] |= ((dist > self[index].1[b]) as $type) << index; // set it to the updated value.
+                    }
+                }
+
+                fn optimize<H: ObjectiveHeadFC<[$type; $unary_bits]>>(&mut self, head: &mut H, examples: &Vec<(usize, I)>) {
+                    let mut n_updates = 0;
+                    for o in 0..$len {
+                        println!("o: {:?}", o);
+                        let mut cache: Vec<(usize, [$type; $unary_bits])> = examples.par_iter().map(|(class, input)| (*class, self.vecmul(input))).collect();
+                        head.update(&cache);
+                        let mut acc = head.acc(&cache);
+                        for b in 0..I::bit_len() {
+                            if n_updates % 5 == 0 {
+                                println!("updating",);
+                                head.update(&cache);
+                                acc = head.acc(&cache);
+                                n_updates += 1;
+                            }
+                            self[o].flip_bit(b);
+                            let _: Vec<_> = cache
+                                .par_iter_mut()
+                                .zip(examples.par_iter())
+                                .map(|(x, input)| self.update_vecmul(&input.1, &mut x.1, o))
+                                .collect();
+                            let new_acc = head.acc(&cache);
+                            //println!("{:?}", new_acc);
+                            if new_acc > acc {
+                                n_updates += 1;
+                                acc = new_acc;
+                                println!("{:?}", acc);
+                            } else {
+                                self[o].flip_bit(b);
+                            }
+                        }
+                    }
+                }
+                fn new_from_split(examples: &Vec<(usize, I)>) -> Self {
+                    let mut weights = [(I::default(), [0u32; $unary_bits]); $len];
+                    let train_inputs = featuregen::split_by_label(&examples, 10);
+
+                    let flat_inputs: Vec<I> = examples.iter().map(|(_, input)| *input).collect();
+                    let mut shards: Vec<Vec<Vec<I>>> = vec![train_inputs.clone().to_owned()];
+                    for i in 0..$len {
+                        let class = i % 10;
+                        let base_point = featuregen::gen_basepoint(&shards, class);
+                        weights[i].0 = base_point;
+                        let mut bit_distances: Vec<u32> = flat_inputs.par_iter().map(|y| y.hamming_distance(&base_point)).collect();
+                        bit_distances.par_sort();
+                        let threshold = bit_distances[bit_distances.len() / 2];
+                        for b in 0..$unary_bits {
+                            weights[i].1[b] = bit_distances[bit_distances.len() / ($unary_bits + 1)];
+                        }
+                        shards = featuregen::split_labels_set_by_distance(&shards, &base_point, threshold, 2);
+                    }
+                    weights
                 }
             }
         };
@@ -639,30 +755,164 @@ pub mod layers {
     primitive_weights_matrix_n_bit_types!(7);
     primitive_weights_matrix_n_bit_types!(8);
 
-    macro_rules! array_weights_matrix {
-        ($len:expr) => {
-            impl<I: Patch, T: Copy + Default + Patch, O: WeightsMatrix<I, T>> WeightsMatrix<I, [T; $len]> for [O; $len] {
-                fn mul(&self, input: &I) -> [T; $len] {
-                    let mut val = [T::default(); $len];
-                    for i in 0..$len {
-                        val[i] = self[i].mul(&input);
+    pub trait ObjectiveHeadFC<I> {
+        fn acc(&self, &Vec<(usize, I)>) -> f64;
+        fn update(&mut self, &Vec<(usize, I)>);
+        fn new_from_split(&Vec<(usize, I)>) -> Self;
+    }
+
+    impl<I: Patch + Patch + Copy + Default> ObjectiveHeadFC<I> for [I; 10] {
+        fn acc(&self, examples: &Vec<(usize, I)>) -> f64 {
+            let sum_correct: u64 = examples
+                .par_iter()
+                .map(|(class, input)| {
+                    let target_act = self[*class].hamming_distance(input);
+                    for i in 0..10 {
+                        if i != *class {
+                            let act = self[i].hamming_distance(input);
+                            if act >= target_act {
+                                return 0;
+                            }
+                        }
                     }
-                    val
+                    1
+                }).sum();
+            sum_correct as f64 / examples.len() as f64
+        }
+        fn update(&mut self, examples: &Vec<(usize, I)>) {
+            for mut_class in 0..10 {
+                let mut activation_diffs: Vec<(I, i32, bool)> = examples
+                    .iter()
+                    .map(|(targ_class, input)| {
+                        let mut activations: Vec<i32> = self.iter().map(|base_point| base_point.hamming_distance(&input) as i32).collect();
+
+                        let targ_act = activations[*targ_class]; // the activation for target class of this example.
+                        let mut_act = activations[mut_class]; // the activation which we are mutating.
+                        activations[*targ_class] = -10000;
+                        activations[mut_class] = -10000;
+                        let max_other_activations = activations.iter().max().unwrap(); // the max activation of all the classes not in the target class or mut class.
+                        let diff = {
+                            if *targ_class == mut_class {
+                                mut_act - max_other_activations
+                            } else {
+                                mut_act - targ_act
+                            }
+                        };
+                        (input, diff, *targ_class == mut_class, (targ_act > *max_other_activations) | (*targ_class == mut_class)) // diff betwene the activation of the
+                    }).filter(|(_, _, _, keep)| *keep)
+                    .map(|(input, diff, sign, _)| (*input, diff, sign))
+                    .collect();
+
+                // note that this sum correct is not the true acc, it is working on the subset that can be made correct or incorrect by this activation.
+                let mut sum_correct: i64 = activation_diffs
+                    .par_iter()
+                    .map(|(_, diff, sign)| {
+                        if *sign {
+                            // if we want the mut_act to be bigger,
+                            *diff > 0 // count those which are bigger,
+                        } else {
+                            // otherwise,
+                            *diff < 0 // count those which are smaller.
+                        }
+                    } as i64).sum();
+                for b in 0..I::bit_len() {
+                    // the new weights bit
+                    let new_weights_bit = !self[mut_class].get_bit(b);
+                    // if we were to flip the bit of the weights,
+                    let new_sum_correct: i64 = activation_diffs
+                        .par_iter()
+                        .map(|(input, diff, sign)| {
+                            // new diff is the diff after flipping the weights bit
+                            let new_diff = {
+                                if input.get_bit(b) ^ new_weights_bit {
+                                    // flipping the bit would make mut_act larger
+                                    diff + 2
+                                } else {
+                                    diff - 2
+                                }
+                            };
+                            // do we want mut_act to be smaller or larger?
+                            // same as this statement:
+                            //(if *sign { new_diff > 0 } else { new_diff < 0 }) as i64
+                            ((*sign ^ (new_diff < 0)) & (new_diff != 0)) as i64
+                        }).sum();
+                    if new_sum_correct > sum_correct {
+                        sum_correct = new_sum_correct;
+                        // actually flip the bit
+                        self[mut_class].flip_bit(b);
+                        // now update each
+                        activation_diffs
+                            .par_iter_mut()
+                            .map(|i| {
+                                if i.0.get_bit(b) ^ new_weights_bit {
+                                    i.1 += 2;
+                                } else {
+                                    i.1 -= 2;
+                                }
+                            }).collect::<Vec<_>>();
+                    }
                 }
-                fn output_bit_len() -> usize {
-                    $len * O::output_bit_len()
+            }
+        }
+        fn new_from_split(examples: &Vec<(usize, I)>) -> Self {
+            let by_class = featuregen::split_by_label(&examples, 10);
+            let mut readout = [I::default(); 10];
+            for class in 0..10 {
+                let grads = featuregen::grads_one_shard(&by_class, class);
+                let sign_bits: Vec<bool> = grads.iter().map(|x| *x > 0f64).collect();
+                readout[class] = I::bitpack(&sign_bits);
+            }
+            readout
+        }
+    }
+
+    trait ArrayPack<I> {
+        fn from_vec_padded(&Vec<I>) -> Self;
+        fn from_vec_cropped(&Vec<I>) -> Self;
+    }
+
+    macro_rules! array_pack_trait {
+        ($len:expr) => {
+            impl<I: Default + Copy> ArrayPack<I> for [I; $len] {
+                fn from_vec_padded(input: &Vec<I>) -> [I; $len] {
+                    if input.len() > $len {
+                        panic!(
+                            "can't fit a vec of len {:} into an array of len {:}. Consider making the vec shorter or use a longer array.",
+                            input.len(),
+                            $len
+                        );
+                    }
+                    let mut output = [I::default(); $len];
+                    for (i, elem) in input.iter().enumerate() {
+                        output[i] = *elem;
+                    }
+                    output
+                }
+                fn from_vec_cropped(input: &Vec<I>) -> [I; $len] {
+                    if input.len() < $len {
+                        panic!(
+                            "can't get an array of len {:} from an array of len {:}. Consider making the vec longer or use a smaller array.",
+                            $len,
+                            input.len()
+                        );
+                    }
+                    let mut output = [I::default(); $len];
+                    for i in 0..$len {
+                        output[i] = input[i];
+                    }
+                    output
                 }
             }
         };
     }
-
-    array_weights_matrix!(2);
-    array_weights_matrix!(3);
-    array_weights_matrix!(4);
-
-
+    array_pack_trait!(8);
+    array_pack_trait!(16);
+    array_pack_trait!(32);
+    array_pack_trait!(64);
+    array_pack_trait!(128);
 
     pub trait Layer2D<I, IP: Patch + Default + Copy, O, OP: Patch> {
+        fn conv_8pixel<W: WeightsMatrix<[IP; 8], OP>>(&self, &W) -> O;
         fn conv_3x3<W: WeightsMatrix<[[IP; 3]; 3], OP>>(&self, &W) -> O;
         fn conv_1x1<W: WeightsMatrix<IP, OP>>(&self, &W) -> O;
     }
@@ -679,7 +929,26 @@ pub mod layers {
                                 [self[x + 1][y + 0], self[x + 1][y + 1], self[x + 1][y + 2]],
                                 [self[x + 2][y + 0], self[x + 2][y + 1], self[x + 2][y + 2]],
                             ];
-                            output[x + 1][y + 1] = weights.mul(&patch);
+                            output[x + 1][y + 1] = weights.vecmul(&patch);
+                        }
+                    }
+                    output
+                }
+                fn conv_8pixel<W: WeightsMatrix<[IP; 8], OP>>(&self, weights: &W) -> [[OP; $y_len]; $x_len] {
+                    let mut output = [[OP::default(); $y_len]; $x_len];
+                    for x in 0..($x_len - 2) {
+                        for y in 0..($y_len - 2) {
+                            let patch = [
+                                self[x + 0][y + 0],
+                                self[x + 0][y + 1],
+                                self[x + 0][y + 2],
+                                self[x + 1][y + 0],
+                                self[x + 1][y + 1],
+                                self[x + 1][y + 2],
+                                self[x + 2][y + 0],
+                                self[x + 2][y + 1],
+                            ];
+                            output[x + 1][y + 1] = weights.vecmul(&patch);
                         }
                     }
                     output
@@ -688,7 +957,7 @@ pub mod layers {
                     let mut output = [[OP::default(); $y_len]; $x_len];
                     for x in 0..$x_len {
                         for y in 0..$y_len {
-                            output[x][y] = weights.mul(&self[x][y]);
+                            output[x][y] = weights.vecmul(&self[x][y]);
                         }
                     }
                     output
@@ -732,6 +1001,47 @@ pub mod layers {
     or_pool2x2_trait!(16, 16);
     or_pool2x2_trait!(32, 32);
 
+    pub trait SimplifyBits<T> {
+        fn simplify(self) -> T;
+    }
+
+    macro_rules! simplify_bits_trait {
+        ($in_type:ty, $out_type:ty) => {
+            impl SimplifyBits<$out_type> for $in_type {
+                fn simplify(self) -> $out_type {
+                    unsafe { transmute::<$in_type, $out_type>(self) }
+                }
+            }
+        };
+    }
+
+    simplify_bits_trait!([u8; 8], u64);
+    simplify_bits_trait!([u16; 4], u64);
+    simplify_bits_trait!([[u8; 28]; 28], [[u128; 7]; 7]);
+
+    macro_rules! simplify_to_1u128_bits_trait {
+        ($in_type:ty) => {
+            simplify_bits_trait!($in_type, u128);
+        };
+    }
+
+    simplify_to_1u128_bits_trait!([u8; 16]);
+    simplify_to_1u128_bits_trait!([u16; 8]);
+    simplify_to_1u128_bits_trait!([u32; 4]);
+    simplify_to_1u128_bits_trait!([u64; 2]);
+
+    macro_rules! simplify_bits_trait_array {
+        ($in_type:ty, $len:expr) => {
+            simplify_bits_trait!($in_type, [u128; $len]);
+        };
+    }
+
+    simplify_bits_trait_array!([u8; 32], 2);
+    simplify_bits_trait_array!([u8; 784], 49);
+    simplify_bits_trait_array!([[u8; 28]; 28], 49);
+    simplify_bits_trait_array!([u32; 8], 2);
+    simplify_bits_trait_array!([u64; 8], 4);
+
 
     pub mod bitvecmul {
         macro_rules! primitive_bit_vecmul {
@@ -774,6 +1084,7 @@ pub mod layers {
         to_unary!(to_3, u8, 3);
         to_unary!(to_4, u8, 4);
         to_unary!(to_5, u8, 5);
+        to_unary!(to_6, u8, 6);
         to_unary!(to_7, u8, 7);
         to_unary!(to_8, u8, 8);
         to_unary!(to_14, u16, 14);
