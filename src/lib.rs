@@ -1233,6 +1233,215 @@ pub mod layers {
     layer_2d!(32, 32);
     layer_2d!(64, 64);
 
+    // From a 2D image, extract various different patches with stride of 1.
+    pub trait ExtractPatches<I, IP, O> {
+        fn extract_patches(&self) -> Vec<O>;
+    }
+
+    // 3x3 flattened to [T; 9] array.
+    impl<IP: Copy> ExtractPatches<[[IP; 32]; 32], IP, [IP; 9]> for [[IP; 32]; 32] {
+        fn extract_patches(&self) -> Vec<[IP; 9]> {
+            let mut patches = Vec::with_capacity((32 - 2) * (32 - 2));
+            for x in 0..32 - 2 {
+                for y in 0..32 - 2 {
+                    patches.push([
+                        self[x + 0][y + 0],
+                        self[x + 1][y + 0],
+                        self[x + 2][y + 0],
+                        self[x + 0][y + 1],
+                        self[x + 1][y + 1],
+                        self[x + 2][y + 1],
+                        self[x + 0][y + 2],
+                        self[x + 1][y + 2],
+                        self[x + 2][y + 2],
+                    ]);
+                }
+            }
+            patches
+        }
+    }
+
+    // 3x3 in [[T; 3]; 3]
+    impl<IP: Copy> ExtractPatches<[[IP; 32]; 32], IP, [[IP; 3]; 3]> for [[IP; 32]; 32] {
+        fn extract_patches(&self) -> Vec<[[IP; 3]; 3]> {
+            let mut patches = Vec::with_capacity((32 - 2) * (32 - 2));
+            for x in 0..32 - 2 {
+                for y in 0..32 - 2 {
+                    patches.push([
+                        [self[x + 0][y + 0], self[x + 1][y + 0], self[x + 2][y + 0]],
+                        [self[x + 0][y + 1], self[x + 1][y + 1], self[x + 2][y + 1]],
+                        [self[x + 0][y + 2], self[x + 1][y + 2], self[x + 2][y + 2]],
+                    ]);
+                }
+            }
+            patches
+        }
+    }
+
+    // 3x3 with notch, flattened to [T; 8]
+    impl<IP: Copy> ExtractPatches<[[IP; 32]; 32], IP, [IP; 8]> for [[IP; 32]; 32] {
+        fn extract_patches(&self) -> Vec<[IP; 8]> {
+            let mut patches = Vec::with_capacity((32 - 2) * (32 - 2));
+            for x in 0..32 - 2 {
+                for y in 0..32 - 2 {
+                    patches.push([
+                        self[x + 1][y + 0],
+                        self[x + 2][y + 0],
+                        self[x + 0][y + 1],
+                        self[x + 1][y + 1],
+                        self[x + 2][y + 1],
+                        self[x + 0][y + 2],
+                        self[x + 1][y + 2],
+                        self[x + 2][y + 2],
+                    ]);
+                }
+            }
+            patches
+        }
+    }
+
+    // One pixel, just T
+    impl<IP: Copy> ExtractPatches<[[IP; 32]; 32], IP, IP> for [[IP; 32]; 32] {
+        fn extract_patches(&self) -> Vec<IP> {
+            let mut patches = Vec::with_capacity(32 * 32);
+            for x in 0..32 {
+                for y in 0..32 {
+                    patches.push(self[x][y]);
+                }
+            }
+            patches
+        }
+    }
+
+    // 2x2 with stride of 2.
+    impl<IP: Copy> ExtractPatches<[[IP; 32]; 32], IP, [IP; 4]> for [[IP; 32]; 32] {
+        fn extract_patches(&self) -> Vec<[IP; 4]> {
+            let mut patches = Vec::with_capacity(32 * 32);
+            for x in 0..32 / 2 {
+                let x_base = x * 2;
+                for y in 0..32 / 2 {
+                    let y_base = y * 2;
+                    patches.push([
+                        self[x_base + 0][y_base + 0],
+                        self[x_base + 0][y_base + 1],
+                        self[x_base + 1][y_base + 0],
+                        self[x_base + 1][y_base + 1],
+                    ]);
+                }
+            }
+            patches
+        }
+    }
+
+    pub trait PatchMap<I, IP, IA, O, OP> {
+        fn patch_map(&self, &Fn(&IA, &mut OP)) -> O;
+    }
+
+    macro_rules! patch_map_trait_pixel {
+        ($x_size:expr, $y_size:expr) => {
+            impl<IP, OP: Copy + Default> PatchMap<[[IP; $y_size]; $x_size], IP, IP, [[OP; $y_size]; $x_size], OP> for [[IP; $y_size]; $x_size] {
+                fn patch_map(&self, map_fn: &Fn(&IP, &mut OP)) -> [[OP; $y_size]; $x_size] {
+                    let mut output = [[OP::default(); $y_size]; $x_size];
+                    for x in 0..$x_size {
+                        for y in 0..$y_size {
+                            map_fn(&self[x][y], &mut output[x][y]);
+                        }
+                    }
+                    output
+                }
+            }
+        };
+    }
+
+    patch_map_trait_pixel!(32, 32);
+    patch_map_trait_pixel!(16, 16);
+
+    macro_rules! patch_map_trait_notched {
+        ($x_size:expr, $y_size:expr) => {
+            impl<IP: Copy, OP: Copy + Default> PatchMap<[[IP; $y_size]; $x_size], IP, [IP; 8], [[OP; $y_size]; $x_size], OP> for [[IP; $y_size]; $x_size] {
+                fn patch_map(&self, map_fn: &Fn(&[IP; 8], &mut OP)) -> [[OP; $y_size]; $x_size] {
+                    let mut output = [[OP::default(); $y_size]; $x_size];
+                    for x in 0..$x_size {
+                        for y in 0..$y_size {
+                            let patch = [
+                                self[x + 1][y + 0],
+                                self[x + 2][y + 0],
+                                self[x + 0][y + 1],
+                                self[x + 1][y + 1],
+                                self[x + 2][y + 1],
+                                self[x + 0][y + 2],
+                                self[x + 1][y + 2],
+                                self[x + 2][y + 2],
+                            ];
+                            map_fn(&patch, &mut output[x][y]);
+                        }
+                    }
+                    output
+                }
+            }
+        };
+    }
+
+    patch_map_trait_notched!(32, 32);
+    patch_map_trait_notched!(16, 16);
+
+    macro_rules! patch_map_trait_3x3 {
+        ($x_size:expr, $y_size:expr) => {
+            impl<IP: Copy, OP: Copy + Default> PatchMap<[[IP; $y_size]; $x_size], IP, [IP; 9], [[OP; $y_size]; $x_size], OP> for [[IP; $y_size]; $x_size] {
+                fn patch_map(&self, map_fn: &Fn(&[IP; 9], &mut OP)) -> [[OP; $y_size]; $x_size] {
+                    let mut output = [[OP::default(); $y_size]; $x_size];
+                    for x in 0..$x_size {
+                        for y in 0..$y_size {
+                            let patch = [
+                                self[x + 0][y + 0],
+                                self[x + 1][y + 0],
+                                self[x + 2][y + 0],
+                                self[x + 0][y + 1],
+                                self[x + 1][y + 1],
+                                self[x + 2][y + 1],
+                                self[x + 0][y + 2],
+                                self[x + 1][y + 2],
+                                self[x + 2][y + 2],
+                            ];
+                            map_fn(&patch, &mut output[x][y]);
+                        }
+                    }
+                    output
+                }
+            }
+        };
+    }
+
+    patch_map_trait_3x3!(32, 32);
+    patch_map_trait_3x3!(16, 16);
+
+    macro_rules! patch_map_trait_2x2_pool {
+        ($x_size:expr, $y_size:expr) => {
+            impl<IP: Copy, OP: Copy + Default> PatchMap<[[IP; $y_size]; $x_size], IP, [IP; 4], [[OP; $y_size / 2]; $x_size / 2], OP> for [[IP; $y_size]; $x_size] {
+                fn patch_map(&self, map_fn: &Fn(&[IP; 4], &mut OP)) -> [[OP; $y_size / 2]; $x_size / 2] {
+                    let mut output = [[OP::default(); $y_size / 2]; $x_size / 2];
+                    for x in 0..$x_size / 2 {
+                        let x_base = x * 2;
+                        for y in 0..$y_size / 2 {
+                            let y_base = y * 2;
+                            let patch = [
+                                self[x_base + 0][y_base + 0],
+                                self[x_base + 0][y_base + 1],
+                                self[x_base + 1][y_base + 0],
+                                self[x_base + 1][y_base + 1],
+                            ];
+                            map_fn(&patch, &mut output[x][y]);
+                        }
+                    }
+                    output
+                }
+            }
+        };
+    }
+
+    patch_map_trait_2x2_pool!(32, 32);
+    patch_map_trait_2x2_pool!(16, 16);
+
     pub mod pixelmap {
         use super::Patch;
         use featuregen;
