@@ -1,62 +1,12 @@
-extern crate image;
-extern crate rand;
 extern crate rayon;
-extern crate time;
 
 #[macro_use]
 pub mod datasets {
-    pub mod fake {
-        extern crate image;
-        use image::{ImageBuffer, Rgb};
-
-        pub fn parse_rgb_u8(bits: u8) -> [u8; 3] {
-            let mut bytes = [0u8; 3];
-            for color in 0..3 {
-                bytes[color] = ((bits >> color) & 0b1u8) * 255;
-            }
-            bytes
-        }
-        pub fn diag_rgb_u8_packed() -> [[u8; 32]; 32] {
-            let mut image = [[0u8; 32]; 32];
-            for x in 0..32 {
-                for y in 0..32 {
-                    image[x][y] = ((((((x + (y % 3) + 0) as u8) % 3) == 0) as u8) << 0)
-                        | ((((((x + (y % 3) + 1) as u8) % 3) == 0) as u8) << 1)
-                        | ((((((x + (y % 3) + 2) as u8) % 3) == 0) as u8) << 2);
-                }
-            }
-            image
-        }
-        pub fn write_u8_packed_image(data: [[u8; 32]; 32], path: &String) {
-            let mut image = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(32u32, 32u32);
-            for x in 0..32 {
-                for y in 0..32 {
-                    let bits = data[x][y];
-                    let pixel_bytes = parse_rgb_u8(bits);
-                    image.get_pixel_mut(x as u32, y as u32).data = pixel_bytes;
-                }
-            }
-            image.save(path).unwrap();
-        }
-    }
     pub mod cifar {
         use std::fs::File;
         use std::io::prelude::*;
         use std::path::Path;
-        extern crate image;
-        use image::{ImageBuffer, Rgb};
 
-        pub fn write_image(data: [[[u64; 1]; 32]; 32], path: &String) {
-            let mut image = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(32u32, 32u32);
-            for x in 0..32 {
-                for y in 0..32 {
-                    let bits = data[x][y][0];
-                    let pixel_bytes = parse_rgb_u64(bits);
-                    image.get_pixel_mut(x as u32, y as u32).data = pixel_bytes;
-                }
-            }
-            image.save(path).unwrap();
-        }
         pub fn encode_unary_rgb(bytes: [u8; 3]) -> u64 {
             let mut ones = 0u64;
             for color in 0..3 {
@@ -252,11 +202,167 @@ pub mod datasets {
     }
 }
 
+pub trait Patch: Send + Sync + Sized {
+    fn hamming_distance(&self, &Self) -> u32;
+    fn bit_increment(&self, &mut [u32]);
+    fn bit_len() -> usize;
+    fn bitpack(&[bool]) -> Self;
+    fn bit_or(&self, &Self) -> Self;
+    fn flip_bit(&mut self, usize);
+    fn get_bit(&self, usize) -> bool;
+}
+
+impl<A: Patch, B: Patch> Patch for (A, B) {
+    fn hamming_distance(&self, other: &Self) -> u32 {
+        self.0.hamming_distance(&other.0) + self.1.hamming_distance(&other.1)
+    }
+    fn bit_increment(&self, counters: &mut [u32]) {
+        self.0.bit_increment(&mut counters[0..A::bit_len()]);
+        self.1.bit_increment(&mut counters[A::bit_len()..]);
+    }
+    fn bit_len() -> usize {
+        A::bit_len() + B::bit_len()
+    }
+    fn bitpack(bools: &[bool]) -> Self {
+        if bools.len() != (A::bit_len() + B::bit_len()) {
+            panic!("pair bitpack: counters is {:?}, should be {:?}", bools.len(), A::bit_len() + B::bit_len());
+        }
+        (A::bitpack(&bools[..A::bit_len()]), B::bitpack(&bools[A::bit_len()..]))
+    }
+    fn bit_or(&self, other: &Self) -> Self {
+        (self.0.bit_or(&other.0), self.1.bit_or(&other.1))
+    }
+    fn flip_bit(&mut self, index: usize) {
+        if index < A::bit_len() {
+            self.0.flip_bit(index);
+        } else {
+            self.1.flip_bit(index - A::bit_len());
+        }
+    }
+    fn get_bit(&self, index: usize) -> bool {
+        if index < A::bit_len() {
+            self.0.get_bit(index)
+        } else {
+            self.1.get_bit(index - A::bit_len())
+        }
+    }
+}
+
+macro_rules! primitive_patch {
+    ($type:ty, $len:expr) => {
+        impl Patch for $type {
+            fn hamming_distance(&self, other: &$type) -> u32 {
+                (self ^ other).count_ones()
+            }
+            fn bit_increment(&self, counters: &mut [u32]) {
+                if counters.len() != $len {
+                    panic!("primitive increment: counters is {:?}, should be {:?}", counters.len(), $len);
+                }
+                for i in 0..$len {
+                    counters[i] += ((self >> i) & 0b1 as $type) as u32;
+                }
+            }
+            fn bit_len() -> usize {
+                $len
+            }
+            fn bitpack(bools: &[bool]) -> $type {
+                if bools.len() != $len {
+                    panic!("primitive bitpack: counters is {:?}, should be {:?}", bools.len(), $len);
+                }
+                let mut val = 0 as $type;
+                for i in 0..$len {
+                    val = val | ((bools[i] as $type) << i);
+                }
+                val
+            }
+            fn bit_or(&self, other: &$type) -> $type {
+                self | other
+            }
+            fn flip_bit(&mut self, index: usize) {
+                *self ^= 1 << index
+            }
+            fn get_bit(&self, index: usize) -> bool {
+                ((self >> index) & 0b1) == 1
+            }
+        }
+    };
+}
+
+primitive_patch!(u8, 8);
+primitive_patch!(u16, 16);
+primitive_patch!(u32, 32);
+primitive_patch!(u64, 64);
+primitive_patch!(u128, 128);
+
+macro_rules! array_patch {
+    ($len:expr) => {
+        impl<T: Patch + Copy + Default> Patch for [T; $len] {
+            fn hamming_distance(&self, other: &[T; $len]) -> u32 {
+                let mut distance = 0;
+                for i in 0..$len {
+                    distance += self[i].hamming_distance(&other[i]);
+                }
+                distance
+            }
+            fn bit_increment(&self, counters: &mut [u32]) {
+                if counters.len() != ($len * T::bit_len()) {
+                    panic!("array increment: counters is {:?}, should be {:?}", counters.len(), $len * T::bit_len());
+                }
+                for i in 0..$len {
+                    self[i].bit_increment(&mut counters[i * T::bit_len()..(i + 1) * T::bit_len()]);
+                }
+            }
+            fn bit_len() -> usize {
+                $len * T::bit_len()
+            }
+            fn bitpack(bools: &[bool]) -> [T; $len] {
+                if bools.len() != ($len * T::bit_len()) {
+                    panic!("array bitpack: bools is {:?}, should be {:?}", bools.len(), $len * T::bit_len());
+                }
+                let mut val = [T::default(); $len];
+                for i in 0..$len {
+                    val[i] = T::bitpack(&bools[i * T::bit_len()..(i + 1) * T::bit_len()]);
+                }
+                val
+            }
+            fn bit_or(&self, other: &Self) -> Self {
+                let mut output = [T::default(); $len];
+                for i in 0..$len {
+                    output[i] = self[i].bit_or(&other[i]);
+                }
+                output
+            }
+            fn flip_bit(&mut self, index: usize) {
+                self[index / T::bit_len()].flip_bit(index % T::bit_len());
+            }
+            fn get_bit(&self, index: usize) -> bool {
+                self[index / T::bit_len()].get_bit(index % T::bit_len())
+            }
+        }
+    };
+}
+
+array_patch!(1);
+array_patch!(2);
+array_patch!(3);
+array_patch!(4);
+array_patch!(5);
+array_patch!(6);
+array_patch!(7);
+array_patch!(8);
+array_patch!(9);
+array_patch!(13);
+array_patch!(16);
+array_patch!(28);
+array_patch!(32);
+array_patch!(49);
+array_patch!(64);
+
 pub mod featuregen {
     use super::layers;
-    use super::layers::{bitvecmul, Patch};
+    use super::layers::bitvecmul;
+    use super::Patch;
     use rayon::prelude::*;
-    use time::PreciseTime;
 
     // Takes patches split by class, and generates n_features_iters features for each.
     // Returns both a vec of features and a vec of unary activations.
@@ -267,7 +373,6 @@ pub mod featuregen {
         unary_size: usize,
         culling_threshold: usize,
     ) -> (Vec<T>, Vec<Vec<u32>>) {
-        let feature_gen_start = PreciseTime::now();
         let flat_inputs: Vec<T> = train_inputs.iter().flatten().cloned().collect();
         let mut shards: Vec<Vec<Vec<T>>> = vec![train_inputs.clone().to_owned()];
         let mut features_vec: Vec<T> = vec![];
@@ -413,174 +518,195 @@ pub mod featuregen {
 #[macro_use]
 pub mod layers {
     use super::featuregen;
+    use super::Patch;
     use rayon::prelude::*;
-    use std::marker::Sized;
     use std::mem::transmute;
 
-    pub trait Patch: Send + Sync + Sized {
-        fn hamming_distance(&self, &Self) -> u32;
-        fn bit_increment(&self, &mut [u32]);
-        fn bit_len() -> usize;
-        fn bitpack(&[bool]) -> Self;
-        fn bit_or(&self, &Self) -> Self;
-        fn flip_bit(&mut self, usize);
-        fn get_bit(&self, usize) -> bool;
-        fn mul<O: Patch, W: WeightsMatrix<Self, O>>(&self, weights: &W) -> O {
-            weights.vecmul(&self)
-        }
+    pub trait Apply<I, O> {
+        fn apply(&self, &I) -> O;
+        fn update(&self, &I, &mut O, usize);
     }
 
-    impl<A: Patch, B: Patch> Patch for (A, B) {
-        fn hamming_distance(&self, other: &Self) -> u32 {
-            self.0.hamming_distance(&other.0) + self.1.hamming_distance(&other.1)
-        }
-        fn bit_increment(&self, counters: &mut [u32]) {
-            self.0.bit_increment(&mut counters[0..A::bit_len()]);
-            self.1.bit_increment(&mut counters[A::bit_len()..]);
-        }
-        fn bit_len() -> usize {
-            A::bit_len() + B::bit_len()
-        }
-        fn bitpack(bools: &[bool]) -> Self {
-            if bools.len() != (A::bit_len() + B::bit_len()) {
-                panic!("pair bitpack: counters is {:?}, should be {:?}", bools.len(), A::bit_len() + B::bit_len());
-            }
-            (A::bitpack(&bools[..A::bit_len()]), B::bitpack(&bools[A::bit_len()..]))
-        }
-        fn bit_or(&self, other: &Self) -> Self {
-            (self.0.bit_or(&other.0), self.1.bit_or(&other.1))
-        }
-        fn flip_bit(&mut self, index: usize) {
-            if index < A::bit_len() {
-                self.0.flip_bit(index);
-            } else {
-                self.1.flip_bit(index - A::bit_len());
-            }
-        }
-        fn get_bit(&self, index: usize) -> bool {
-            if index < A::bit_len() {
-                self.0.get_bit(index)
-            } else {
-                self.1.get_bit(index - A::bit_len())
-            }
-        }
-    }
-
-    macro_rules! primitive_patch {
+    macro_rules! primitive_apply {
         ($type:ty, $len:expr) => {
-            impl Patch for $type {
-                fn hamming_distance(&self, other: &$type) -> u32 {
-                    (self ^ other).count_ones()
-                }
-                fn bit_increment(&self, counters: &mut [u32]) {
-                    if counters.len() != $len {
-                        panic!("primitive increment: counters is {:?}, should be {:?}", counters.len(), $len);
-                    }
-                    for i in 0..$len {
-                        counters[i] += ((self >> i) & 0b1 as $type) as u32;
-                    }
-                }
-                fn bit_len() -> usize {
-                    $len
-                }
-                fn bitpack(bools: &[bool]) -> $type {
-                    if bools.len() != $len {
-                        panic!("primitive bitpack: counters is {:?}, should be {:?}", bools.len(), $len);
-                    }
+            impl<I: Patch + Default + Copy> Apply<I, $type> for [(I, u32); $len] {
+                fn apply(&self, input: &I) -> $type {
                     let mut val = 0 as $type;
                     for i in 0..$len {
-                        val = val | ((bools[i] as $type) << i);
+                        val = val | (((self[i].0.hamming_distance(&input) > self[i].1) as $type) << i);
                     }
                     val
                 }
-                fn bit_or(&self, other: &$type) -> $type {
-                    self | other
-                }
-                fn flip_bit(&mut self, index: usize) {
-                    *self ^= 1 << index
-                }
-                fn get_bit(&self, index: usize) -> bool {
-                    ((self >> index) & 0b1) == 1
+                fn update(&self, input: &I, target: &mut $type, index: usize) {
+                    *target &= !(1 << index); // unset the bit
+                    *target |= ((self[index].0.hamming_distance(&input) > self[index].1) as $type) << index; // set it to the updated value.
                 }
             }
         };
     }
 
-    primitive_patch!(u8, 8);
-    primitive_patch!(u16, 16);
-    primitive_patch!(u32, 32);
-    primitive_patch!(u64, 64);
-    primitive_patch!(u128, 128);
+    primitive_apply!(u8, 8);
+    primitive_apply!(u16, 16);
+    primitive_apply!(u32, 32);
+    primitive_apply!(u64, 64);
+    primitive_apply!(u128, 128);
 
-    macro_rules! array_patch {
-        ($len:expr) => {
-            impl<T: Patch + Copy + Default> Patch for [T; $len] {
-                fn hamming_distance(&self, other: &[T; $len]) -> u32 {
-                    let mut distance = 0;
+    macro_rules! primitive_apply_simplified_input {
+        ($type:ty, $len:expr, $in_type:ty, $weights_type:ty) => {
+            impl Apply<$in_type, $type> for [($weights_type, u32); $len] {
+                fn apply(&self, input: &$in_type) -> $type {
+                    let input = unsafe { transmute::<$in_type, $weights_type>(*input) };
+                    let mut val = 0 as $type;
                     for i in 0..$len {
-                        distance += self[i].hamming_distance(&other[i]);
-                    }
-                    distance
-                }
-                fn bit_increment(&self, counters: &mut [u32]) {
-                    if counters.len() != ($len * T::bit_len()) {
-                        panic!("array increment: counters is {:?}, should be {:?}", counters.len(), $len * T::bit_len());
-                    }
-                    for i in 0..$len {
-                        self[i].bit_increment(&mut counters[i * T::bit_len()..(i + 1) * T::bit_len()]);
-                    }
-                }
-                fn bit_len() -> usize {
-                    $len * T::bit_len()
-                }
-                fn bitpack(bools: &[bool]) -> [T; $len] {
-                    if bools.len() != ($len * T::bit_len()) {
-                        panic!("array bitpack: bools is {:?}, should be {:?}", bools.len(), $len * T::bit_len());
-                    }
-                    let mut val = [T::default(); $len];
-                    for i in 0..$len {
-                        val[i] = T::bitpack(&bools[i * T::bit_len()..(i + 1) * T::bit_len()]);
+                        val = val | (((self[i].0.hamming_distance(&input) > self[i].1) as $type) << i);
                     }
                     val
                 }
-                fn bit_or(&self, other: &Self) -> Self {
-                    let mut output = [T::default(); $len];
+                fn update(&self, input: &$in_type, target: &mut $type, index: usize) {
+                    let input = unsafe { transmute::<$in_type, $weights_type>(*input) };
+                    *target &= !(1 << index); // unset the bit
+                    *target |= ((self[index].0.hamming_distance(&input) > self[index].1) as $type) << index; // set it to the updated value.
+                }
+            }
+        };
+    }
+
+    macro_rules! primitive_apply_simplified_input_all {
+        ($in_type:ty, $weights_type:ty) => {
+            primitive_apply_simplified_input!(u8, 8, $in_type, $weights_type);
+            primitive_apply_simplified_input!(u16, 16, $in_type, $weights_type);
+            primitive_apply_simplified_input!(u32, 32, $in_type, $weights_type);
+            primitive_apply_simplified_input!(u64, 64, $in_type, $weights_type);
+            primitive_apply_simplified_input!(u128, 128, $in_type, $weights_type);
+        };
+    }
+    primitive_apply_simplified_input_all!([u8; 8], u64);
+    primitive_apply_simplified_input_all!([u16; 8], u128);
+    primitive_apply_simplified_input_all!([u32; 8], [u128; 2]);
+    primitive_apply_simplified_input_all!([u64; 8], [u128; 4]);
+
+    macro_rules! primitive_apply_unary {
+        ($type:ty, $len:expr, $unary_bits:expr) => {
+            impl<I: Patch + Default + Copy> Apply<I, [$type; $unary_bits]> for [(I, [u32; $unary_bits]); $len] {
+                fn apply(&self, input: &I) -> [$type; $unary_bits] {
+                    let mut val = [0 as $type; $unary_bits];
                     for i in 0..$len {
-                        output[i] = self[i].bit_or(&other[i]);
+                        let dist = self[i].0.hamming_distance(&input);
+                        for b in 0..$unary_bits {
+                            val[b] = val[b] | (((dist > self[i].1[b]) as $type) << i);
+                        }
+                    }
+                    val
+                }
+                fn update(&self, input: &I, target: &mut [$type; $unary_bits], index: usize) {
+                    let dist = self[index].0.hamming_distance(&input);
+                    for b in 0..$unary_bits {
+                        target[b] &= !(1 << index); // unset the bit
+                        target[b] |= ((dist > self[index].1[b]) as $type) << index; // set it to the updated value.
+                    }
+                }
+            }
+        };
+    }
+
+    macro_rules! primitive_apply_n_bit_types {
+        ($unary_bits:expr) => {
+            primitive_apply_unary!(u8, 8, $unary_bits);
+            primitive_apply_unary!(u16, 16, $unary_bits);
+            primitive_apply_unary!(u32, 32, $unary_bits);
+            primitive_apply_unary!(u64, 64, $unary_bits);
+            primitive_apply_unary!(u128, 128, $unary_bits);
+        };
+    }
+
+    primitive_apply_n_bit_types!(2);
+    primitive_apply_n_bit_types!(3);
+    primitive_apply_n_bit_types!(4);
+
+    macro_rules! primitive_apply_unary_simplify {
+        ($type:ty, $len:expr, $unary_bits:expr, $out_type:ty) => {
+            impl<I: Patch + Default + Copy> Apply<I, $out_type> for [(I, [u32; $unary_bits]); $len] {
+                fn apply(&self, input: &I) -> $out_type {
+                    let mut val = [0 as $type; $unary_bits];
+                    for i in 0..$len {
+                        let dist = self[i].0.hamming_distance(&input);
+                        for b in 0..$unary_bits {
+                            val[b] = val[b] | (((dist > self[i].1[b]) as $type) << i);
+                        }
+                    }
+                    unsafe { transmute(val) }
+                }
+                fn update(&self, input: &I, target: &mut $out_type, index: usize) {
+                    let target = unsafe { transmute::<&mut $out_type, &mut [$type; $unary_bits]>(target) };
+                    let dist = self[index].0.hamming_distance(&input);
+                    for b in 0..$unary_bits {
+                        target[b] &= !(1 << index); // unset the bit
+                        target[b] |= ((dist > self[index].1[b]) as $type) << index; // set it to the updated value.
+                    }
+                }
+            }
+        };
+    }
+
+    primitive_apply_unary_simplify!(u8, 8, 2, u16);
+    primitive_apply_unary_simplify!(u8, 8, 4, u32);
+    primitive_apply_unary_simplify!(u16, 16, 2, u32);
+    primitive_apply_unary_simplify!(u16, 16, 4, u64);
+    primitive_apply_unary_simplify!(u32, 32, 2, u64);
+    primitive_apply_unary_simplify!(u32, 32, 4, u128);
+    primitive_apply_unary_simplify!(u64, 64, 2, u128);
+    primitive_apply_unary_simplify!(u64, 64, 4, [u128; 2]);
+
+    macro_rules! patch_apply_trait_8notched {
+        ($x_size:expr, $y_size:expr) => {
+            impl<IP: Copy, OP: Copy + Default, W: Apply<[IP; 8], OP>> Apply<[[IP; $y_size]; $x_size], [[OP; $y_size]; $x_size]> for W {
+                fn apply(&self, input: &[[IP; $y_size]; $x_size]) -> [[OP; $y_size]; $x_size] {
+                    let mut output = [[OP::default(); $y_size]; $x_size];
+                    for x in 0..($x_size - 2) {
+                        for y in 0..($y_size - 2) {
+                            let patch = [
+                                input[x + 1][y + 0],
+                                input[x + 2][y + 0],
+                                input[x + 0][y + 1],
+                                input[x + 1][y + 1],
+                                input[x + 2][y + 1],
+                                input[x + 0][y + 2],
+                                input[x + 1][y + 2],
+                                input[x + 2][y + 2],
+                            ];
+                            output[x][y] = self.apply(&patch);
+                        }
                     }
                     output
                 }
-                fn flip_bit(&mut self, index: usize) {
-                    self[index / T::bit_len()].flip_bit(index % T::bit_len());
-                }
-                fn get_bit(&self, index: usize) -> bool {
-                    self[index / T::bit_len()].get_bit(index % T::bit_len())
+                fn update(&self, input: &[[IP; $y_size]; $x_size], target: &mut [[OP; $y_size]; $x_size], index: usize) {
+                    for x in 0..($x_size - 2) {
+                        for y in 0..($y_size - 2) {
+                            let patch = [
+                                input[x + 1][y + 0],
+                                input[x + 2][y + 0],
+                                input[x + 0][y + 1],
+                                input[x + 1][y + 1],
+                                input[x + 2][y + 1],
+                                input[x + 0][y + 2],
+                                input[x + 1][y + 2],
+                                input[x + 2][y + 2],
+                            ];
+                            self.update(&patch, &mut target[x][y], index);
+                        }
+                    }
                 }
             }
         };
     }
 
-    array_patch!(1);
-    array_patch!(2);
-    array_patch!(3);
-    array_patch!(4);
-    array_patch!(5);
-    array_patch!(6);
-    array_patch!(7);
-    array_patch!(8);
-    array_patch!(9);
-    array_patch!(13);
-    array_patch!(16);
-    array_patch!(28);
-    array_patch!(32);
-    array_patch!(49);
-    array_patch!(64);
+    patch_apply_trait_8notched!(32, 32);
 
     pub trait WeightsMatrix<I: Patch, O: Patch> {
         fn vecmul(&self, &I) -> O;
         fn update_vecmul(&self, &I, &mut O, usize);
         fn output_bit_len() -> usize;
-        fn optimize<H: ObjectiveHeadFC<O>>(&mut self, &mut H, &Vec<(usize, I)>);
+        fn optimize<H: ObjectiveHead<O>>(&mut self, &mut H, &Vec<(usize, I)>);
         fn new_from_split(&Vec<(usize, I)>) -> Self;
     }
 
@@ -599,9 +725,9 @@ pub mod layers {
                 }
                 fn update_vecmul(&self, input: &I, target: &mut $type, index: usize) {
                     *target &= !(1 << index); // unset the bit
-                    *target |= (((self[index].0.hamming_distance(&input) > self[index].1) as $type) << index); // set it to the updated value.
+                    *target |= ((self[index].0.hamming_distance(&input) > self[index].1) as $type) << index; // set it to the updated value.
                 }
-                fn optimize<H: ObjectiveHeadFC<$type>>(&mut self, head: &mut H, examples: &Vec<(usize, I)>) {
+                fn optimize<H: ObjectiveHead<$type>>(&mut self, head: &mut H, examples: &Vec<(usize, I)>) {
                     for o in 0..$len {
                         println!("o: {:?}", o);
                         let mut cache: Vec<(usize, $type)> = examples.par_iter().map(|(class, input)| (*class, self.vecmul(input))).collect();
@@ -680,7 +806,7 @@ pub mod layers {
                     }
                 }
 
-                fn optimize<H: ObjectiveHeadFC<[$type; $unary_bits]>>(&mut self, head: &mut H, examples: &Vec<(usize, I)>) {
+                fn optimize<H: ObjectiveHead<[$type; $unary_bits]>>(&mut self, head: &mut H, examples: &Vec<(usize, I)>) {
                     let mut n_updates = 0;
                     for o in 0..$len {
                         println!("o: {:?}", o);
@@ -754,13 +880,13 @@ pub mod layers {
     primitive_weights_matrix_n_bit_types!(7);
     primitive_weights_matrix_n_bit_types!(8);
 
-    pub trait ObjectiveHeadFC<I> {
+    pub trait ObjectiveHead<I> {
         fn acc(&self, &Vec<(usize, I)>) -> f64;
         fn update(&mut self, &Vec<(usize, I)>);
         fn new_from_split(&Vec<(usize, I)>) -> Self;
     }
 
-    impl<I: Patch + Patch + Copy + Default> ObjectiveHeadFC<I> for [I; 10] {
+    impl<I: Patch + Patch + Copy + Default> ObjectiveHead<I> for [I; 10] {
         fn acc(&self, examples: &Vec<(usize, I)>) -> f64 {
             let sum_correct: u64 = examples
                 .par_iter()
@@ -910,66 +1036,6 @@ pub mod layers {
     array_pack_trait!(64);
     array_pack_trait!(128);
 
-    pub trait Layer2D<I, IP: Patch + Default + Copy, O, OP: Patch> {
-        fn conv_8pixel<W: WeightsMatrix<[IP; 8], OP>>(&self, &W) -> O;
-        fn conv_3x3<W: WeightsMatrix<[[IP; 3]; 3], OP>>(&self, &W) -> O;
-        fn conv_1x1<W: WeightsMatrix<IP, OP>>(&self, &W) -> O;
-    }
-
-    macro_rules! layer2d_trait {
-        ($x_len:expr, $y_len:expr) => {
-            impl<IP: Patch + Copy + Default, OP: Patch + Default + Copy> Layer2D<[[IP; $y_len]; $x_len], IP, [[OP; $y_len]; $x_len], OP> for [[IP; $y_len]; $x_len] {
-                fn conv_3x3<W: WeightsMatrix<[[IP; 3]; 3], OP>>(&self, weights: &W) -> [[OP; $y_len]; $x_len] {
-                    let mut output = [[OP::default(); $y_len]; $x_len];
-                    for x in 0..($x_len - 2) {
-                        for y in 0..($y_len - 2) {
-                            let patch = [
-                                [self[x + 0][y + 0], self[x + 0][y + 1], self[x + 0][y + 2]],
-                                [self[x + 1][y + 0], self[x + 1][y + 1], self[x + 1][y + 2]],
-                                [self[x + 2][y + 0], self[x + 2][y + 1], self[x + 2][y + 2]],
-                            ];
-                            output[x + 1][y + 1] = weights.vecmul(&patch);
-                        }
-                    }
-                    output
-                }
-                fn conv_8pixel<W: WeightsMatrix<[IP; 8], OP>>(&self, weights: &W) -> [[OP; $y_len]; $x_len] {
-                    let mut output = [[OP::default(); $y_len]; $x_len];
-                    for x in 0..($x_len - 2) {
-                        for y in 0..($y_len - 2) {
-                            let patch = [
-                                self[x + 0][y + 0],
-                                self[x + 0][y + 1],
-                                self[x + 0][y + 2],
-                                self[x + 1][y + 0],
-                                self[x + 1][y + 1],
-                                self[x + 1][y + 2],
-                                self[x + 2][y + 0],
-                                self[x + 2][y + 1],
-                            ];
-                            output[x + 1][y + 1] = weights.vecmul(&patch);
-                        }
-                    }
-                    output
-                }
-                fn conv_1x1<W: WeightsMatrix<IP, OP>>(&self, weights: &W) -> [[OP; $y_len]; $x_len] {
-                    let mut output = [[OP::default(); $y_len]; $x_len];
-                    for x in 0..$x_len {
-                        for y in 0..$y_len {
-                            output[x][y] = weights.vecmul(&self[x][y]);
-                        }
-                    }
-                    output
-                }
-            }
-        };
-    }
-
-    layer2d_trait!(4, 4);
-    layer2d_trait!(8, 8);
-    layer2d_trait!(16, 16);
-    layer2d_trait!(32, 32);
-
     pub trait Pool2x2<I, IP: Patch, O> {
         fn or_pool_2x2(&self) -> O;
     }
@@ -1092,147 +1158,6 @@ pub mod layers {
         }
     }
 
-    pub mod pack_3x3 {
-        macro_rules! pack_3x3 {
-            ($name:ident, $in_type:ty, $out_type:ty, $out_len:expr) => {
-                pub fn $name(pixels: [$in_type; 9]) -> $out_type {
-                    let mut word = 0 as $out_type;
-                    for i in 0..9 {
-                        word = word | ((pixels[i] as $out_type) << (i * ($out_len / 9)))
-                    }
-                    word
-                }
-            };
-        }
-
-        pack_3x3!(p3, u8, u32, 32);
-        pack_3x3!(p7, u8, u64, 64);
-        pack_3x3!(p14, u16, u128, 128);
-
-        macro_rules! array_pack_u32_u128 {
-            ($name:ident, $size:expr) => {
-                pub fn $name(input: &[u32; $size * 4]) -> [u128; $size] {
-                    let mut output = [0u128; $size];
-                    for i in 0..$size {
-                        for shift in 0..4 {
-                            output[i] = output[i] | ((input[i * 4 + shift] as u128) << (shift * 32));
-                        }
-                    }
-                    output
-                }
-            };
-        }
-        array_pack_u32_u128!(array_pack_u32_u128_64, 64);
-
-        macro_rules! array_pack_u8_u128 {
-            ($name:ident, $size:expr) => {
-                pub fn $name(input: &[u8; $size * 16]) -> [u128; $size] {
-                    let mut output = [0u128; $size];
-                    for i in 0..$size {
-                        for shift in 0..16 {
-                            output[i] = output[i] | ((input[i * 4 + shift] as u128) << (shift * 8));
-                        }
-                    }
-                    output
-                }
-            };
-        }
-        array_pack_u8_u128!(array_pack_u8_u128_49, 49);
-
-        macro_rules! flatten_2d {
-            ($name:ident, $x_size:expr, $y_size:expr) => {
-                pub fn $name<T: Default + Copy>(input: &[[T; $y_size]; $x_size]) -> [T; $x_size * $y_size] {
-                    let mut output = [T::default(); $x_size * $y_size];
-                    for x in 0..$x_size {
-                        let offset = x * $y_size;
-                        for y in 0..$y_size {
-                            output[offset + y] = input[x][y];
-                        }
-                    }
-                    output
-                }
-            };
-        }
-        flatten_2d!(flatten_4x4, 4, 4);
-        flatten_2d!(flatten_8x8, 8, 8);
-        flatten_2d!(flatten_16x16, 16, 16);
-        flatten_2d!(flatten_28x28, 28, 28);
-        flatten_2d!(flatten_32x32, 32, 32);
-    }
-
-    pub trait Layer2d<T> {
-        fn to_pixels(&self) -> Vec<T>;
-        fn to_3x3_patches(&self) -> Vec<[T; 9]>;
-        fn from_pixels_1_padding(&Vec<T>) -> Self;
-        fn from_pixels_0_padding(&Vec<T>) -> Self;
-    }
-
-    macro_rules! layer_2d {
-        ($x_size:expr, $y_size:expr) => {
-            impl<T: Copy + Default> Layer2d<T> for [[T; $y_size]; $x_size] {
-                fn to_pixels(&self) -> Vec<T> {
-                    let mut patches = Vec::with_capacity($x_size * $y_size);
-                    for x in 0..$x_size {
-                        for y in 0..$y_size {
-                            patches.push(self[x][y]);
-                        }
-                    }
-                    patches
-                }
-                fn to_3x3_patches(&self) -> Vec<[T; 9]> {
-                    let mut patches = Vec::with_capacity(($x_size - 2) * ($y_size - 2));
-                    for x in 0..$x_size - 2 {
-                        for y in 0..$y_size - 2 {
-                            patches.push([
-                                self[x + 0][y + 0],
-                                self[x + 1][y + 0],
-                                self[x + 2][y + 0],
-                                self[x + 0][y + 1],
-                                self[x + 1][y + 1],
-                                self[x + 2][y + 1],
-                                self[x + 0][y + 2],
-                                self[x + 1][y + 2],
-                                self[x + 2][y + 2],
-                            ]);
-                        }
-                    }
-                    patches
-                }
-                fn from_pixels_0_padding(pixels: &Vec<T>) -> [[T; $y_size]; $x_size] {
-                    if pixels.len() != ($x_size * $y_size) {
-                        panic!("pixels is wrong len")
-                    }
-                    let mut output = [[T::default(); $y_size]; $x_size];
-                    for x in 0..$x_size {
-                        for y in 0..$y_size {
-                            output[x][y] = pixels[x * $y_size + y];
-                        }
-                    }
-                    output
-                }
-                fn from_pixels_1_padding(pixels: &Vec<T>) -> [[T; $y_size]; $x_size] {
-                    if pixels.len() != (($x_size - 2) * ($y_size - 2)) {
-                        panic!("pixels should be {:}, but is {:}", (($x_size - 2) * ($y_size - 2)), pixels.len());
-                    }
-                    let mut output = [[T::default(); $y_size]; $x_size];
-                    for x in 0..($x_size - 2) {
-                        for y in 0..($y_size - 2) {
-                            output[x + 1][y + 1] = pixels[x * ($y_size - 2) + y];
-                        }
-                    }
-                    output
-                }
-            }
-        };
-    }
-    layer_2d!(4, 4);
-    layer_2d!(5, 5);
-    layer_2d!(8, 8);
-    layer_2d!(16, 16);
-    layer_2d!(28, 28);
-    layer_2d!(32, 32);
-    layer_2d!(64, 64);
-
     // From a 2D image, extract various different patches with stride of 1.
     pub trait ExtractPatches<O> {
         fn extract_patches(&self) -> Vec<O>;
@@ -1265,6 +1190,7 @@ pub mod layers {
         };
     }
     extract_patch_9_trait!(32, 32);
+    extract_patch_9_trait!(28, 28);
     extract_patch_9_trait!(16, 16);
 
     // 3x3 in [[T; 3]; 3]
@@ -1289,29 +1215,38 @@ pub mod layers {
     }
 
     extract_patch_3x3_trait!(32, 32);
+    extract_patch_3x3_trait!(28, 28);
     extract_patch_3x3_trait!(16, 16);
 
     // 3x3 with notch, flattened to [T; 8]
-    impl<IP: Copy> ExtractPatches<[IP; 8]> for [[IP; 32]; 32] {
-        fn extract_patches(&self) -> Vec<[IP; 8]> {
-            let mut patches = Vec::with_capacity((32 - 2) * (32 - 2));
-            for x in 0..32 - 2 {
-                for y in 0..32 - 2 {
-                    patches.push([
-                        self[x + 1][y + 0],
-                        self[x + 2][y + 0],
-                        self[x + 0][y + 1],
-                        self[x + 1][y + 1],
-                        self[x + 2][y + 1],
-                        self[x + 0][y + 2],
-                        self[x + 1][y + 2],
-                        self[x + 2][y + 2],
-                    ]);
+    macro_rules! extract_patch_8_trait {
+        ($x_size:expr, $y_size:expr) => {
+            impl<IP: Copy> ExtractPatches<[IP; 8]> for [[IP; $y_size]; $x_size] {
+                fn extract_patches(&self) -> Vec<[IP; 8]> {
+                    let mut patches = Vec::with_capacity(($y_size - 2) * ($x_size - 2));
+                    for x in 0..$x_size - 2 {
+                        for y in 0..$y_size - 2 {
+                            patches.push([
+                                self[x + 1][y + 0],
+                                self[x + 2][y + 0],
+                                self[x + 0][y + 1],
+                                self[x + 1][y + 1],
+                                self[x + 2][y + 1],
+                                self[x + 0][y + 2],
+                                self[x + 1][y + 2],
+                                self[x + 2][y + 2],
+                            ]);
+                        }
+                    }
+                    patches
                 }
             }
-            patches
-        }
+        };
     }
+
+    extract_patch_8_trait!(32, 32);
+    extract_patch_8_trait!(28, 28);
+    extract_patch_8_trait!(16, 16);
 
     // One pixel, just T
     macro_rules! extract_patch_pixel_trait {
@@ -1331,6 +1266,7 @@ pub mod layers {
     }
 
     extract_patch_pixel_trait!(32, 32);
+    extract_patch_pixel_trait!(28, 28);
     extract_patch_pixel_trait!(16, 16);
 
     // 2x2 with stride of 2.
@@ -1374,6 +1310,7 @@ pub mod layers {
     }
 
     patch_map_trait_pixel!(32, 32);
+    patch_map_trait_pixel!(28, 28);
     patch_map_trait_pixel!(16, 16);
 
     macro_rules! patch_map_trait_notched {
@@ -1403,6 +1340,7 @@ pub mod layers {
     }
 
     patch_map_trait_notched!(32, 32);
+    patch_map_trait_notched!(28, 28);
     patch_map_trait_notched!(16, 16);
 
     macro_rules! patch_map_trait_3x3 {
@@ -1433,6 +1371,7 @@ pub mod layers {
     }
 
     patch_map_trait_3x3!(32, 32);
+    patch_map_trait_3x3!(28, 28);
     patch_map_trait_3x3!(16, 16);
 
     macro_rules! patch_map_trait_2x2_pool {
@@ -1460,6 +1399,7 @@ pub mod layers {
     }
 
     patch_map_trait_2x2_pool!(32, 32);
+    patch_map_trait_2x2_pool!(28, 28);
     patch_map_trait_2x2_pool!(16, 16);
 
     pub mod pixelmap {
@@ -1646,8 +1586,8 @@ pub mod layers {
 
 #[cfg(test)]
 mod tests {
-    use super::layers::{bitvecmul, pack_3x3, unary};
-    use super::layers::{Layer2d, Patch};
+    use super::layers::{bitvecmul, unary, Apply, ExtractPatches};
+    use super::Patch;
     #[test]
     fn patch_count() {
         let mut counters = vec![0u32; 32];
@@ -1666,13 +1606,6 @@ mod tests {
         assert_eq!(0b1010_1000u8.hamming_distance(&0b1010_0111u8), 4);
         assert_eq!([0b1111_0000u8, 0b1111_0000u8].hamming_distance(&[0b0000_1100u8, 0b1111_1111u8]), 6 + 4);
     }
-    //#[test]
-    //fn bit_vecmul() {
-    //    let input = [0u128; 3];
-    //    let weights = [([0u128; 3], 0u32); 7];
-    //    let output = bitvecmul::bvm_u7(&weights, &input);
-    //    assert_eq!(output, 0b0111_1111u8);
-    //}
     #[test]
     fn unary() {
         assert_eq!(unary::to_3(128), 0b0000_0001u8);
@@ -1681,19 +1614,12 @@ mod tests {
         assert_eq!(unary::to_7(0), 0b0000_0000u8);
     }
     #[test]
-    fn pack() {
-        assert_eq!(
-            pack_3x3::p3([0b11u8, 0b1u8, 0b1u8, 0b1u8, 0b1u8, 0b1u8, 0b1u8, 0b111u8, 0b1u8]),
-            0b001111001_001001001_001001011u32
-        );
-    }
-    #[test]
     fn extract_patches() {
         let value = 0b1011_0111u8;
         let layer = [[value; 28]; 28];
-        let patches: Vec<_> = layer.to_3x3_patches().iter().map(|&x| x).collect();
+        let patches: Vec<[u8; 8]> = layer.extract_patches();
         assert_eq!(patches.len(), 676);
-        assert_eq!(patches[0], [value; 9])
+        assert_eq!(patches[0], [value; 8])
     }
     #[test]
     fn rgb_pack() {
@@ -1702,18 +1628,27 @@ mod tests {
         assert_eq!(unary::rgb_to_u14([0, 0, 0]), 0b0u16);
     }
     #[test]
-    fn layer_pixels() {
-        let layer = [[0b1001100u8; 28]; 28];
-        let patches = layer.to_pixels();
-        let new_layer = <[[u8; 28]; 28]>::from_pixels_0_padding(&patches);
-        assert_eq!(layer, new_layer);
+    fn test_unary_apply() {
+        let mut weights = [
+            (0b0100110u16, [0u32, 3, 11, 15]),
+            (!0b0u16, [0u32, 3, 11, 15]),
+            (0b0u16, [0u32, 3, 11, 15]),
+            (!0b0u16, [0u32, 3, 11, 15]),
+            (!0b0u16, [0u32, 3, 11, 15]),
+            (!0b0u16, [0u32, 3, 11, 15]),
+            (0b0u16, [0u32, 3, 11, 15]),
+            (!0b0u16, [0u32, 3, 11, 15]),
+        ];
+        let input = 0b0u16;
+        let output: [u8; 4] = weights.apply(&input);
+        println!("{:08b} {:08b} {:08b} {:08b}", output[0], output[1], output[2], output[3]);
+        let mut output: u32 = weights.apply(&input);
+        println!("{:032b}", output);
 
-        let layer = [[!0u8; 5], [0u8; 5], [!0u8; 5], [0u8; 5], [!0u8; 5]];
-        let patches = layer.to_3x3_patches();
-        let pixels: Vec<u8> = patches.iter().map(|x| x[4]).collect();
-        assert_eq!(patches.len(), 9);
-        let new_layer = <[[u8; 5]; 5]>::from_pixels_1_padding(&pixels);
-        let target_new_layer = [[0u8; 5], [0u8; 5], [0u8, !0u8, !0u8, !0u8, 0u8], [0u8; 5], [0u8; 5]];
-        assert_eq!(new_layer, target_new_layer);
+        weights[1] = (0u16, [0u32, 0, 11, 16]);
+        weights.update(&input, &mut output, 1);
+        println!("{:032b}", output);
+        let orig_output: u32 = weights.apply(&input);
+        assert_eq!(orig_output, output);
     }
 }
