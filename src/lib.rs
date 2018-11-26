@@ -359,7 +359,6 @@ array_patch!(49);
 array_patch!(64);
 
 pub mod featuregen {
-    use super::layers;
     use super::layers::bitvecmul;
     use super::Patch;
     use rayon::prelude::*;
@@ -463,7 +462,6 @@ pub mod featuregen {
             ).reduce(|| vec![0u32; T::bit_len()], |a, b| a.iter().zip(b.iter()).map(|(a, b)| a + b).collect())
     }
 
-
     pub fn grads_one_shard<T: Patch + Sync>(by_class: &Vec<Vec<T>>, label: usize) -> Vec<f64> {
         let mut sum_bits: Vec<(usize, Vec<u32>)> = by_class.iter().map(|label_patches| (label_patches.len(), count_bits(&label_patches))).collect();
 
@@ -533,14 +531,15 @@ pub mod layers {
     use super::featuregen;
     use super::Patch;
     use rayon::prelude::*;
+    use std::marker::PhantomData;
     use std::mem::transmute;
 
-    pub trait Apply<I: Send + Sync, O: Send + Sync>
-    where
-        Self: Sync,
-    {
-        fn apply(&self, &I) -> O;
-        fn update(&self, &I, &mut O, usize);
+    pub trait VecApply<I: Send + Sync, O: Send + Sync> {
+        fn vec_apply(&self, &Vec<(usize, I)>) -> Vec<(usize, O)>;
+        fn vec_update(&self, &Vec<(usize, I)>, &mut Vec<(usize, O)>, usize);
+    }
+
+    impl<T: Apply<I, O>, I: Send + Sync + Patch + Copy, O: Send + Sync> VecApply<I, O> for T {
         fn vec_apply(&self, inputs: &Vec<(usize, I)>) -> Vec<(usize, O)> {
             inputs.par_iter().map(|(class, input)| (*class, self.apply(input))).collect()
         }
@@ -551,6 +550,14 @@ pub mod layers {
                 .map(|(x, input)| self.update(&input.1, &mut x.1, index))
                 .collect();
         }
+    }
+
+    pub trait Apply<I: Send + Sync, O: Send + Sync>
+    where
+        Self: Sync,
+    {
+        fn apply(&self, &I) -> O;
+        fn update(&self, &I, &mut O, usize);
     }
 
     macro_rules! primitive_apply {
@@ -579,7 +586,10 @@ pub mod layers {
 
     macro_rules! primitive_apply_simplified_input {
         ($type:ty, $len:expr, $in_type:ty, $weights_type:ty) => {
-            impl<W: Apply<$weights_type, $type>> Apply<$in_type, $type> for W {
+            impl<W: Apply<$weights_type, $type>> Apply<$in_type, $type> for W
+            where
+                W: Apply<$weights_type, $type>,
+            {
                 fn apply(&self, input: &$in_type) -> $type {
                     let input = unsafe { transmute::<$in_type, $weights_type>(*input) };
                     self.apply(&input)
@@ -755,7 +765,7 @@ pub mod layers {
     pool_or_trait!(28, 28);
     pool_or_trait!(16, 16);
 
-    trait NewFromSplit<I: Patch> {
+    pub trait NewFromSplit<I: Patch> {
         fn new_from_split(&Vec<(usize, I)>) -> Self;
     }
 
@@ -828,7 +838,7 @@ pub mod layers {
     primitive_new_from_split_unary!(u64, 64, 4);
     primitive_new_from_split_unary!(u128, 128, 4);
 
-    trait Mutate {
+    pub trait Mutate {
         fn mutate(&mut self, output_index: usize, input_index: usize);
         fn output_len() -> usize;
         fn input_len() -> usize;
@@ -856,34 +866,37 @@ pub mod layers {
     primitive_mutate_trait!(64);
     primitive_mutate_trait!(128);
 
-    trait Optimize<I, O> {
-        fn optimize<H: ObjectiveHead<O>>(&mut self, &mut H, &Vec<(usize, I)>);
+    pub trait Optimize<I, O> {
+        fn optimize<H: ObjectiveHead<O>>(&mut self, &mut H, &Vec<(usize, I)>, usize);
     }
-    impl<I: Sync + Patch + Send, O: Sync + Send, W: Mutate + Apply<I, O>> Optimize<I, O> for W
+    impl<I: Sync + Patch + Send + Copy, O: Sync + Send, W: Mutate + VecApply<I, O>> Optimize<I, O> for W
     where
         W: Apply<I, O>,
     {
-        fn optimize<H: ObjectiveHead<O>>(&mut self, head: &mut H, examples: &Vec<(usize, I)>) {
+        fn optimize<H: ObjectiveHead<O>>(&mut self, head: &mut H, examples: &Vec<(usize, I)>, update_freq: usize) {
             let mut iter = 0;
             for o in 0..W::output_len() {
-                println!("o: {:?}", o);
+                //println!("o: {:?}", o);
                 let mut cache: Vec<(usize, O)> = (*self).vec_apply(examples);
+                head.optimize(&cache, update_freq);
+                head.optimize(&cache, update_freq);
+                head.optimize(&cache, update_freq);
                 let mut acc = head.acc(&cache);
-                println!("acc: {:?}", acc);
+                //println!("acc: {:?}", acc);
                 for b in 0..W::input_len() {
-                    if iter % 5 == 0 {
-                        head.update(&cache);
+                    if iter % update_freq == 0 {
+                        head.optimize(&cache, update_freq);
                         acc = head.acc(&cache);
                     }
                     self.mutate(o, b);
                     (*self).vec_update(&examples, &mut cache, o);
                     let new_acc = head.acc(&cache);
-                    //println!("{:?}", new_acc);
                     if new_acc > acc {
                         acc = new_acc;
-                        println!("{:?}", acc);
+                        //println!("{:?}", acc);
                         iter += 1;
                     } else {
+                        // revert
                         self.mutate(o, b);
                     }
                 }
@@ -893,7 +906,7 @@ pub mod layers {
 
     pub trait ObjectiveHead<I> {
         fn acc(&self, &Vec<(usize, I)>) -> f64;
-        fn update(&mut self, &Vec<(usize, I)>);
+        fn optimize(&mut self, &Vec<(usize, I)>, usize);
         fn new_from_split(&Vec<(usize, I)>) -> Self;
     }
 
@@ -915,17 +928,17 @@ pub mod layers {
                 }).sum();
             sum_correct as f64 / examples.len() as f64
         }
-        fn update(&mut self, examples: &Vec<(usize, I)>) {
+        fn optimize(&mut self, examples: &Vec<(usize, I)>, _update_freq: usize) {
             for mut_class in 0..10 {
                 let mut activation_diffs: Vec<(I, i32, bool)> = examples
-                    .iter()
+                    .par_iter()
                     .map(|(targ_class, input)| {
                         let mut activations: Vec<i32> = self.iter().map(|base_point| base_point.hamming_distance(&input) as i32).collect();
 
                         let targ_act = activations[*targ_class]; // the activation for target class of this example.
                         let mut_act = activations[mut_class]; // the activation which we are mutating.
-                        activations[*targ_class] = -10000;
-                        activations[mut_class] = -10000;
+                        activations[*targ_class] = -1;
+                        activations[mut_class] = -1;
                         let max_other_activations = activations.iter().max().unwrap(); // the max activation of all the classes not in the target class or mut class.
                         let diff = {
                             if *targ_class == mut_class {
@@ -999,6 +1012,36 @@ pub mod layers {
                 readout[class] = I::bitpack(&sign_bits);
             }
             readout
+        }
+    }
+
+    struct Layer<I: Sync + Send, O: Sync + Send, L: VecApply<I, O>, H: ObjectiveHead<O>> {
+        input: PhantomData<I>,
+        output: PhantomData<O>,
+        data: L,
+        head: H,
+    }
+
+    impl<I: Sync + Send + Patch + Copy, O: Sync + Send, L: VecApply<I, O> + VecApply<I, O> + Optimize<I, O> + NewFromSplit<I>, H: ObjectiveHead<O>> ObjectiveHead<I>
+        for Layer<I, O, L, H>
+    {
+        fn acc(&self, examples: &Vec<(usize, I)>) -> f64 {
+            let output_examples = self.data.vec_apply(&examples);
+            self.head.acc(&output_examples)
+        }
+        fn optimize(&mut self, examples: &Vec<(usize, I)>, update_freq: usize) {
+            self.data.optimize(&mut self.head, examples, update_freq);
+        }
+        fn new_from_split(examples: &Vec<(usize, I)>) -> Self {
+            let layer = L::new_from_split(examples);
+            let output_examples = layer.vec_apply(&examples);
+            let head = H::new_from_split(&output_examples);
+            Layer {
+                input: PhantomData,
+                output: PhantomData,
+                data: layer,
+                head: head,
+            }
         }
     }
 
@@ -1174,6 +1217,22 @@ pub mod layers {
         fn extract_patches(&self) -> Vec<O>;
     }
 
+    macro_rules! extract_patch_8_simplify_trait {
+        ($in_type:ty, $out_type:ty) => {
+            impl<II: ExtractPatches<$in_type>> ExtractPatches<$out_type> for II {
+                fn extract_patches(&self) -> Vec<$out_type> {
+                    self.extract_patches()
+                        .iter()
+                        .map(|patch| unsafe { transmute::<$in_type, $out_type>(*patch) })
+                        .collect()
+                }
+            }
+        };
+    }
+
+    extract_patch_8_simplify_trait!([u8; 8], u64);
+    extract_patch_8_simplify_trait!([u16; 8], u128);
+
     // 3x3 flattened to [T; 9] array.
     macro_rules! extract_patch_9_trait {
         ($x_size:expr, $y_size:expr) => {
@@ -1258,6 +1317,27 @@ pub mod layers {
     extract_patch_8_trait!(32, 32);
     extract_patch_8_trait!(28, 28);
     extract_patch_8_trait!(16, 16);
+
+    macro_rules! extract_patch_vec_apply_8_trait {
+        ($x_size:expr, $y_size:expr) => {
+            impl<IP: Patch + Sync + Send + Copy> VecApply<[[IP; $y_size]; $x_size], [IP; 8]> for () {
+                fn vec_apply(&self, examples: &Vec<(usize, [[IP; $y_size]; $x_size])>) -> Vec<(usize, [IP; 8])> {
+                    examples
+                        .iter()
+                        .map(|(class, image)| image.extract_patches().iter().map(|patch| (*class, *patch)).collect::<Vec<(usize, [IP; 8])>>())
+                        .flatten()
+                        .collect()
+                }
+                fn vec_update(&self, inputs: &Vec<(usize, [[IP; $y_size]; $x_size])>, targets: &mut Vec<(usize, [IP; 8])>, _index: usize) {
+                    *targets = self.vec_apply(inputs);
+                }
+            }
+        };
+    }
+
+    extract_patch_vec_apply_8_trait!(32, 32);
+    extract_patch_vec_apply_8_trait!(28, 28);
+    extract_patch_vec_apply_8_trait!(16, 16);
 
     // One pixel, just T
     macro_rules! extract_patch_pixel_trait {
@@ -1412,7 +1492,6 @@ pub mod layers {
     patch_map_trait_2x2_pool!(32, 32);
     patch_map_trait_2x2_pool!(28, 28);
     patch_map_trait_2x2_pool!(16, 16);
-
 
 }
 
