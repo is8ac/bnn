@@ -4,14 +4,10 @@ extern crate time;
 use rayon::prelude::*;
 
 use bitnn::datasets::cifar;
-use bitnn::featuregen;
+//use bitnn::featuregen;
 use bitnn::layers::unary;
-use bitnn::layers::{Apply, NewFromSplit, ObjectiveHead, Optimize, PatchMap, SimplifyBits, VecApply};
-use time::PreciseTime;
-
-fn nzip<X: Clone, Y: Clone>(a_vec: &Vec<Vec<X>>, b_vec: &Vec<Vec<Y>>) -> Vec<Vec<(X, Y)>> {
-    a_vec.iter().zip(b_vec.iter()).map(|(a, b)| a.iter().cloned().zip(b.iter().cloned()).collect()).collect()
-}
+use bitnn::layers::{NewFromSplit, ObjectiveHead, PatchMap, VecApply, Layer};
+//use time::PreciseTime;
 
 fn load_data() -> Vec<(usize, [[[u8; 3]; 32]; 32])> {
     let size: usize = 1000;
@@ -45,10 +41,15 @@ fn main() {
         .collect();
     let l0_patches: Vec<(usize, u128)> = ().vec_apply(&unary_examples);
 
-    let mut layer1 = <[(u128, [u32; 4]); 32]>::new_from_split(&l0_patches);
-    //let l1_examples: Vec<(usize, [[u128; 32]; 32])> = layer1.vec_apply(&examples);
+    let mut layer1 = <[(u128, [u32; 4]); 16]>::new_from_split(&l0_patches);
 
-    //let mut l1_head = <[u128; 10]>::new_from_split(&l1_examples);
+    let l1_examples: Vec<(usize, [[u64; 32]; 32])> = layer1.vec_apply(&unary_examples);
+    //let pooled_images: Vec<(usize, [[u64; 16]; 16])> = ().vec_apply(&l1_examples);
+    let l2_patches: Vec<(usize, [u64; 8])> = ().vec_apply(&l1_examples);
+
+    //let mut readout = <[[u64; 8]; 10]>::new_from_split(&l2_patches);
+    let head = Layer::<[[u64; 32]; 32], [u64; 8], (), [[u64; 8]; 10]>::new_from_split(&l1_examples);
+    //let head = Layer<[[u64; 32]; 32], [[u64; 16]; 16], (), Layer<[[u64; 16]; 16], [u64; 8], (), [[u64; 8]; 10]>>::new_from_split(&l1_examples);
     //let acc = l1_head.acc(&l1_examples);
 }
 // 32%
