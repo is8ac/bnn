@@ -1,13 +1,15 @@
 extern crate bitnn;
 extern crate rayon;
 extern crate time;
-use rayon::prelude::*;
+use time::PreciseTime;
 
 use bitnn::datasets::cifar;
 //use bitnn::featuregen;
 use bitnn::layers::unary;
-use bitnn::layers::{NewFromSplit, ObjectiveHead, PatchMap, VecApply, Layer};
-//use time::PreciseTime;
+use bitnn::layers::{
+    ExtractPatchesNotched3x3, ExtractPixels, ExtractPixelsPadded, Layer, NewFromSplit,
+    ObjectiveHead, OrPool2x2, PatchMap, PixelMap, PoolOrLayer, VecApply,
+};
 
 fn load_data() -> Vec<(usize, [[[u8; 3]; 32]; 32])> {
     let size: usize = 1000;
@@ -27,31 +29,83 @@ fn load_data() -> Vec<(usize, [[[u8; 3]; 32]; 32])> {
 }
 
 fn rgb_to_u16(pixels: [u8; 3]) -> u16 {
-    unary::to_4(pixels[0]) as u16 | ((unary::to_5(pixels[1]) as u16) << 4) | ((unary::to_5(pixels[2]) as u16) << 9)
+    unary::to_5(pixels[0]) as u16
+        | ((unary::to_5(pixels[1]) as u16) << 5)
+        | ((unary::to_6(pixels[2]) as u16) << 10)
 }
 
-//let start = PreciseTime::now();
-//println!("{} seconds just bitpack", start.to(PreciseTime::now()));
-
 fn main() {
+    //let start = PreciseTime::now();
     let examples = load_data();
     let unary_examples: Vec<(usize, [[u16; 32]; 32])> = examples
         .iter()
-        .map(|(class, image)| (*class, image.patch_map(&|input, output: &mut u16| *output = rgb_to_u16(*input))))
+        .map(|(class, image)| {
+            (
+                *class,
+                image.patch_map(&|input, output: &mut u16| *output = rgb_to_u16(*input)),
+            )
+        })
         .collect();
-    let l0_patches: Vec<(usize, u128)> = ().vec_apply(&unary_examples);
 
-    let mut layer1 = <[(u128, [u32; 4]); 16]>::new_from_split(&l0_patches);
+    let mut model =
+        Layer::<[[u16; 32]; 32], ExtractPatchesNotched3x3<u128>, u128, [u128; 10]>::new_from_split(
+            &unary_examples,
+        );
+    let acc = model.optimize(&unary_examples, 3);
+    println!("acc: {:?}%", acc * 100f64);
 
-    let l1_examples: Vec<(usize, [[u64; 32]; 32])> = layer1.vec_apply(&unary_examples);
-    //let pooled_images: Vec<(usize, [[u64; 16]; 16])> = ().vec_apply(&l1_examples);
-    let l2_patches: Vec<(usize, [u64; 8])> = ().vec_apply(&l1_examples);
+    let mut model = Layer::<
+        [[u16; 32]; 32],
+        OrPool2x2<u16>,
+        [[u16; 16]; 16],
+        Layer<[[u16; 16]; 16], ExtractPatchesNotched3x3<u128>, u128, [u128; 10]>,
+    >::new_from_split(&unary_examples);
+    let acc = model.optimize(&unary_examples, 3);
+    println!("acc: {:?}%", acc * 100f64);
 
-    //let mut readout = <[[u64; 8]; 10]>::new_from_split(&l2_patches);
-    let head = Layer::<[[u64; 32]; 32], [u64; 8], (), [[u64; 8]; 10]>::new_from_split(&l1_examples);
-    //let head = Layer<[[u64; 32]; 32], [[u64; 16]; 16], (), Layer<[[u64; 16]; 16], [u64; 8], (), [[u64; 8]; 10]>>::new_from_split(&l1_examples);
-    //let acc = l1_head.acc(&l1_examples);
+    let mut model = Layer::<
+        [[u16; 32]; 32],
+        OrPool2x2<u16>,
+        [[u16; 16]; 16],
+        Layer<[[u16; 16]; 16], ExtractPixels<u16>, u16, [u16; 10]>,
+    >::new_from_split(&unary_examples);
+    let acc = model.optimize(&unary_examples, 3);
+    println!("acc: {:?}%", acc * 100f64);
+
+    let mut model = Layer::<[[u16; 32]; 32], ExtractPixels<u16>, u16, [u16; 10]>::new_from_split(
+        &unary_examples,
+    );
+
+    let acc = model.acc(&unary_examples);
+
+    let pxlmap = PixelMap::<u16, [u16; 32], u32>::new_from_split(&unary_examples);
+    let nls = pxlmap.vec_apply(&unary_examples);
+    let mut model = Layer::<
+        [[u16; 32]; 32],
+        PixelMap<u16, [u16; 32], u32>,
+        [[u32; 32]; 32],
+        Layer<[[u32; 32]; 32], ExtractPixels<u32>, u32, [u32; 10]>,
+    >::new_from_split(&unary_examples);
+
+    let acc = model.optimize(&unary_examples, 3);
+    //println!("acc: {:?}%", acc * 100f64);
+
+    //let acc = model.optimize(&unary_examples, 3);
+    //println!("acc: {:?}%", acc * 100f64);
+    //let acc = model.optimize(&unary_examples, 3);
+    //println!("acc: {:?}%", acc * 100f64);
 }
 // 32%
-// PT40.8
-// 153.9
+
+// 1/50 mod123 21.64% all: PT57.16S
+// 1/50 mod30  20.98% PT217.460382764S
+// 1/50 mod50  21.47% PT 60.99S
+// 1/5  mod50  21.13% PT677.77S
+// 1/5  mod50 20.96% PT319.77S
+
+//acc: 20.949489795918367%
+//all: PT36.504409270S
+//acc: 21.725%
+//all: PT20.222965598S
+
+// foo
