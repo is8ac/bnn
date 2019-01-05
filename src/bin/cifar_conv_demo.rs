@@ -8,11 +8,11 @@ use bitnn::datasets::cifar;
 use bitnn::layers::unary;
 use bitnn::layers::{
     ExtractPatchesNotched3x3, ExtractPixels, ExtractPixelsPadded, Layer, NewFromSplit,
-    ObjectiveHead, OrPool2x2, PatchMap, PixelMap, PoolOrLayer, VecApply,
+    ObjectiveHead, OrPool2x2, Patch3x3NotchedConv, PatchMap, PixelMap, PoolOrLayer, VecApply,
 };
 
 fn load_data() -> Vec<(usize, [[[u8; 3]; 32]; 32])> {
-    let size: usize = 1000;
+    let size: usize = 2000;
     let paths = vec![
         String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/data_batch_1.bin"),
         //String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/data_batch_2.bin"),
@@ -47,53 +47,24 @@ fn main() {
         })
         .collect();
 
-    let mut model =
-        Layer::<[[u16; 32]; 32], ExtractPatchesNotched3x3<u128>, u128, [u128; 10]>::new_from_split(
-            &unary_examples,
-        );
-    let acc = model.optimize(&unary_examples, 3);
-    println!("acc: {:?}%", acc * 100f64);
-
     let mut model = Layer::<
         [[u16; 32]; 32],
-        OrPool2x2<u16>,
-        [[u16; 16]; 16],
-        Layer<[[u16; 16]; 16], ExtractPatchesNotched3x3<u128>, u128, [u128; 10]>,
-    >::new_from_split(&unary_examples);
-    let acc = model.optimize(&unary_examples, 3);
-    println!("acc: {:?}%", acc * 100f64);
-
-    let mut model = Layer::<
-        [[u16; 32]; 32],
-        OrPool2x2<u16>,
-        [[u16; 16]; 16],
-        Layer<[[u16; 16]; 16], ExtractPixels<u16>, u16, [u16; 10]>,
-    >::new_from_split(&unary_examples);
-    let acc = model.optimize(&unary_examples, 3);
-    println!("acc: {:?}%", acc * 100f64);
-
-    let mut model = Layer::<[[u16; 32]; 32], ExtractPixels<u16>, u16, [u16; 10]>::new_from_split(
-        &unary_examples,
-    );
-
-    let acc = model.acc(&unary_examples);
-
-    let pxlmap = PixelMap::<u16, [u16; 32], u32>::new_from_split(&unary_examples);
-    let nls = pxlmap.vec_apply(&unary_examples);
-    let mut model = Layer::<
-        [[u16; 32]; 32],
-        PixelMap<u16, [u16; 32], u32>,
-        [[u32; 32]; 32],
-        Layer<[[u32; 32]; 32], ExtractPixels<u32>, u32, [u32; 10]>,
+        Patch3x3NotchedConv<u16, u128, [u128; 8], u8>,
+        [[u8; 32]; 32],
+        Layer<
+            [[u8; 32]; 32],
+            OrPool2x2<u8>,
+            [[u8; 16]; 16],
+            Layer<[[u8; 16]; 16], ExtractPatchesNotched3x3<u64>, u64, [u64; 10]>,
+        >,
     >::new_from_split(&unary_examples);
 
-    let acc = model.optimize(&unary_examples, 3);
-    //println!("acc: {:?}%", acc * 100f64);
-
-    //let acc = model.optimize(&unary_examples, 3);
-    //println!("acc: {:?}%", acc * 100f64);
-    //let acc = model.optimize(&unary_examples, 3);
-    //println!("acc: {:?}%", acc * 100f64);
+    let start = PreciseTime::now();
+    for i in 0..3 {
+        let acc = model.optimize(&unary_examples, 20);
+        println!("acc: {:?}%", acc * 100f64);
+    }
+    println!("time: {:?}", start.to(PreciseTime::now()));
 }
 // 32%
 

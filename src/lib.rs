@@ -51,63 +51,6 @@ pub mod datasets {
             }
             return images;
         }
-        pub fn load_images_64chan_10(
-            path: &String,
-            size: usize,
-        ) -> Vec<(u8, [[[u64; 1]; 32]; 32])> {
-            let path = Path::new(path);
-            let mut file = File::open(&path).expect("can't open data");
-
-            let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
-            let mut label: [u8; 1] = [0; 1];
-            let mut images: Vec<(u8, [[[u64; 1]; 32]; 32])> = Vec::new();
-            for _ in 0..size {
-                file.read_exact(&mut label).expect("can't read label");
-                file.read_exact(&mut image_bytes)
-                    .expect("can't read images");
-                let mut image = [[[0u64; 1]; 32]; 32];
-                for x in 0..32 {
-                    for y in 0..32 {
-                        image[x][y][0] = encode_unary_rgb([
-                            image_bytes[(0 * 1024) + (y * 32) + x],
-                            image_bytes[(1 * 1024) + (y * 32) + x],
-                            image_bytes[(2 * 1024) + (y * 32) + x],
-                        ]);
-                    }
-                }
-                images.push((label[0], image));
-            }
-            return images;
-        }
-        pub fn load_images_64chan_100(
-            path: &String,
-            size: usize,
-            fine: bool,
-        ) -> Vec<(u8, [[[u64; 1]; 32]; 32])> {
-            let path = Path::new(path);
-            let mut file = File::open(&path).expect("can't open data");
-
-            let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
-            let mut label: [u8; 2] = [0; 2];
-            let mut images: Vec<(u8, [[[u64; 1]; 32]; 32])> = Vec::new();
-            for _ in 0..size {
-                file.read_exact(&mut label).expect("can't read label");
-                file.read_exact(&mut image_bytes)
-                    .expect("can't read images");
-                let mut image = [[[0u64; 1]; 32]; 32];
-                for x in 0..32 {
-                    for y in 0..32 {
-                        image[x][y][0] = encode_unary_rgb([
-                            image_bytes[(0 * 1024) + (y * 32) + x],
-                            image_bytes[(1 * 1024) + (y * 32) + x],
-                            image_bytes[(2 * 1024) + (y * 32) + x],
-                        ]);
-                    }
-                }
-                images.push((label[fine as usize], image));
-            }
-            return images;
-        }
     }
     pub mod mnist {
         use std::fs::File;
@@ -220,6 +163,16 @@ pub mod datasets {
     }
 }
 
+macro_rules! for_uints {
+    ($tokens:tt) => {
+        $tokens!(u8);
+        $tokens!(u16);
+        $tokens!(u32);
+        $tokens!(u64);
+        $tokens!(u128);
+    };
+}
+
 pub trait BitLen: Sized {
     const BIT_LEN: usize;
 }
@@ -271,39 +224,6 @@ pub trait Patch: Send + Sync + Sized + BitLen {
     fn get_bit(&self, usize) -> bool;
 }
 
-//impl<A: Patch, B: Patch> Patch for (A, B) {
-//    fn hamming_distance(&self, other: &Self) -> u32 {
-//        self.0.hamming_distance(&other.0) + self.1.hamming_distance(&other.1)
-//    }
-//    fn bit_increment(&self, counters: &mut [u32]) {
-//        self.0.bit_increment(&mut counters[0..A::BIT_LEN]);
-//        self.1.bit_increment(&mut counters[A::BIT_LEN..]);
-//    }
-//    fn bitpack(bools: &[bool]) -> Self {
-//        if bools.len() != (A::BIT_LEN + B::BIT_LEN) {
-//            panic!("pair bitpack: counters is {:?}, should be {:?}", bools.len(), A::BIT_LEN + B::BIT_LEN);
-//        }
-//        (A::bitpack(&bools[..A::BIT_LEN]), B::bitpack(&bools[A::BIT_LEN..]))
-//    }
-//    fn bit_or(&self, other: &Self) -> Self {
-//        (self.0.bit_or(&other.0), self.1.bit_or(&other.1))
-//    }
-//    fn flip_bit(&mut self, index: usize) {
-//        if index < A::BIT_LEN {
-//            self.0.flip_bit(index);
-//        } else {
-//            self.1.flip_bit(index - A::BIT_LEN);
-//        }
-//    }
-//    fn get_bit(&self, index: usize) -> bool {
-//        if index < A::BIT_LEN {
-//            self.0.get_bit(index)
-//        } else {
-//            self.1.get_bit(index - A::BIT_LEN)
-//        }
-//    }
-//}
-
 macro_rules! primitive_patch {
     ($type:ty) => {
         impl Patch for $type {
@@ -349,11 +269,7 @@ macro_rules! primitive_patch {
     };
 }
 
-primitive_patch!(u8);
-primitive_patch!(u16);
-primitive_patch!(u32);
-primitive_patch!(u64);
-primitive_patch!(u128);
+for_uints!(primitive_patch);
 
 macro_rules! array_patch {
     ($len:expr) => {
@@ -428,37 +344,6 @@ pub mod featuregen {
     use super::Patch;
     use rayon::prelude::*;
 
-    // Takes patches split by class, and generates n_features_iters features for each.
-    // Returns both a vec of features and a vec of unary activations.
-    // Splits after each new feature.
-    pub fn gen_hidden_features<T: Patch + Copy + Sync + Send>(
-        train_inputs: &Vec<Vec<T>>,
-        n_features_iters: usize,
-        unary_size: usize,
-        culling_threshold: usize,
-    ) -> (Vec<T>, Vec<Vec<u32>>) {
-        let flat_inputs: Vec<T> = train_inputs.iter().flatten().cloned().collect();
-        let mut shards: Vec<Vec<Vec<T>>> = vec![train_inputs.clone().to_owned()];
-        let mut features_vec: Vec<T> = vec![];
-        let mut thresholds: Vec<Vec<u32>> = vec![];
-        for i in 0..n_features_iters {
-            for class in 0..train_inputs.len() {
-                let base_point = gen_basepoint(&shards, class);
-                features_vec.push(base_point);
-                let (split_threshold, unary_thresholds) =
-                    vec_threshold(&flat_inputs, &base_point, unary_size);
-                shards = split_labels_set_by_distance(
-                    &shards,
-                    &base_point,
-                    split_threshold,
-                    culling_threshold,
-                );
-                thresholds.push(unary_thresholds);
-                //println!("{:?} \t {:?}", shards.len(), class);
-            }
-        }
-        (features_vec, thresholds)
-    }
     // splits labels examples by class.
     pub fn split_by_label<T: Copy>(examples: &Vec<(usize, T)>, len: usize) -> Vec<Vec<T>> {
         let mut by_label: Vec<Vec<T>> = (0..len).map(|_| Vec::new()).collect();
@@ -467,21 +352,6 @@ pub mod featuregen {
         }
         let _: Vec<_> = by_label.iter_mut().map(|x| x.shrink_to_fit()).collect();
         by_label
-    }
-
-    pub fn apply_unary<T: Patch, O: Patch>(
-        input: &T,
-        features_vec: &Vec<T>,
-        thresholds: &Vec<Vec<u32>>,
-    ) -> O {
-        let distances = bitvecmul::vbvm(&features_vec, &input);
-        let mut bools = vec![false; O::BIT_LEN];
-        for c in 0..distances.len() {
-            for i in 0..thresholds[0].len() {
-                bools[(c * thresholds[0].len()) + i] = distances[c] > thresholds[c][i];
-            }
-        }
-        O::bitpack(&bools.as_slice())
     }
 
     pub fn gen_readout_features<T: Patch + Sync + Clone>(by_class: &Vec<Vec<T>>) -> Vec<T> {
@@ -647,24 +517,6 @@ pub mod featuregen {
         bit_distances.par_sort();
         bit_distances[bit_distances.len() / 2]
     }
-
-    pub fn vec_threshold<T: Patch + Sync>(
-        patches: &Vec<T>,
-        base_point: &T,
-        n: usize,
-    ) -> (u32, Vec<u32>) {
-        let mut bit_distances: Vec<u32> = patches
-            .par_iter()
-            .map(|y| y.hamming_distance(&base_point))
-            .collect();
-        bit_distances.par_sort();
-        let mut split_points = vec![0u32; n];
-        for i in 0..n {
-            split_points[i] = bit_distances[(bit_distances.len() / (n + 1)) * (i + 1)];
-        }
-        (bit_distances[bit_distances.len() / 2], split_points)
-    }
-
 }
 
 #[macro_use]
@@ -674,17 +526,6 @@ pub mod layers {
     use rayon::prelude::*;
     use std::marker::PhantomData;
     use std::mem::transmute;
-    use time::PreciseTime;
-
-    macro_rules! for_uints {
-        ($tokens:tt) => {
-            $tokens!(u8);
-            $tokens!(u16);
-            $tokens!(u32);
-            $tokens!(u64);
-            $tokens!(u128);
-        };
-    }
 
     pub trait VecApply<I: Send + Sync, O: Send + Sync> {
         fn vec_apply(&self, &[(usize, I)]) -> Vec<(usize, O)>;
@@ -693,18 +534,39 @@ pub mod layers {
         }
     }
 
-    //impl<T: Apply<I, O>, I: Send + Sync + Copy, O: Send + Sync> VecApply<I, O> for T {
-    //    fn vec_apply(&self, inputs: &[(usize, I)]) -> Vec<(usize, O)> {
-    //        inputs.par_iter().map(|(class, input)| (*class, self.apply(input))).collect()
-    //    }
-    //    fn vec_update(&self, inputs: &[(usize, I)], targets: &mut Vec<(usize, O)>, index: usize) {
-    //        let _: Vec<_> = targets
-    //            .par_iter_mut()
-    //            .zip(inputs.par_iter())
-    //            .map(|(x, input)| self.update(&input.1, &mut x.1, index))
-    //            .collect();
-    //    }
-    //}
+    macro_rules! vec_apply_trait {
+        ($len:expr) => {
+            impl<I: Send + Sync + Copy, O: Send + Sync> VecApply<I, O> for [I; $len]
+            where
+                Self: Apply<I, O>,
+            {
+                fn vec_apply(&self, inputs: &[(usize, I)]) -> Vec<(usize, O)> {
+                    inputs
+                        .par_iter()
+                        .map(|(class, input)| (*class, self.apply(input)))
+                        .collect()
+                }
+                fn vec_update(
+                    &self,
+                    inputs: &[(usize, I)],
+                    targets: &mut Vec<(usize, O)>,
+                    index: usize,
+                ) {
+                    let _: Vec<_> = targets
+                        .par_iter_mut()
+                        .zip(inputs.par_iter())
+                        .map(|(x, input)| self.update(&input.1, &mut x.1, index))
+                        .collect();
+                }
+            }
+        };
+    }
+
+    vec_apply_trait!(8);
+    vec_apply_trait!(16);
+    vec_apply_trait!(32);
+    vec_apply_trait!(64);
+    vec_apply_trait!(128);
 
     pub trait Apply<I: Send + Sync, O: Send + Sync>
     where
@@ -789,206 +651,6 @@ pub mod layers {
     array_dense_apply!(4);
     array_dense_apply!(5);
 
-    macro_rules! primitive_unary_bitpack_apply {
-        ($len:expr) => {
-            impl<I: Apply<I, O> + Sync + Send, O: Copy + BitLen + Send + Sync + Default>
-                Apply<I, [O; $len]> for [I; $len]
-            {
-                fn apply(&self, input: &I) -> [O; $len] {
-                    let mut target = [O::default(); $len];
-                    for i in 0..$len {
-                        target[i] = self[i].apply(input);
-                    }
-                    target
-                }
-                fn update(&self, input: &I, target: &mut [O; $len], i: usize) {
-                    for i in 0..$len {
-                        self[i].update(input, &mut target[i], i);
-                    }
-                }
-            }
-        };
-    }
-
-    //primitive_unary_bitpack_apply!(u16);
-
-    //macro_rules! primitive_dense_fused_apply {
-    //    ($type:ty, $len:expr) => {
-    //        impl<I: Patch + Default + Copy> Apply<I, $type> for [(I, u32); $len] {
-    //            fn apply(&self, input: &I) -> $type {
-    //                let mut val = 0 as $type;
-    //                for i in 0..$len {
-    //                    val = val | (((self[i].0.hamming_distance(&input) > self[i].1) as $type) << i);
-    //                }
-    //                val
-    //            }
-    //            fn update(&self, input: &I, target: &mut $type, index: usize) {
-    //                *target &= !(1 << index); // unset the bit
-    //                *target |= ((self[index].0.hamming_distance(&input) > self[index].1) as $type) << index; // set it to the updated value.
-    //            }
-    //        }
-    //    };
-    //}
-
-    //primitive_dense_fused_apply!(u8, 8);
-    //primitive_dense_fused_apply!(u16, 16);
-    //primitive_dense_fused_apply!(u32, 32);
-    //primitive_dense_fused_apply!(u64, 64);
-    //primitive_dense_fused_apply!(u128, 128);
-
-    //macro_rules! primitive_apply_simplified_input {
-    //    ($type:ty, $len:expr, $in_type:ty, $weights_type:ty) => {
-    //        impl<W: Apply<$weights_type, $type>> Apply<$in_type, $type> for W
-    //        where
-    //            W: Apply<$weights_type, $type>,
-    //        {
-    //            fn apply(&self, input: &$in_type) -> $type {
-    //                let input = unsafe { transmute::<$in_type, $weights_type>(*input) };
-    //                self.apply(&input)
-    //            }
-    //            fn update(&self, input: &$in_type, target: &mut $type, index: usize) {
-    //                let input = unsafe { transmute::<$in_type, $weights_type>(*input) };
-    //                self.update(&input, target, index);
-    //            }
-    //        }
-    //    };
-    //}
-
-    //macro_rules! primitive_apply_simplified_input_all {
-    //    ($in_type:ty, $weights_type:ty) => {
-    //        primitive_apply_simplified_input!(u8, 8, $in_type, $weights_type);
-    //        primitive_apply_simplified_input!(u16, 16, $in_type, $weights_type);
-    //        primitive_apply_simplified_input!(u32, 32, $in_type, $weights_type);
-    //        primitive_apply_simplified_input!(u64, 64, $in_type, $weights_type);
-    //        primitive_apply_simplified_input!(u128, 128, $in_type, $weights_type);
-    //    };
-    //}
-    //primitive_apply_simplified_input_all!([u8; 8], u64);
-    //primitive_apply_simplified_input_all!([u16; 8], u128);
-    //primitive_apply_simplified_input_all!([u32; 8], [u128; 2]);
-    //primitive_apply_simplified_input_all!([u64; 8], [u128; 4]);
-
-    //macro_rules! primitive_apply_unary {
-    //    ($type:ty, $len:expr, $unary_bits:expr) => {
-    //        impl<I: Patch + Default + Copy> Apply<I, [$type; $unary_bits]> for [(I, [u32; $unary_bits]); $len] {
-    //            fn apply(&self, input: &I) -> [$type; $unary_bits] {
-    //                let mut val = [0 as $type; $unary_bits];
-    //                for i in 0..$len {
-    //                    let dist = self[i].0.hamming_distance(&input);
-    //                    for b in 0..$unary_bits {
-    //                        val[b] = val[b] | (((dist > self[i].1[b]) as $type) << i);
-    //                    }
-    //                }
-    //                val
-    //            }
-    //            fn update(&self, input: &I, target: &mut [$type; $unary_bits], index: usize) {
-    //                let dist = self[index].0.hamming_distance(&input);
-    //                for b in 0..$unary_bits {
-    //                    target[b] &= !(1 << index); // unset the bit
-    //                    target[b] |= ((dist > self[index].1[b]) as $type) << index; // set it to the updated value.
-    //                }
-    //            }
-    //        }
-    //    };
-    //}
-
-    //macro_rules! primitive_apply_n_bit_types {
-    //    ($unary_bits:expr) => {
-    //        primitive_apply_unary!(u8, 8, $unary_bits);
-    //        primitive_apply_unary!(u16, 16, $unary_bits);
-    //        primitive_apply_unary!(u32, 32, $unary_bits);
-    //        primitive_apply_unary!(u64, 64, $unary_bits);
-    //        primitive_apply_unary!(u128, 128, $unary_bits);
-    //    };
-    //}
-
-    //primitive_apply_n_bit_types!(2);
-    //primitive_apply_n_bit_types!(3);
-    //primitive_apply_n_bit_types!(4);
-
-    //macro_rules! primitive_apply_unary_simplify {
-    //    ($type:ty, $len:expr, $unary_bits:expr, $out_type:ty) => {
-    //        impl<I: Patch + Default + Copy> Apply<I, $out_type> for [(I, [u32; $unary_bits]); $len] {
-    //            fn apply(&self, input: &I) -> $out_type {
-    //                let mut val = [0 as $type; $unary_bits];
-    //                for i in 0..$len {
-    //                    let dist = self[i].0.hamming_distance(&input);
-    //                    for b in 0..$unary_bits {
-    //                        val[b] = val[b] | (((dist > self[i].1[b]) as $type) << i);
-    //                    }
-    //                }
-    //                unsafe { transmute(val) }
-    //            }
-    //            fn update(&self, input: &I, target: &mut $out_type, index: usize) {
-    //                let target = unsafe { transmute::<&mut $out_type, &mut [$type; $unary_bits]>(target) };
-    //                let dist = self[index].0.hamming_distance(&input);
-    //                for b in 0..$unary_bits {
-    //                    target[b] &= !(1 << index); // unset the bit
-    //                    target[b] |= ((dist > self[index].1[b]) as $type) << index; // set it to the updated value.
-    //                }
-    //            }
-    //        }
-    //    };
-    //}
-
-    //primitive_apply_unary_simplify!(u8, 8, 2, u16);
-    //primitive_apply_unary_simplify!(u8, 8, 4, u32);
-    //primitive_apply_unary_simplify!(u16, 16, 2, u32);
-    //primitive_apply_unary_simplify!(u16, 16, 4, u64);
-    //primitive_apply_unary_simplify!(u32, 32, 2, u64);
-    //primitive_apply_unary_simplify!(u32, 32, 4, u128);
-    //primitive_apply_unary_simplify!(u64, 64, 2, u128);
-    //primitive_apply_unary_simplify!(u64, 64, 4, [u128; 2]);
-
-    //macro_rules! patch_apply_trait_8notched {
-    //    ($x_size:expr, $y_size:expr) => {
-    //        impl<IP: Copy + Send + Sync, OP: Copy + Default + Send + Sync, W: Apply<[IP; 8], OP>> Apply<[[IP; $y_size]; $x_size], [[OP; $y_size]; $x_size]> for W {
-    //            fn apply(&self, input: &[[IP; $y_size]; $x_size]) -> [[OP; $y_size]; $x_size] {
-    //                let mut output = [[OP::default(); $y_size]; $x_size];
-    //                for x in 0..($x_size - 2) {
-    //                    for y in 0..($y_size - 2) {
-    //                        let patch = [
-    //                            input[x + 1][y + 0],
-    //                            input[x + 2][y + 0],
-    //                            input[x + 0][y + 1],
-    //                            input[x + 1][y + 1],
-    //                            input[x + 2][y + 1],
-    //                            input[x + 0][y + 2],
-    //                            input[x + 1][y + 2],
-    //                            input[x + 2][y + 2],
-    //                        ];
-    //                        output[x][y] = self.apply(&patch);
-    //                    }
-    //                }
-    //                output
-    //            }
-    //            fn update(&self, input: &[[IP; $y_size]; $x_size], target: &mut [[OP; $y_size]; $x_size], index: usize) {
-    //                for x in 0..($x_size - 2) {
-    //                    for y in 0..($y_size - 2) {
-    //                        let patch = [
-    //                            input[x + 1][y + 0],
-    //                            input[x + 2][y + 0],
-    //                            input[x + 0][y + 1],
-    //                            input[x + 1][y + 1],
-    //                            input[x + 2][y + 1],
-    //                            input[x + 0][y + 2],
-    //                            input[x + 1][y + 2],
-    //                            input[x + 2][y + 2],
-    //                        ];
-    //                        self.update(&patch, &mut target[x][y], index);
-    //                    }
-    //                }
-    //            }
-    //        }
-    //    };
-    //}
-
-    //patch_apply_trait_8notched!(32, 32);
-    //patch_apply_trait_8notched!(28, 28);
-    //patch_apply_trait_8notched!(14, 14);
-    //patch_apply_trait_8notched!(16, 16);
-    //patch_apply_trait_8notched!(8, 8);
-
     pub struct PoolOrLayer;
 
     impl<I: Patch> NewFromSplit<I> for PoolOrLayer {
@@ -1013,34 +675,6 @@ pub mod layers {
         }
     }
 
-    //macro_rules! pool_or_trait {
-    //    ($x_size:expr, $y_size:expr) => {
-    //        impl<T: Patch + Default + Copy> Apply<[[T; $y_size]; $x_size], [[T; $y_size / 2]; $x_size / 2]> for PoolOrLayer {
-    //            fn apply(&self, input: &[[T; $y_size]; $x_size]) -> [[T; $y_size / 2]; $x_size / 2] {
-    //                let mut output = [[T::default(); $y_size / 2]; $x_size / 2];
-    //                for x in 0..$x_size / 2 {
-    //                    let x_base = x * 2;
-    //                    for y in 0..$y_size / 2 {
-    //                        let y_base = y * 2;
-    //                        output[x][y] = input[x_base + 0][y_base + 0]
-    //                            .bit_or(&input[x_base + 0][y_base + 1])
-    //                            .bit_or(&input[x_base + 1][y_base + 0])
-    //                            .bit_or(&input[x_base + 1][y_base + 1]);
-    //                    }
-    //                }
-    //                output
-    //            }
-    //            fn update(&self, input: &[[T; $y_size]; $x_size], output: &mut [[T; $y_size / 2]; $x_size / 2], _index: usize) {
-    //                *output = self.apply(input);
-    //            }
-    //        }
-    //    };
-    //}
-
-    //pool_or_trait!(32, 32);
-    //pool_or_trait!(28, 28);
-    //pool_or_trait!(16, 16);
-    //pool_or_trait!(8, 8);
     use rand::{Rng, ThreadRng};
     pub trait NewFromRng<I> {
         fn new_from_rng(rng: &mut ThreadRng, input_bit_len: usize) -> Self;
@@ -1105,116 +739,11 @@ pub mod layers {
     primitive_activations_new_from_split!(64);
     primitive_activations_new_from_split!(128);
 
-    macro_rules! primitive_new_from_split {
-        ($type:ty) => {
-            impl<I: Patch + Copy + Default> NewFromSplit<I> for [(I, u32); <$type>::BIT_LEN] {
-                fn new_from_split(examples: &Vec<(usize, I)>) -> Self {
-                    let mut weights = [(I::default(), 0u32); <$type>::BIT_LEN];
-                    let train_inputs = featuregen::split_by_label(&examples, 10);
-
-                    let flat_inputs: Vec<I> = examples.iter().map(|(_, input)| *input).collect();
-                    let mut shards: Vec<Vec<Vec<I>>> = vec![train_inputs.clone().to_owned()];
-                    for i in 0..<$type>::BIT_LEN {
-                        let class = i % 10;
-                        let base_point = featuregen::gen_basepoint(&shards, class);
-                        let mut bit_distances: Vec<u32> = flat_inputs
-                            .par_iter()
-                            .map(|y| y.hamming_distance(&base_point))
-                            .collect();
-                        bit_distances.par_sort();
-                        let threshold = bit_distances[bit_distances.len() / 2];
-                        weights[i] = (base_point, threshold);
-
-                        shards = featuregen::split_labels_set_by_distance(
-                            &shards,
-                            &base_point,
-                            threshold,
-                            2,
-                        );
-                    }
-                    weights
-                }
-            }
-        };
-    }
-
-    for_uints!(primitive_new_from_split);
-
-    macro_rules! primitive_new_from_split_unary {
-        ($type:ty, $len:expr, $unary_bits:expr) => {
-            impl<I: Patch + Copy + Default> NewFromSplit<I> for [(I, [u32; $unary_bits]); $len] {
-                fn new_from_split(examples: &Vec<(usize, I)>) -> Self {
-                    let mut weights = [(I::default(), [0u32; $unary_bits]); $len];
-                    let train_inputs = featuregen::split_by_label(&examples, 10);
-
-                    let flat_inputs: Vec<I> = examples.iter().map(|(_, input)| *input).collect();
-                    let mut shards: Vec<Vec<Vec<I>>> = vec![train_inputs.clone().to_owned()];
-                    for i in 0..$len {
-                        let class = i % 10;
-                        let base_point = featuregen::gen_basepoint(&shards, class);
-                        weights[i].0 = base_point;
-                        let mut bit_distances: Vec<u32> = flat_inputs
-                            .par_iter()
-                            .map(|y| y.hamming_distance(&base_point))
-                            .collect();
-                        bit_distances.par_sort();
-                        let threshold = bit_distances[bit_distances.len() / 2];
-                        for b in 0..$unary_bits {
-                            weights[i].1[b] =
-                                bit_distances[bit_distances.len() / ($unary_bits + 1)];
-                        }
-                        shards = featuregen::split_labels_set_by_distance(
-                            &shards,
-                            &base_point,
-                            threshold,
-                            2,
-                        );
-                    }
-                    weights
-                }
-            }
-        };
-    }
-
-    primitive_new_from_split_unary!(u8, 8, 2);
-    primitive_new_from_split_unary!(u16, 16, 2);
-    primitive_new_from_split_unary!(u32, 32, 2);
-    primitive_new_from_split_unary!(u64, 64, 2);
-    primitive_new_from_split_unary!(u128, 128, 2);
-
-    primitive_new_from_split_unary!(u8, 8, 4);
-    primitive_new_from_split_unary!(u16, 16, 4);
-    primitive_new_from_split_unary!(u32, 32, 4);
-    primitive_new_from_split_unary!(u64, 64, 4);
-    primitive_new_from_split_unary!(u128, 128, 4);
-
     pub trait Mutate {
         fn mutate(&mut self, output_index: usize, input_index: usize);
-        fn output_len() -> usize;
-        fn input_len() -> usize;
+        const OUTPUT_LEN: usize;
+        const INPUT_LEN: usize;
     }
-
-    //macro_rules! primitive_mutate_trait {
-    //    ($len:expr) => {
-    //        impl<I: Patch, T> Mutate for [(I, T); $len] {
-    //            fn mutate(&mut self, output_index: usize, input_index: usize) {
-    //                self[output_index].0.flip_bit(input_index);
-    //            }
-    //            fn output_len() -> usize {
-    //                $len
-    //            }
-    //            fn input_len() -> usize {
-    //                I::BIT_LEN
-    //            }
-    //        }
-    //    };
-    //}
-
-    //primitive_mutate_trait!(8);
-    //primitive_mutate_trait!(16);
-    //primitive_mutate_trait!(32);
-    //primitive_mutate_trait!(64);
-    //primitive_mutate_trait!(128);
 
     macro_rules! primitive_mutate_matrix_trait {
         ($len:expr) => {
@@ -1222,12 +751,8 @@ pub mod layers {
                 fn mutate(&mut self, output_index: usize, input_index: usize) {
                     self[output_index].flip_bit(input_index);
                 }
-                fn output_len() -> usize {
-                    $len
-                }
-                fn input_len() -> usize {
-                    I::BIT_LEN
-                }
+                const OUTPUT_LEN: usize = $len;
+                const INPUT_LEN: usize = I::BIT_LEN;
             }
         };
     }
@@ -1254,12 +779,12 @@ pub mod layers {
             let new_examples: Vec<(usize, O)> = (*self).vec_apply(examples);
             let mut acc = head.acc(&new_examples);
             let mut iter = 0;
-            for o in 0..W::output_len() {
+            for o in 0..W::OUTPUT_LEN {
                 //println!("o: {:?}", o);
                 let mut cache: Vec<(usize, O)> = (*self).vec_apply(&examples);
                 acc = head.optimize(&cache, update_freq);
                 //println!("{} output: {:?}%", o, acc * 100f64);
-                for b in 0..W::input_len() {
+                for b in 0..W::INPUT_LEN {
                     if iter % update_freq == 0 {
                         (*self).vec_update(&examples, &mut cache, o);
                         acc = head.optimize(&cache, update_freq);
@@ -1284,21 +809,9 @@ pub mod layers {
         }
     }
 
-    //impl<I: Sync + Send + Patch + Copy, O: Sync + Send> OptimizeLayer<I, O> for ()
-    //where
-    //    Self: VecApply<I, O>,
-    //{
-    //    fn optimize<H: ObjectiveHead<O>>(&mut self, head: &mut H, examples: &Vec<(usize, I)>, update_freq: usize) -> f64 {
-    //        let new_examples: Vec<(usize, O)> = (*self).vec_apply(examples);
-    //        let acc = head.optimize(&new_examples, update_freq);
-    //        acc
-    //    }
-    //}
-
     pub trait ObjectiveHead<I> {
         fn acc(&self, &Vec<(usize, I)>) -> f64;
         fn optimize(&mut self, &Vec<(usize, I)>, usize) -> f64;
-        //fn new_from_split(&Vec<(usize, I)>) -> Self;
     }
 
     impl<I: Patch + Send + Sync + Default + Copy> NewFromSplit<I> for [I; 10] {
@@ -1648,6 +1161,14 @@ pub mod layers {
         map_fn: FN,
     }
 
+    impl<I: Send + Sync, FN: Apply<I, O> + Mutate, O: Send + Sync> Mutate for PixelMap<I, FN, O> {
+        fn mutate(&mut self, output_index: usize, input_index: usize) {
+            self.map_fn.mutate(output_index, input_index);
+        }
+        const OUTPUT_LEN: usize = FN::OUTPUT_LEN;
+        const INPUT_LEN: usize = FN::INPUT_LEN;
+    }
+
     impl<
             II: Image2D<I> + Send + Sync,
             I: Send + Sync,
@@ -1667,29 +1188,7 @@ pub mod layers {
         }
     }
 
-    impl<
-            II: Image2D<IP> + Send + Sync,
-            IP: Send + Sync,
-            OI: Image2D<OP> + Send + Sync,
-            OP: Copy + Send + Sync,
-            FN: Apply<IP, OP>,
-        > OptimizeLayer<II, OI> for PixelMap<IP, FN, OP>
-    where
-        Self: VecApply<II, OI>,
-    {
-        fn optimize_layer<H: ObjectiveHead<OI>>(
-            &mut self,
-            head: &mut H,
-            examples: &[(usize, II)],
-            update_freq: usize,
-        ) -> f64 {
-            let new_examples: Vec<(usize, OI)> = (*self).vec_apply(examples);
-            let acc = head.optimize(&new_examples, update_freq);
-            acc
-        }
-    }
-
-    macro_rules! pixel_map_trait {
+    macro_rules! pixel_map_apply_trait {
         ($x_size:expr, $y_size:expr) => {
             impl<I: Send + Sync + Copy, FN: Apply<I, O>, O: Send + Sync + Default + Copy>
                 Apply<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]> for PixelMap<I, FN, O>
@@ -1707,8 +1206,8 @@ pub mod layers {
         };
     }
 
-    pixel_map_trait!(32, 32);
-    pixel_map_trait!(16, 16);
+    pixel_map_apply_trait!(32, 32);
+    pixel_map_apply_trait!(16, 16);
 
     impl<
             II: Image2D<IP> + Send + Sync,
@@ -1719,6 +1218,115 @@ pub mod layers {
         > VecApply<II, OI> for PixelMap<IP, FN, OP>
     where
         Self: Apply<II, OI>,
+    {
+        fn vec_apply(&self, inputs: &[(usize, II)]) -> Vec<(usize, OI)> {
+            inputs
+                .par_iter()
+                .map(|(class, input)| (*class, self.apply(input)))
+                .collect()
+        }
+    }
+
+    pub struct Patch3x3NotchedConv<
+        I: Send + Sync,
+        Patch: Send + Sync,
+        FN: Apply<Patch, O>,
+        O: Send + Sync,
+    >
+    where
+        [I; 8]: SimplifyBits<Patch>,
+    {
+        input_pixel_type: PhantomData<I>,
+        patch_type: PhantomData<Patch>,
+        output_type: PhantomData<O>,
+        map_fn: FN,
+    }
+
+    impl<I: Send + Sync, P: Send + Sync, FN: Apply<P, O> + Mutate, O: Send + Sync> Mutate
+        for Patch3x3NotchedConv<I, P, FN, O>
+    where
+        [I; 8]: SimplifyBits<P>,
+    {
+        fn mutate(&mut self, output_index: usize, input_index: usize) {
+            self.map_fn.mutate(output_index, input_index);
+        }
+        const OUTPUT_LEN: usize = FN::OUTPUT_LEN;
+        const INPUT_LEN: usize = FN::INPUT_LEN;
+    }
+
+    impl<
+            II: Image2D<I> + Send + Sync,
+            I: Send + Sync,
+            O: Send + Sync,
+            P: Send + Sync,
+            FN: Apply<P, O> + NewFromSplit<P>,
+        > NewFromSplit<II> for Patch3x3NotchedConv<I, P, FN, O>
+    where
+        ExtractPatchesNotched3x3<P>: VecApply<II, P>,
+        [I; 8]: SimplifyBits<P>,
+    {
+        fn new_from_split(examples: &Vec<(usize, II)>) -> Self {
+            let patches = ExtractPatchesNotched3x3::new_from_split(&examples).vec_apply(&examples);
+            Patch3x3NotchedConv {
+                input_pixel_type: PhantomData,
+                patch_type: PhantomData,
+                output_type: PhantomData,
+                map_fn: FN::new_from_split(&patches),
+            }
+        }
+    }
+
+    macro_rules! patch_conv_apply_trait {
+        ($x_size:expr, $y_size:expr) => {
+            impl<
+                    I: Send + Sync + Copy,
+                    P: Send + Sync,
+                    FN: Apply<P, O>,
+                    O: Send + Sync + Default + Copy,
+                > Apply<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]>
+                for Patch3x3NotchedConv<I, P, FN, O>
+            where
+                [I; 8]: SimplifyBits<P>,
+            {
+                fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size]; $x_size] {
+                    let mut target = [[O::default(); $y_size]; $x_size];
+                    for x in 0..$x_size - 2 {
+                        for y in 0..$y_size - 2 {
+                            target[x][y] = self.map_fn.apply(
+                                &([
+                                    input[x + 1][y + 0],
+                                    input[x + 2][y + 0],
+                                    input[x + 0][y + 1],
+                                    input[x + 1][y + 1],
+                                    input[x + 2][y + 1],
+                                    input[x + 0][y + 2],
+                                    input[x + 1][y + 2],
+                                    input[x + 2][y + 2],
+                                ])
+                                .simplify(),
+                            );
+                        }
+                    }
+                    target
+                }
+            }
+        };
+    }
+
+    patch_conv_apply_trait!(32, 32);
+    patch_conv_apply_trait!(16, 16);
+
+    impl<
+            II: Image2D<IP> + Send + Sync,
+            IP: Send + Sync,
+            OI: Image2D<OP> + Send + Sync,
+            OP: Send + Sync,
+            P: Send + Sync,
+            FN: Apply<P, OP>,
+        > VecApply<II, OI> for Patch3x3NotchedConv<IP, P, FN, OP>
+    where
+        Self: Apply<II, OI>,
+        [IP; 8]: SimplifyBits<P>,
     {
         fn vec_apply(&self, inputs: &[(usize, II)]) -> Vec<(usize, OI)> {
             inputs
@@ -1798,7 +1406,7 @@ pub mod layers {
 
     extract_patch_8_trait!(32, 32);
     extract_patch_8_trait!(16, 16);
-    //extract_patch_8_trait!(8, 8);
+    extract_patch_8_trait!(8, 8);
 
     pub struct ExtractPixels<P> {
         pixel_type: PhantomData<P>,
@@ -1851,6 +1459,7 @@ pub mod layers {
 
     extract_pixel_vecapply!(32, 32);
     extract_pixel_vecapply!(16, 16);
+    extract_pixel_vecapply!(8, 8);
 
     pub struct ExtractPixelsPadded<P> {
         pixel_type: PhantomData<P>,
@@ -1907,110 +1516,6 @@ pub mod layers {
     extract_pixel_1x1_padded_trait!(32, 32);
     extract_pixel_1x1_padded_trait!(16, 16);
 
-    //pub struct ExtractPatchesLayer<OP> {
-    //    output_type: PhantomData<OP>,
-    //}
-
-    //impl<I: Sync + Send + Patch + Copy, O: Sync + Send> OptimizeLayer<I, O> for ExtractPatchesLayer<O>
-    //where
-    //    Self: VecApply<I, O>,
-    //{
-    //    fn optimize<H: ObjectiveHead<O>>(&mut self, head: &mut H, examples: &[(usize, I)], update_freq: usize) -> f64 {
-    //        let new_examples: Vec<(usize, O)> = (*self).vec_apply(examples);
-    //        let acc = head.optimize(&new_examples, update_freq);
-    //        acc
-    //    }
-    //}
-
-    //macro_rules! extract_patch_vec_apply_8_trait {
-    //    ($x_size:expr, $y_size:expr) => {
-    //        impl<IP: Patch + Sync + Send + Copy> VecApply<[[IP; $y_size]; $x_size], [IP; 8]> for ExtractPatchesLayer<[IP; 8]> {
-    //            fn vec_apply(&self, examples: &[(usize, [[IP; $y_size]; $x_size])]) -> Vec<(usize, [IP; 8])> {
-    //                examples
-    //                    .par_iter()
-    //                    .map(|(class, image)| image.extract_patches().iter().map(|patch| (*class, *patch)).collect::<Vec<(usize, [IP; 8])>>())
-    //                    .flatten()
-    //                    .collect()
-    //            }
-    //            fn vec_update(&self, inputs: &[(usize, [[IP; $y_size]; $x_size])], targets: &mut [(usize, [IP; 8])], _index: usize) {
-    //                targets = &mut self.vec_apply(inputs);
-    //            }
-    //        }
-    //    };
-    //}
-
-    //extract_patch_vec_apply_8_trait!(32, 32);
-    //extract_patch_vec_apply_8_trait!(28, 28);
-    //extract_patch_vec_apply_8_trait!(16, 16);
-    //extract_patch_vec_apply_8_trait!(8, 8);
-
-    //macro_rules! extract_patch_vec_apply_8_simplify_trait {
-    //    ($x_size:expr, $y_size:expr, $in_pixel_type:ty, $out_type:ty) => {
-    //        impl VecApply<[[$in_pixel_type; $y_size]; $x_size], $out_type> for ExtractPatchesLayer<$out_type> {
-    //            fn vec_apply(&self, examples: &[(usize, [[$in_pixel_type; $y_size]; $x_size])]) -> Vec<(usize, $out_type)> {
-    //                examples
-    //                    .par_iter()
-    //                    .map(|(class, image)| image.extract_patches().iter().map(|patch| (*class, *patch)).collect::<Vec<(usize, $out_type)>>())
-    //                    .flatten()
-    //                    .collect()
-    //            }
-    //            fn vec_update(&self, inputs: &[(usize, [[$in_pixel_type; $y_size]; $x_size])], targets: &mut Vec<(usize, $out_type)>, _index: usize) {
-    //                *targets = self.vec_apply(inputs);
-    //            }
-    //        }
-    //    };
-    //}
-
-    //extract_patch_vec_apply_8_simplify_trait!(32, 32, u16, u128);
-    //extract_patch_vec_apply_8_simplify_trait!(28, 28, u16, u128);
-    //extract_patch_vec_apply_8_simplify_trait!(16, 16, u16, u128);
-    //extract_patch_vec_apply_8_simplify_trait!(8, 8, u16, u128);
-    //extract_patch_vec_apply_8_simplify_trait!(32, 32, u32, [u128; 2]);
-    //extract_patch_vec_apply_8_simplify_trait!(28, 28, u32, [u128; 2]);
-    //extract_patch_vec_apply_8_simplify_trait!(16, 16, u32, [u128; 2]);
-    //extract_patch_vec_apply_8_simplify_trait!(8, 8, u32, [u128; 2]);
-
-    // One pixel, just T
-    //macro_rules! extract_patch_pixel_trait {
-    //    ($x_size:expr, $y_size:expr) => {
-    //        impl<IP: Copy> ExtractPatches<IP> for [[IP; $y_size]; $x_size] {
-    //            fn extract_patches(&self) -> Vec<IP> {
-    //                let mut patches = Vec::with_capacity($x_size * $y_size);
-    //                for x in 0..$x_size {
-    //                    for y in 0..$y_size {
-    //                        patches.push(self[x][y]);
-    //                    }
-    //                }
-    //                patches
-    //            }
-    //        }
-    //    };
-    //}
-
-    //extract_patch_pixel_trait!(32, 32);
-    //extract_patch_pixel_trait!(28, 28);
-    //extract_patch_pixel_trait!(16, 16);
-
-    // 2x2 with stride of 2.
-    //impl<IP: Copy> ExtractPatches<[IP; 4]> for [[IP; 32]; 32] {
-    //    fn extract_patches(&self) -> Vec<[IP; 4]> {
-    //        let mut patches = Vec::with_capacity(32 * 32);
-    //        for x in 0..32 / 2 {
-    //            let x_base = x * 2;
-    //            for y in 0..32 / 2 {
-    //                let y_base = y * 2;
-    //                patches.push([
-    //                    self[x_base + 0][y_base + 0],
-    //                    self[x_base + 0][y_base + 1],
-    //                    self[x_base + 1][y_base + 0],
-    //                    self[x_base + 1][y_base + 1],
-    //                ]);
-    //            }
-    //        }
-    //        patches
-    //    }
-    //}
-
     pub trait Image2D<P> {}
 
     macro_rules! image2d_trait {
@@ -2047,124 +1552,11 @@ pub mod layers {
     patch_map_trait_pixel!(32, 32);
     patch_map_trait_pixel!(28, 28);
     patch_map_trait_pixel!(16, 16);
-
-    //struct Patch3x3Notched {}
-
-    //impl<I: Send + Sync + Copy, O: Send + Sync> VecApply<I, O> for Patch3x3Notched {
-    //    fn vec_apply(&self, inputs: &[(usize, I)]) -> Vec<(usize, O)> {
-    //        inputs.par_iter().map(|(class, input)| (*class, self.apply(input))).collect()
-    //    }
-    //}
-
-    //impl<I> NewFromSplit<I> for Patch3x3Notched {
-    //    fn new_from_split(_examples: &Vec<(usize, I)>) -> Self {
-    //        Patch3x3Notched {}
-    //    }
-    //}
-
-    //impl<I: Send + Sync, O: Copy + Send + Sync> OptimizeLayer<I, O> for Patch3x3Notched
-    //where
-    //    Self: VecApply<I, O>,
-    //{
-    //    fn optimize<H: ObjectiveHead<O>>(&mut self, head: &mut H, examples: &[(usize, I)], update_freq: usize) -> f64 {
-    //        let new_examples: Vec<(usize, O)> = (*self).vec_apply(examples);
-    //        let acc = head.optimize(&new_examples, update_freq);
-    //        acc
-    //    }
-    //}
-
-    //macro_rules! patch_8_notched {
-    //    ($x_size:expr, $y_size:expr, $in_type:ty, $out_type:ty) => {
-    //        impl Apply<[[$in_type; $y_size]; $x_size], [[$out_type; $y_size]; $x_size]> for Patch3x3Notched {
-    //            fn apply(&self, input: &[[$in_type; $y_size]; $x_size]) -> [[$out_type; $y_size]; $x_size] {
-    //                let mut output = [[<$out_type>::default(); $y_size]; $x_size];
-    //                for x in 0..($x_size - 2) {
-    //                    for y in 0..($y_size - 2) {
-    //                        let patch = [
-    //                            input[x + 1][y + 0],
-    //                            input[x + 2][y + 0],
-    //                            input[x + 0][y + 1],
-    //                            input[x + 1][y + 1],
-    //                            input[x + 2][y + 1],
-    //                            input[x + 0][y + 2],
-    //                            input[x + 1][y + 2],
-    //                            input[x + 2][y + 2],
-    //                        ];
-    //                        output[x + 1][y + 1] = unsafe { transmute::<[$in_type; 8], $out_type>(patch) };
-    //                    }
-    //                }
-    //                output
-    //            }
-    //        }
-    //    };
-    //}
-
-    //patch_8_notched!(32, 32, u16, u128);
-
-    //macro_rules! patch_map_trait_3x3 {
-    //    ($x_size:expr, $y_size:expr) => {
-    //        impl<IP: Copy, OP: Copy + Default> PatchMap<IP, [IP; 9], [[OP; $y_size]; $x_size], OP> for [[IP; $y_size]; $x_size] {
-    //            fn patch_map(&self, map_fn: &Fn(&[IP; 9], &mut OP)) -> [[OP; $y_size]; $x_size] {
-    //                let mut output = [[OP::default(); $y_size]; $x_size];
-    //                for x in 0..($x_size - 2) {
-    //                    for y in 0..($y_size - 2) {
-    //                        let patch = [
-    //                            self[x + 0][y + 0],
-    //                            self[x + 1][y + 0],
-    //                            self[x + 2][y + 0],
-    //                            self[x + 0][y + 1],
-    //                            self[x + 1][y + 1],
-    //                            self[x + 2][y + 1],
-    //                            self[x + 0][y + 2],
-    //                            self[x + 1][y + 2],
-    //                            self[x + 2][y + 2],
-    //                        ];
-    //                        map_fn(&patch, &mut output[x][y]);
-    //                    }
-    //                }
-    //                output
-    //            }
-    //        }
-    //    };
-    //}
-
-    //patch_map_trait_3x3!(32, 32);
-    //patch_map_trait_3x3!(28, 28);
-    //patch_map_trait_3x3!(16, 16);
-
-    //macro_rules! patch_map_trait_2x2_pool {
-    //    ($x_size:expr, $y_size:expr) => {
-    //        impl<IP: Copy, OP: Copy + Default> PatchMap<IP, [IP; 4], [[OP; $y_size / 2]; $x_size / 2], OP> for [[IP; $y_size]; $x_size] {
-    //            fn patch_map(&self, map_fn: &Fn(&[IP; 4], &mut OP)) -> [[OP; $y_size / 2]; $x_size / 2] {
-    //                let mut output = [[OP::default(); $y_size / 2]; $x_size / 2];
-    //                for x in 0..$x_size / 2 {
-    //                    let x_base = x * 2;
-    //                    for y in 0..$y_size / 2 {
-    //                        let y_base = y * 2;
-    //                        let patch = [
-    //                            self[x_base + 0][y_base + 0],
-    //                            self[x_base + 0][y_base + 1],
-    //                            self[x_base + 1][y_base + 0],
-    //                            self[x_base + 1][y_base + 1],
-    //                        ];
-    //                        map_fn(&patch, &mut output[x][y]);
-    //                    }
-    //                }
-    //                output
-    //            }
-    //        }
-    //    };
-    //}
-
-    //patch_map_trait_2x2_pool!(32, 32);
-    //patch_map_trait_2x2_pool!(28, 28);
-    //patch_map_trait_2x2_pool!(16, 16);
-
 }
 
 #[cfg(test)]
 mod tests {
-    use super::layers::{unary, Apply, ExtractPatches};
+    use super::layers::{unary, Apply};
     use super::Patch;
     #[test]
     fn patch_count() {
@@ -2195,57 +1587,9 @@ mod tests {
         assert_eq!(unary::to_7(0), 0b0000_0000u8);
     }
     #[test]
-    fn extract_patches() {
-        let value = 0b1011_0111u8;
-        let layer = [[value; 28]; 28];
-        let patches: Vec<[u8; 8]> = layer.extract_patches();
-        assert_eq!(patches.len(), 676);
-        assert_eq!(patches[0], [value; 8])
-    }
-    #[test]
     fn rgb_pack() {
         assert_eq!(unary::rgb_to_u14([255, 255, 255]), 0b0011_1111_1111_1111u16);
         assert_eq!(unary::rgb_to_u14([128, 128, 128]), 0b0000_0110_0011_0011u16);
         assert_eq!(unary::rgb_to_u14([0, 0, 0]), 0b0u16);
-    }
-    #[test]
-    fn test_unary_apply() {
-        let mut weights = [
-            (0b0100110u16, [0u32, 3, 11, 15]),
-            (!0b0u16, [0u32, 3, 11, 15]),
-            (0b0u16, [0u32, 3, 11, 15]),
-            (!0b0u16, [0u32, 3, 11, 15]),
-            (!0b0u16, [0u32, 3, 11, 15]),
-            (!0b0u16, [0u32, 3, 11, 15]),
-            (0b0u16, [0u32, 3, 11, 15]),
-            (!0b0u16, [0u32, 3, 11, 15]),
-        ];
-        let input = 0b0u16;
-        let output: [u8; 4] = weights.apply(&input);
-        println!(
-            "{:08b} {:08b} {:08b} {:08b}",
-            output[0], output[1], output[2], output[3]
-        );
-        let mut output: u32 = weights.apply(&input);
-        println!("{:032b}", output);
-
-        weights[1] = (0u16, [0u32, 0, 11, 16]);
-        weights.update(&input, &mut output, 1);
-        println!("{:032b}", output);
-        let orig_output: u32 = weights.apply(&input);
-        assert_eq!(orig_output, output);
-    }
-    #[test]
-    fn apply_2d() {
-        let input = [[0u8; 28]; 28];
-        let weights = [([0u8; 8], [0u32, 1234]); 16];
-        let output: [[u32; 28]; 28] = weights.apply(&input);
-
-        let mut weights = [(0u64, [0u32, 12345]); 16];
-        let mut output: [[u32; 28]; 28] = weights.apply(&input);
-        weights[2] = (!0u64, [0, 12345]);
-        weights.update(&input, &mut output, 2);
-        let orig_output: [[u32; 28]; 28] = weights.apply(&input);
-        assert_eq!(orig_output, output);
     }
 }
