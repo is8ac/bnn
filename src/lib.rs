@@ -6,7 +6,7 @@ extern crate rayon;
 extern crate serde;
 extern crate time;
 use rand::{Rng, SeedableRng, StdRng};
-#[macro_use]
+
 pub mod datasets {
     pub mod cifar {
         use std::fs::File;
@@ -563,12 +563,11 @@ pub mod layers {
     use super::{BitLen, Patch};
     use bincode::{deserialize_from, serialize_into};
     use rayon::prelude::*;
-    use serde::ser::Serialize;
-    use serde::Deserialize;
+    use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+    use serde::ser::{Serialize, SerializeStruct, Serializer};
     use std::fs::File;
     use std::io::prelude::*;
-    use std::io::BufWriter;
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufReader, BufWriter};
     use std::marker::PhantomData;
     use std::mem::transmute;
     use std::path::Path;
@@ -705,14 +704,14 @@ pub mod layers {
         }
     }
 
-    impl<I, O, T: Apply<I, O>> Apply<(usize, I), (usize, O)> for T {
-        fn apply(&self, (class, input): &(usize, I)) -> (usize, O) {
-            (*class, self.apply(input))
-        }
-        fn update(&self, (_, input): &(usize, I), target: &mut (usize, O), index: usize) {
-            self.update(input, &mut target.1, index);
-        }
-    }
+    //impl<I, O, T: Apply<I, O>> Apply<(usize, I), (usize, O)> for T {
+    //    fn apply(&self, (class, input): &(usize, I)) -> (usize, O) {
+    //        (*class, self.apply(input))
+    //    }
+    //    fn update(&self, (_, input): &(usize, I), target: &mut (usize, O), index: usize) {
+    //        self.update(input, &mut target.1, index);
+    //    }
+    //}
 
     macro_rules! primitive_dense_apply {
         ($type:ty) => {
@@ -770,24 +769,10 @@ pub mod layers {
 
     pub trait SaveLoad
     where
-        Self: serde::Serialize,
-        for<'de> Self: serde::Deserialize<'de>,
+        Self: Sized,
     {
-        fn write_to_fs(&self, path: &Path) {
-            let mut f = BufWriter::new(File::create(path).unwrap());
-            serialize_into(&mut f, &self).unwrap();
-        }
-        fn new_from_fs(path: &Path) -> Self {
-            deserialize_from(File::open(path).unwrap()).unwrap()
-        }
-    }
-
-    pub struct PoolOrLayer;
-
-    impl<I: Patch> NewFromSplit<I> for PoolOrLayer {
-        fn new_from_split(_examples: &Vec<(usize, I)>) -> Self {
-            PoolOrLayer
-        }
+        fn write_to_fs(&self, path: &Path);
+        fn new_from_fs(path: &Path) -> Option<Self>;
     }
 
     use rand::{Rng, ThreadRng};
@@ -913,7 +898,6 @@ pub mod layers {
             update_freq: usize,
         ) -> f64 {
             let new_examples: Vec<(usize, O)> = (*self).vec_apply(examples);
-            //head.optimize_head(&new_examples, update_freq);
             let mut acc = head.optimize_head(&new_examples, update_freq);
             let mut iter = 1;
             for o in 0..W::OUTPUT_LEN {
@@ -961,17 +945,17 @@ pub mod layers {
 
     impl<I: Patch + Copy + Default + Sync> OptimizeHead<I> for [I; 10] {
         fn optimize_head(&mut self, examples: &Vec<(usize, I)>, _update_freq: usize) -> f64 {
-            println!("updating head",);
+            let all_start = PreciseTime::now();
+            println!("begin updating head",);
             let before_acc = self.avg_objective(examples);
             for mut_class in 0..10 {
                 let mut activation_diffs: Vec<(I, u32, bool)> = examples
                     .par_iter()
                     .map(|(targ_class, input)| {
-                        let mut activations: Vec<u32> = self
-                            .iter()
-                            .map(|base_point| base_point.hamming_distance(&input))
-                            .collect();
-
+                        let mut activations = [0u32; 10];
+                        for i in 0..10 {
+                            activations[i] = self[i].hamming_distance(input);
+                        }
                         let targ_act = activations[*targ_class]; // the activation for target class of this example.
                         activations[*targ_class] = 0;
                         activations[mut_class] = 0;
@@ -1010,11 +994,7 @@ pub mod layers {
                     let new_sum_correct: u64 = activation_diffs
                         .par_iter()
                         .map(|(input, max, sign)| {
-                            // new diff is the diff after flipping the weights bit
                             let mut_act = self[mut_class].hamming_distance(input);
-                            // do we want mut_act to be smaller or larger?
-                            // same as this statement:
-                            //(if *sign { new_diff > 0 } else { new_diff < 0 }) as u64
                             ((*sign ^ (mut_act < *max)) & (mut_act != *max)) as u64
                         })
                         .sum();
@@ -1030,10 +1010,10 @@ pub mod layers {
             if before_acc > after_acc {
                 println!("reverting acc regression: {} > {}", before_acc, after_acc);
             }
+            println!("head update time: {:?}", all_start.to(PreciseTime::now()));
             after_acc
         }
     }
-
     #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
     pub struct Layer<I, L, O, H> {
         input: PhantomData<I>,
@@ -1051,13 +1031,6 @@ pub mod layers {
                 head: head,
             }
         }
-    }
-
-    impl<I, L: Serialize, O, H: Serialize> SaveLoad for Layer<I, L, O, H>
-    where
-        for<'de> L: serde::Deserialize<'de>,
-        for<'de> H: serde::Deserialize<'de>,
-    {
     }
 
     impl<I: Sync, L: VecApply<I, O>, O: Sync, H: NewFromSplit<O> + OptimizeHead<O>> Layer<I, L, O, H> {
@@ -1269,12 +1242,24 @@ pub mod layers {
         to_unary!(to_6, u8, 6);
         to_unary!(to_7, u8, 7);
         to_unary!(to_8, u8, 8);
+        to_unary!(to_10, u32, 10);
+        to_unary!(to_11, u32, 11);
         to_unary!(to_14, u16, 14);
 
         pub fn rgb_to_u14(pixels: [u8; 3]) -> u16 {
             to_4(pixels[0]) as u16
                 | ((to_5(pixels[1]) as u16) << 4)
                 | ((to_5(pixels[2]) as u16) << 9)
+        }
+        pub fn rgb_to_u32(pixels: [u8; 3]) -> u32 {
+            to_11(pixels[0]) as u32
+                | ((to_11(pixels[1]) as u32) << 11)
+                | ((to_10(pixels[2]) as u32) << 22)
+        }
+        pub fn rgb_to_u16(pixels: [u8; 3]) -> u16 {
+            to_5(pixels[0]) as u16
+                | ((to_5(pixels[1]) as u16) << 5)
+                | ((to_6(pixels[2]) as u16) << 10)
         }
     }
 
@@ -1289,11 +1274,149 @@ pub mod layers {
         pub map_fn: FN,
     }
 
-    impl<I, P, FN: Serialize, O> SaveLoad for Patch3x3NotchedConv<I, P, FN, O>
+    macro_rules! impl_saveload {
+        ($len:expr) => {
+            impl<I, P: Copy + Default, O> SaveLoad for Patch3x3NotchedConv<I, P, [P; $len], O>
+            where
+                [I; 8]: SimplifyBits<P>,
+                P: serde::Serialize,
+                for<'de> P: serde::Deserialize<'de>,
+            {
+                fn write_to_fs(&self, path: &Path) {
+                    let vec_params: Vec<P> = self.map_fn.iter().map(|x| *x).collect();
+                    let mut f = BufWriter::new(File::create(path).unwrap());
+                    serialize_into(&mut f, &vec_params).unwrap();
+                }
+                // This will return:
+                // - Some if the file exists and is good
+                // - None of the file does not exist
+                // and will panic if the file is exists but is bad.
+                fn new_from_fs(path: &Path) -> Option<Self> {
+                    File::open(&path)
+                        .map(|f| deserialize_from(f).unwrap())
+                        .map(|vec_params: Vec<P>| {
+                            if vec_params.len() != $len {
+                                panic!("input is of len {} not {}", vec_params.len(), $len);
+                            }
+                            let mut params = [P::default(); $len];
+                            for i in 0..$len {
+                                params[i] = vec_params[i];
+                            }
+                            Patch3x3NotchedConv {
+                                input_pixel_type: PhantomData,
+                                patch_type: PhantomData,
+                                output_type: PhantomData,
+                                map_fn: params,
+                            }
+                        })
+                        .ok()
+                }
+            }
+        };
+    }
+    impl_saveload!(8);
+    impl_saveload!(16);
+    impl_saveload!(32);
+    impl_saveload!(64);
+    impl_saveload!(128);
+
+    impl<InputPixel, LayerPatch, LayerFN: Apply<LayerPatch, OutputPixel>, OutputPixel>
+        Patch3x3NotchedConv<InputPixel, LayerPatch, LayerFN, OutputPixel>
     where
-        for<'de> FN: serde::Deserialize<'de>,
-        [I; 8]: SimplifyBits<P>,
+        [InputPixel; 8]: SimplifyBits<LayerPatch>,
     {
+        pub fn make_pool_conv_head<
+            InputImage: Image2D<InputPixel> + Sync,
+            OutputImage: Image2D<OutputPixel> + Sync + Copy,
+            PooledImage: Sync,
+            HeadPatch,
+        >(
+            &self,
+            examples: &Vec<(usize, InputImage)>,
+        ) -> Layer<
+            OutputImage,
+            OrPool2x2<OutputPixel>,
+            PooledImage,
+            Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
+        >
+        where
+            [OutputPixel; 8]: SimplifyBits<HeadPatch>,
+            Self: VecApply<InputImage, OutputImage>,
+            Layer<
+                OutputImage,
+                OrPool2x2<OutputPixel>,
+                PooledImage,
+                Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
+            >: NewFromSplit<OutputImage>,
+        {
+            Layer::<
+                OutputImage,
+                OrPool2x2<OutputPixel>,
+                PooledImage,
+                Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
+            >::new_from_split(&self.vec_apply(examples))
+        }
+        //pub fn train<InputImage>(examples: &Vec<(usize, InputImage)>, iters: usize) -> Self
+        //where
+        //    Self: NewFromSplit<InputImage>,
+        //{
+        //    let mut conv_layer = Self::new_from_split(&examples);
+        //    let head = Self::make_pool_conv_head(&examples);
+        //    for i in 0..iter {
+        //        conv_layer.optimize_layer(&mut head, &examples, 30);
+        //    }
+        //    conv_layer
+        //}
+    }
+
+    impl<
+            InputPixel: Sync,
+            LayerPatch: Sync,
+            LayerFN: Sync + Apply<LayerPatch, OutputPixel>,
+            OutputPixel: Sync,
+        > Patch3x3NotchedConv<InputPixel, LayerPatch, LayerFN, OutputPixel>
+    where
+        [InputPixel; 8]: SimplifyBits<LayerPatch>,
+    {
+        pub fn train<
+            InputImage: Image2D<InputPixel> + Sync,
+            OutputImage: Image2D<OutputPixel> + Sync + Copy,
+            PooledImage: Sync,
+            HeadPatch: Sync,
+        >(
+            examples: &Vec<(usize, InputImage)>,
+            update_freq: usize,
+            iters: usize,
+        ) -> Self
+        where
+            [OutputPixel; 8]: SimplifyBits<HeadPatch>,
+            Self: VecApply<InputImage, OutputImage>
+                + NewFromSplit<InputImage>
+                + OptimizeLayer<InputImage, OutputImage>,
+            Layer<
+                OutputImage,
+                OrPool2x2<OutputPixel>,
+                PooledImage,
+                Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
+            >: NewFromSplit<OutputImage> + Objective<OutputImage> + Sync,
+            OrPool2x2<OutputPixel>:
+                Apply<OutputImage, PooledImage> + OptimizeLayer<OutputImage, PooledImage>,
+            Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>:
+                OptimizeHead<PooledImage>,
+        {
+            let mut conv_layer = Self::new_from_split(&examples);
+            let mut head = Layer::<
+                OutputImage,
+                OrPool2x2<OutputPixel>,
+                PooledImage,
+                Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
+            >::new_from_split(&conv_layer.vec_apply(examples));
+            for i in 0..iters {
+                let obj = conv_layer.optimize_layer(&mut head, &examples, update_freq);
+                println!("pass: {}, obj: {}", i, obj);
+            }
+            conv_layer
+        }
     }
 
     impl<I: Sync, P: Sync, FN: Apply<P, O>, O: Sync> Patch3x3NotchedConv<I, P, FN, O>
@@ -1507,6 +1630,8 @@ mod tests {
         assert_eq!(unary::rgb_to_u14([255, 255, 255]), 0b0011_1111_1111_1111u16);
         assert_eq!(unary::rgb_to_u14([128, 128, 128]), 0b0000_0110_0011_0011u16);
         assert_eq!(unary::rgb_to_u14([0, 0, 0]), 0b0u16);
+        assert_eq!(unary::rgb_to_u32([0, 0, 0]), 0b0u32);
+        assert_eq!(unary::rgb_to_u32([255, 255, 255]), !0b0u32);
     }
     #[test]
     fn layer_simple() {
@@ -1577,5 +1702,18 @@ mod tests {
         let obj = model.objective(&examples[4]);
         assert!(obj > 0.5f64);
         let obj = model.optimize_head(&examples, 20);
+    }
+    #[test]
+    fn to_from_vec() {
+        type ConvType = Patch3x3NotchedConv<u8, u64, [u64; 16], u16>;
+        let input = ConvType::new_from_parameters([123u64; 16]);
+        let vec_form = input.to_vec();
+        let readback = ConvType::from_vec(&vec_form);
+        assert_eq!(input, readback);
+
+        type ConvType2 = Patch3x3NotchedConv<u8, u64, [u64; 64], u64>;
+        let input = ConvType2::new_from_parameters([123u64; 64]);
+        let vec_form = input.to_vec();
+        let readback = ConvType2::from_vec(&vec_form);
     }
 }
