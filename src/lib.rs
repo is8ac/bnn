@@ -5,7 +5,6 @@ extern crate rand;
 extern crate rayon;
 extern crate serde;
 extern crate time;
-use rand::{Rng, SeedableRng, StdRng};
 
 pub mod datasets {
     pub mod cifar {
@@ -563,11 +562,8 @@ pub mod layers {
     use super::{BitLen, Patch};
     use bincode::{deserialize_from, serialize_into};
     use rayon::prelude::*;
-    use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
-    use serde::ser::{Serialize, SerializeStruct, Serializer};
     use std::fs::File;
-    use std::io::prelude::*;
-    use std::io::{BufReader, BufWriter};
+    use std::io::BufWriter;
     use std::marker::PhantomData;
     use std::mem::transmute;
     use std::path::Path;
@@ -589,6 +585,42 @@ pub mod layers {
         };
     }
 
+    pub trait IsCorrect<I> {
+        fn is_correct(&self, target: usize, input: &I) -> bool;
+        fn not_incorrect(&self, target: usize, input: &I) -> bool;
+    }
+    // Note the neither of these implementations have a mean of 0.1
+    // for an input of 128 bits, is_correct is ~0.0844437
+    // and not_incorrect is ~0.118793.
+    // Both should approach 0.1 as bitlen of the input reaches infinity.
+    // is_correct is slightly faster then not_incorrect.
+    impl<I: Patch> IsCorrect<I> for [I; 10] {
+        // the max activation is the target.
+        fn is_correct(&self, target: usize, input: &I) -> bool {
+            let max = self[target].hamming_distance(input);
+            for i in 0..10 {
+                if i != target {
+                    if self[i].hamming_distance(input) >= max {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        // the target activation is not less then then the max activation.
+        fn not_incorrect(&self, target: usize, input: &I) -> bool {
+            let max = self[target].hamming_distance(input);
+            for i in 0..10 {
+                if i != target {
+                    if self[i].hamming_distance(input) > max {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+    }
+
     impl<I: Patch> Accuracy<I> for [I; 10] {
         fn accuracy(&self, (target, input): &(usize, I)) -> f64 {
             (self
@@ -602,16 +634,12 @@ pub mod layers {
         }
     }
 
-    impl<I: Patch> Objective<I> for [I; 10] {
+    impl<I: Patch> Objective<I> for [I; 10]
+    where
+        Self: IsCorrect<I>,
+    {
         fn objective(&self, (target, input): &(usize, I)) -> f64 {
-            (self
-                .iter()
-                .map(|x| x.hamming_distance(input))
-                .enumerate()
-                .max_by_key(|(_, activation)| *activation)
-                .unwrap()
-                .0
-                == *target) as u8 as f64
+            self.is_correct(*target, input) as u8 as f64
         }
     }
 
@@ -649,6 +677,30 @@ pub mod layers {
     patch_conv_objective_trait!(16, 16);
     patch_conv_objective_trait!(8, 8);
     patch_conv_objective_trait!(4, 4);
+
+    macro_rules! pixel_conv_objective_trait {
+        ($x_size:expr, $y_size:expr) => {
+            impl<I: Sync + Copy> Objective<[[I; $y_size]; $x_size]> for PixelHead10<I>
+            where
+                [I; 10]: IsCorrect<I>,
+            {
+                fn objective(&self, (class, input): &(usize, [[I; $y_size]; $x_size])) -> f64 {
+                    let mut sum = 0u64;
+                    for x in 1..$x_size - 1 {
+                        for y in 1..$y_size - 1 {
+                            sum += self.data.is_correct(*class, &input[x][y]) as u64;
+                        }
+                    }
+                    sum as f64 / (($x_size - 2) * ($y_size - 2)) as f64
+                }
+            }
+        };
+    }
+
+    pixel_conv_objective_trait!(32, 32);
+    pixel_conv_objective_trait!(16, 16);
+    pixel_conv_objective_trait!(8, 8);
+    pixel_conv_objective_trait!(4, 4);
 
     macro_rules! patch_conv_optimizehead_trait {
         ($x_size:expr, $y_size:expr) => {
@@ -775,7 +827,8 @@ pub mod layers {
         fn new_from_fs(path: &Path) -> Option<Self>;
     }
 
-    use rand::{Rng, ThreadRng};
+    use rand::rngs::ThreadRng;
+    use rand::Rng;
     pub trait NewFromRng<I> {
         fn new_from_rng(rng: &mut ThreadRng, input_bit_len: usize) -> Self;
     }
@@ -897,27 +950,29 @@ pub mod layers {
             examples: &[(usize, I)],
             update_freq: usize,
         ) -> f64 {
+            println!("starting optimize layer",);
             let new_examples: Vec<(usize, O)> = (*self).vec_apply(examples);
-            let mut acc = head.optimize_head(&new_examples, update_freq);
+            let mut obj = head.optimize_head(&new_examples, update_freq);
+            //let real_obj = head.avg_objective(&new_examples);
+            //assert_eq!(obj, real_obj);
             let mut iter = 1;
             for o in 0..W::OUTPUT_LEN {
-                //println!("o: {:?}", o);
                 let mut cache: Vec<(usize, O)> = (*self).vec_apply(&examples);
                 //acc = head.optimize(&cache, update_freq);
                 //iter +=1;
                 for b in 0..W::INPUT_LEN {
                     if iter % update_freq == 0 {
                         (*self).vec_update(&examples, &mut cache, o);
-                        acc = head.optimize_head(&cache, update_freq);
-                        println!("{} output: {:?}%", o, acc * 100f64);
+                        obj = head.optimize_head(&cache, update_freq);
+                        println!("{} output: {:?}%", o, obj * 100f64);
                         iter = 1;
                     }
                     self.mutate(o, b);
                     (*self).vec_update(&examples, &mut cache, o);
-                    let new_acc = head.avg_objective(&cache);
-                    if new_acc > acc {
-                        acc = new_acc;
-                        println!("{} {} {:?}%", o, b, acc * 100f64);
+                    let new_obj = head.avg_objective(&cache);
+                    if new_obj > obj {
+                        obj = new_obj;
+                        println!("{} {} {:?}%", o, b, obj * 100f64);
                         iter += 1;
                     } else {
                         // revert
@@ -946,18 +1001,22 @@ pub mod layers {
     impl<I: Patch + Copy + Default + Sync> OptimizeHead<I> for [I; 10] {
         fn optimize_head(&mut self, examples: &Vec<(usize, I)>, _update_freq: usize) -> f64 {
             let all_start = PreciseTime::now();
-            println!("begin updating head",);
-            let before_acc = self.avg_objective(examples);
+            //let before_acc = self.avg_objective(examples);
             for mut_class in 0..10 {
+                // first we need to calculate the activations for each example.
                 let mut activation_diffs: Vec<(I, u32, bool)> = examples
                     .par_iter()
                     .map(|(targ_class, input)| {
+                        // calculate the activations for all 10 outputs.
                         let mut activations = [0u32; 10];
                         for i in 0..10 {
                             activations[i] = self[i].hamming_distance(input);
                         }
-                        let targ_act = activations[*targ_class]; // the activation for target class of this example.
+                        // the activation for target class of this example.
+                        let targ_act = activations[*targ_class];
+                        // ignore the target activation,
                         activations[*targ_class] = 0;
+                        // and the mut activation.
                         activations[mut_class] = 0;
                         // the max activation of all the classes not in the target class or mut class.
                         let max_other_activations = activations.iter().max().unwrap();
@@ -973,10 +1032,10 @@ pub mod layers {
                             max,
                             *targ_class == mut_class,
                             (targ_act > *max_other_activations) | (*targ_class == mut_class),
-                        ) // diff betwene the activation of the
+                        )
                     })
-                    .filter(|(_, _, _, keep)| *keep)
-                    .map(|(input, diff, sign, _)| (*input, diff, sign))
+                    .filter(|(_, _, _, keep)| *keep) // now we filter out the examples which have no chance of ever being correct.
+                    .map(|(input, diff, sign, _)| (*input, diff, sign)) // and remove keep.
                     .collect();
 
                 // note that this sum correct is not the true acc,
@@ -984,11 +1043,12 @@ pub mod layers {
                 let mut sum_correct: u64 = activation_diffs
                     .par_iter()
                     .map(|(input, max, sign)| {
+                        // calculate the activatio for the mut class.
                         let mut_act = self[mut_class].hamming_distance(input);
+                        // is it on the correct side of max?
                         ((*sign ^ (mut_act < *max)) & (mut_act != *max)) as u64
                     })
                     .sum();
-                let mut cur_acc = sum_correct as f64 / examples.len() as f64;
                 for b in 0..I::BIT_LEN {
                     self[mut_class].flip_bit(b);
                     let new_sum_correct: u64 = activation_diffs
@@ -1006,12 +1066,11 @@ pub mod layers {
                     }
                 }
             }
-            let after_acc = self.avg_objective(examples);
-            if before_acc > after_acc {
-                println!("reverting acc regression: {} > {}", before_acc, after_acc);
-            }
+            //if before_acc > after_acc {
+            //    println!("reverting acc regression: {} > {}", before_acc, after_acc);
+            //}
             println!("head update time: {:?}", all_start.to(PreciseTime::now()));
-            after_acc
+            self.avg_objective(examples)
         }
     }
     #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
@@ -1199,7 +1258,7 @@ pub mod layers {
             }
         };
     }
-
+    simplify_bits_trait!([u128; 8], [u128; 8]);
     simplify_bits_trait!([u8; 8], u64);
     simplify_bits_trait!([u16; 4], u64);
     simplify_bits_trait!([[u8; 28]; 28], [[u128; 7]; 7]);
@@ -1251,15 +1310,15 @@ pub mod layers {
                 | ((to_5(pixels[1]) as u16) << 4)
                 | ((to_5(pixels[2]) as u16) << 9)
         }
-        pub fn rgb_to_u32(pixels: [u8; 3]) -> u32 {
-            to_11(pixels[0]) as u32
-                | ((to_11(pixels[1]) as u32) << 11)
-                | ((to_10(pixels[2]) as u32) << 22)
-        }
         pub fn rgb_to_u16(pixels: [u8; 3]) -> u16 {
             to_5(pixels[0]) as u16
                 | ((to_5(pixels[1]) as u16) << 5)
                 | ((to_6(pixels[2]) as u16) << 10)
+        }
+        pub fn rgb_to_u32(pixels: [u8; 3]) -> u32 {
+            to_11(pixels[0]) as u32
+                | ((to_11(pixels[1]) as u32) << 11)
+                | ((to_10(pixels[2]) as u32) << 22)
         }
     }
 
@@ -1356,17 +1415,6 @@ pub mod layers {
                 Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
             >::new_from_split(&self.vec_apply(examples))
         }
-        //pub fn train<InputImage>(examples: &Vec<(usize, InputImage)>, iters: usize) -> Self
-        //where
-        //    Self: NewFromSplit<InputImage>,
-        //{
-        //    let mut conv_layer = Self::new_from_split(&examples);
-        //    let head = Self::make_pool_conv_head(&examples);
-        //    for i in 0..iter {
-        //        conv_layer.optimize_layer(&mut head, &examples, 30);
-        //    }
-        //    conv_layer
-        //}
     }
 
     impl<
@@ -1510,6 +1558,173 @@ pub mod layers {
     patch_conv_apply_trait!(8, 8);
     patch_conv_apply_trait!(4, 4);
 
+    #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
+    pub struct PixelHead10<I> {
+        data: [I; 10],
+    }
+
+    impl<II: Sync + Image2D<I> + ExtractPixels<I>, I: Sync + Copy> OptimizeHead<II> for PixelHead10<I>
+    where
+        PixelHead10<I>: Objective<II>,
+        [I; 10]: OptimizeHead<I>,
+    {
+        fn optimize_head(&mut self, examples: &Vec<(usize, II)>, update_freq: usize) -> f64 {
+            let pixels = vec_extract_pixels(examples);
+            self.data.optimize_head(&pixels, update_freq)
+        }
+    }
+
+    impl<II: Image2D<I> + Sync + ExtractPixels<I> + Copy, I: Sync + Copy> NewFromSplit<II>
+        for PixelHead10<I>
+    where
+        [I; 10]: NewFromSplit<I>,
+    {
+        fn new_from_split(examples: &Vec<(usize, II)>) -> Self {
+            let pixels = vec_extract_pixels(examples);
+            PixelHead10 {
+                data: <[I; 10]>::new_from_split(&pixels),
+            }
+        }
+    }
+
+    #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
+    pub struct Conv2x2Stride2<I, P, FN, O> {
+        input_pixel_type: PhantomData<I>,
+        patch_type: PhantomData<P>,
+        pub map_fn: FN,
+        output_type: PhantomData<O>,
+    }
+
+    impl<I: Sync, P: Sync, FN: Apply<P, O> + Mutate, O: Sync> Mutate for Conv2x2Stride2<I, P, FN, O>
+    where
+        [I; 4]: SimplifyBits<P>,
+    {
+        fn mutate(&mut self, output_index: usize, input_index: usize) {
+            self.map_fn.mutate(output_index, input_index);
+        }
+        const OUTPUT_LEN: usize = FN::OUTPUT_LEN;
+        const INPUT_LEN: usize = FN::INPUT_LEN;
+    }
+
+    impl<
+            II: Image2D<I> + Sync + Extract2x2PatchesUnstrided<P> + Copy,
+            I: Sync,
+            O: Sync,
+            P: Sync + Copy,
+            FN: NewFromSplit<P>,
+        > NewFromSplit<II> for Conv2x2Stride2<I, P, FN, O>
+    where
+        [I; 4]: SimplifyBits<P>,
+    {
+        fn new_from_split(examples: &Vec<(usize, II)>) -> Self {
+            let patches = vec_extract_2x2_patches(examples);
+            Conv2x2Stride2 {
+                input_pixel_type: PhantomData,
+                patch_type: PhantomData,
+                output_type: PhantomData,
+                map_fn: FN::new_from_split(&patches),
+            }
+        }
+    }
+
+    macro_rules! patch_conv_2x2_apply_trait {
+        ($x_size:expr, $y_size:expr) => {
+            impl<I: Copy, P: Sync, FN: Apply<P, O>, O: Default + Copy>
+                Apply<[[I; $y_size]; $x_size], [[O; $y_size / 2]; $x_size / 2]>
+                for Conv2x2Stride2<I, P, FN, O>
+            where
+                [I; 4]: SimplifyBits<P>,
+            {
+                fn apply(
+                    &self,
+                    input: &[[I; $y_size]; $x_size],
+                ) -> [[O; $y_size / 2]; $x_size / 2] {
+                    let mut target = [[O::default(); $y_size / 2]; $x_size / 2];
+                    for x in 0..($x_size / 2) {
+                        let x_base = x * 2;
+                        for y in 0..($y_size / 2) {
+                            let y_base = y * 2;
+                            target[x][y] = self.map_fn.apply(
+                                &([
+                                    input[x_base + 0][y_base + 0],
+                                    input[x_base + 0][y_base + 1],
+                                    input[x_base + 1][y_base + 0],
+                                    input[x_base + 1][y_base + 1],
+                                ])
+                                .simplify(),
+                            );
+                        }
+                    }
+                    target
+                }
+                fn update(
+                    &self,
+                    input: &[[I; $y_size]; $x_size],
+                    target: &mut [[O; $y_size / 2]; $x_size / 2],
+                    index: usize,
+                ) {
+                    for x in 0..($x_size / 2) {
+                        let x_base = x * 2;
+                        for y in 0..($y_size / 2) {
+                            let y_base = y * 2;
+                            self.map_fn.update(
+                                &([
+                                    input[x_base + 0][y_base + 0],
+                                    input[x_base + 0][y_base + 1],
+                                    input[x_base + 1][y_base + 0],
+                                    input[x_base + 1][y_base + 1],
+                                ])
+                                .simplify(),
+                                &mut target[x][y],
+                                index,
+                            );
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    patch_conv_2x2_apply_trait!(32, 32);
+    //patch_conv_2x2_apply_trait!(16, 16);
+    //patch_conv_2x2_apply_trait!(8, 8);
+    //patch_conv_2x2_apply_trait!(4, 4);
+
+    pub trait ExtractPixels<P> {
+        fn pixels(&self) -> Vec<P>;
+    }
+
+    macro_rules! extract_pixels_trait {
+        ($x_size:expr, $y_size:expr) => {
+            impl<P: Copy> ExtractPixels<P> for [[P; $y_size]; $x_size] {
+                fn pixels(&self) -> Vec<P> {
+                    let mut pixels = Vec::with_capacity(($y_size - 2) * ($x_size - 2));
+                    for x in 1..$x_size - 1 {
+                        for y in 1..$y_size - 1 {
+                            pixels.push(self[x][y]);
+                        }
+                    }
+                    pixels
+                }
+            }
+        };
+    }
+
+    extract_pixels_trait!(32, 32);
+    extract_pixels_trait!(16, 16);
+    extract_pixels_trait!(8, 8);
+    extract_pixels_trait!(4, 4);
+
+    fn vec_extract_pixels<II: ExtractPixels<P>, P: Copy>(
+        inputs: &Vec<(usize, II)>,
+    ) -> Vec<(usize, P)> {
+        inputs
+            .iter()
+            .map(|(class, image)| iter::repeat(*class).zip(image.pixels()))
+            .flatten()
+            .collect()
+    }
+
     pub trait ExtractPatches<OP> {
         fn patches(&self) -> Vec<OP>;
     }
@@ -1551,6 +1766,54 @@ pub mod layers {
             .collect()
     }
 
+    pub trait Extract2x2PatchesUnstrided<OP> {
+        fn patches2x2(&self) -> Vec<OP>;
+    }
+
+    macro_rules! extract_patch_4_trait {
+        ($x_size:expr, $y_size:expr) => {
+            impl<I: Copy, O> Extract2x2PatchesUnstrided<O> for [[I; $y_size]; $x_size]
+            where
+                [I; 4]: SimplifyBits<O>,
+            {
+                fn patches2x2(&self) -> Vec<O> {
+                    let mut patches = Vec::with_capacity(($y_size - 2) * ($x_size - 2));
+                    for x in 0..($x_size / 2) {
+                        let x_base = x * 2;
+                        for y in 0..($y_size / 2) {
+                            let y_base = y * 2;
+                            patches.push(
+                                ([
+                                    self[x_base + 0][y_base + 0],
+                                    self[x_base + 0][y_base + 1],
+                                    self[x_base + 1][y_base + 0],
+                                    self[x_base + 1][y_base + 1],
+                                ])
+                                .simplify(),
+                            );
+                        }
+                    }
+                    patches
+                }
+            }
+        };
+    }
+
+    extract_patch_4_trait!(32, 32);
+    //extract_patch_4_trait!(16, 16);
+    //extract_patch_4_trait!(8, 8);
+    //extract_patch_4_trait!(4, 4);
+
+    fn vec_extract_2x2_patches<II: Extract2x2PatchesUnstrided<P>, P: Copy>(
+        inputs: &Vec<(usize, II)>,
+    ) -> Vec<(usize, P)> {
+        inputs
+            .iter()
+            .map(|(class, image)| iter::repeat(*class).zip(image.patches2x2()))
+            .flatten()
+            .collect()
+    }
+
     pub trait Image2D<P> {}
 
     macro_rules! image2d_trait {
@@ -1588,6 +1851,33 @@ pub mod layers {
     patch_map_trait_pixel!(32, 32);
     patch_map_trait_pixel!(28, 28);
     patch_map_trait_pixel!(16, 16);
+
+    pub trait PixelMap<I, O, OI> {
+        fn pixel_map(&self, &Fn(&I) -> O) -> OI;
+    }
+
+    macro_rules! pixel_map_trait {
+        ($x_size:expr, $y_size:expr) => {
+            impl<I, O: Copy + Default> PixelMap<I, O, [[O; $y_size]; $x_size]>
+                for [[I; $y_size]; $x_size]
+            {
+                fn pixel_map(&self, map_fn: &Fn(&I) -> O) -> [[O; $y_size]; $x_size] {
+                    let mut output = [[O::default(); $y_size]; $x_size];
+                    for x in 0..$x_size {
+                        for y in 0..$y_size {
+                            output[x][y] = map_fn(&self[x][y]);
+                        }
+                    }
+                    output
+                }
+            }
+        };
+    }
+
+    pixel_map_trait!(32, 32);
+    pixel_map_trait!(28, 28);
+    pixel_map_trait!(16, 16);
+
 }
 
 #[cfg(test)]
