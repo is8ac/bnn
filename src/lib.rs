@@ -569,6 +569,28 @@ pub mod layers {
     use std::path::Path;
     use time::PreciseTime;
 
+    macro_rules! patch_3x3 {
+        ($input:expr, $x:expr, $y:expr) => {
+            [
+                [
+                    $input[$x + 0][$y + 0],
+                    $input[$x + 1][$y + 0],
+                    $input[$x + 2][$y + 0],
+                ],
+                [
+                    $input[$x + 0][$y + 1],
+                    $input[$x + 1][$y + 1],
+                    $input[$x + 2][$y + 1],
+                ],
+                [
+                    $input[$x + 0][$y + 2],
+                    $input[$x + 1][$y + 2],
+                    $input[$x + 2][$y + 2],
+                ],
+            ]
+        };
+    }
+
     macro_rules! patch_3x3_notched_simplified {
         ($input:expr, $x:expr, $y:expr) => {
             [
@@ -937,9 +959,9 @@ pub mod layers {
             head: &mut H,
             examples: &[(usize, I)],
             update_freq: usize,
-        ) -> f64 {
+        ) -> (f64, u64) {
             let new_examples: Vec<(usize, O)> = (*self).vec_apply(examples);
-            head.optimize_head(&new_examples, update_freq)
+            (head.optimize_head(&new_examples, update_freq), 0)
         }
     }
 
@@ -949,7 +971,8 @@ pub mod layers {
             head: &mut H,
             examples: &[(usize, I)],
             update_freq: usize,
-        ) -> f64 {
+        ) -> (f64, u64) {
+            let mut updates = 0;
             println!("starting optimize layer",);
             let new_examples: Vec<(usize, O)> = (*self).vec_apply(examples);
             let mut obj = head.optimize_head(&new_examples, update_freq);
@@ -974,6 +997,7 @@ pub mod layers {
                         obj = new_obj;
                         println!("{} {} {:?}%", o, b, obj * 100f64);
                         iter += 1;
+                        updates += 1;
                     } else {
                         // revert
                         self.mutate(o, b);
@@ -981,7 +1005,7 @@ pub mod layers {
                 }
             }
             let new_examples: Vec<(usize, O)> = (*self).vec_apply(examples);
-            head.avg_objective(&new_examples)
+            (head.avg_objective(&new_examples), updates)
         }
     }
 
@@ -1181,8 +1205,10 @@ pub mod layers {
         > OptimizeHead<I> for Layer<I, L, O, H>
     {
         fn optimize_head(&mut self, examples: &Vec<(usize, I)>, update_freq: usize) -> f64 {
-            self.data
-                .optimize_layer(&mut self.head, examples, update_freq)
+            let (obj, _) = self
+                .data
+                .optimize_layer(&mut self.head, examples, update_freq);
+            obj
         }
     }
 
@@ -1245,6 +1271,59 @@ pub mod layers {
     or_pool2x2_trait!(8, 8);
     or_pool2x2_trait!(4, 4);
 
+    pub struct Conv1x1<I, FN, O> {
+        input_type: PhantomData<I>,
+        data: FN,
+        output_type: PhantomData<O>,
+    }
+
+    macro_rules! impl_apply_for_conv1x1 {
+        ($x_size:expr, $y_size:expr) => {
+            impl<I, O: Default, FN: Apply<I, O>>
+                Apply<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]> for Conv1x1<I, FN, O>
+            {
+                fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size]; $x_size] {
+                    let mut target = <[[O; $y_size]; $x_size]>::default();
+                    for x in 1..$x_size - 1 {
+                        for y in 1..$y_size - 1 {
+                            target[x][y] = self.data.apply(&input[x][y]);
+                        }
+                    }
+                    target
+                }
+                fn update(
+                    &self,
+                    input: &[[I; $y_size]; $x_size],
+                    target: &mut [[O; $y_size]; $x_size],
+                    index: usize,
+                ) {
+                    for x in 1..$x_size - 1 {
+                        for y in 1..$y_size - 1 {
+                            self.data.update(&input[x][y], &mut target[x][y], index);
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    impl_apply_for_conv1x1!(32, 32);
+
+    pub trait SimpleConcat<T> {
+        fn concat(a: &T, b: &T) -> Self;
+    }
+
+    macro_rules! impl_simple_concat {
+        ($in_type:ty, $out_type:ty) => {
+            impl SimpleConcat<$in_type> for $out_type {
+                fn concat(a: &$in_type, b: &$in_type) -> $out_type {
+                    unsafe { transmute::<[$in_type; 2], $out_type>([*a, *b]) }
+                }
+            }
+        };
+    }
+    impl_simple_concat!(u8, u16);
+
     pub trait SimplifyBits<T> {
         fn simplify(&self) -> T;
     }
@@ -1258,6 +1337,8 @@ pub mod layers {
             }
         };
     }
+    simplify_bits_trait!([u64; 4], [u128; 2]);
+
     simplify_bits_trait!([u128; 8], [u128; 8]);
     simplify_bits_trait!([u8; 8], u64);
     simplify_bits_trait!([u16; 4], u64);
@@ -1322,6 +1403,164 @@ pub mod layers {
         }
     }
 
+    pub trait ConcatImage<P> {
+        fn concat_images(a: &P, b: &P) -> Self;
+    }
+
+    macro_rules! impl_concat_image {
+        ($x_size:expr, $y_size:expr) => {
+            impl<IP, OP: Default + Copy + SimpleConcat<IP>> ConcatImage<[[IP; $y_size]; $x_size]>
+                for [[OP; $y_size]; $x_size]
+            {
+                fn concat_images(
+                    a: &[[IP; $y_size]; $x_size],
+                    b: &[[IP; $y_size]; $x_size],
+                ) -> [[OP; $y_size]; $x_size] {
+                    let mut target = <[[OP; $y_size]; $x_size]>::default();
+                    for x in 0..$x_size {
+                        for y in 0..$y_size {
+                            target[x][y] = <OP>::concat(&a[x][y], &b[x][y]);
+                        }
+                    }
+                    target
+                }
+            }
+        };
+    }
+    impl_concat_image!(32, 32);
+    impl_concat_image!(16, 16);
+    impl_concat_image!(8, 8);
+    impl_concat_image!(4, 4);
+
+    pub fn vec_concat_examples<I: Sync, C: ConcatImage<I> + Sync + Send>(
+        a: &Vec<(usize, I)>,
+        b: &Vec<(usize, I)>,
+    ) -> Vec<(usize, C)> {
+        assert_eq!(a.len(), b.len());
+        a.par_iter()
+            .zip(b.par_iter())
+            .map(|((a_class, a_image), (b_class, b_image))| {
+                assert_eq!(a_class, b_class);
+                (*a_class, C::concat_images(&a_image, &b_image))
+            })
+            .collect()
+    }
+
+    #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
+    pub struct Conv3x3<I, FN, O> {
+        input_pixel_type: PhantomData<I>,
+        pub map_fn: FN,
+        output_type: PhantomData<O>,
+    }
+
+    macro_rules! conv3x3_apply_trait {
+        ($x_size:expr, $y_size:expr) => {
+            impl<I: Copy, FN: Apply<[[I; 3]; 3], O>, O: Default + Copy>
+                Apply<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]> for Conv3x3<I, FN, O>
+            {
+                fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size]; $x_size] {
+                    let mut target = [[O::default(); $y_size]; $x_size];
+                    for x in 0..$x_size - 2 {
+                        for y in 0..$y_size - 2 {
+                            target[x + 1][y + 1] = self.map_fn.apply(&patch_3x3!(input, x, y));
+                        }
+                    }
+                    target
+                }
+                fn update(
+                    &self,
+                    input: &[[I; $y_size]; $x_size],
+                    target: &mut [[O; $y_size]; $x_size],
+                    index: usize,
+                ) {
+                    for x in 0..$x_size - 2 {
+                        for y in 0..$y_size - 2 {
+                            self.map_fn.update(
+                                &patch_3x3!(input, x, y),
+                                &mut target[x + 1][y + 1],
+                                index,
+                            );
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    conv3x3_apply_trait!(32, 32);
+    conv3x3_apply_trait!(16, 16);
+    conv3x3_apply_trait!(8, 8);
+    conv3x3_apply_trait!(4, 4);
+
+    impl<I: Sync, FN: Apply<[[I; 3]; 3], O> + Mutate, O: Sync> Mutate for Conv3x3<I, FN, O> {
+        fn mutate(&mut self, output_index: usize, input_index: usize) {
+            self.map_fn.mutate(output_index, input_index);
+        }
+        const OUTPUT_LEN: usize = FN::OUTPUT_LEN;
+        const INPUT_LEN: usize = FN::INPUT_LEN;
+    }
+
+    impl<
+            II: Image2D<I> + Sync + Extract3x3Patches<[[I; 3]; 3]> + Copy,
+            I: Sync + Copy,
+            O: Sync,
+            FN: NewFromSplit<[[I; 3]; 3]>,
+        > NewFromSplit<II> for Conv3x3<I, FN, O>
+    {
+        fn new_from_split(examples: &Vec<(usize, II)>) -> Self {
+            let patches = vec_extract_3x3_patches(examples);
+            Conv3x3 {
+                input_pixel_type: PhantomData,
+                map_fn: FN::new_from_split(&patches),
+                output_type: PhantomData,
+            }
+        }
+    }
+
+    macro_rules! impl_saveload_conv3x3 {
+        ($len:expr) => {
+            impl<I: Default + Copy, O> SaveLoad for Conv3x3<I, [[[I; 3]; 3]; $len], O>
+            where
+                I: serde::Serialize,
+                for<'de> I: serde::Deserialize<'de>,
+            {
+                fn write_to_fs(&self, path: &Path) {
+                    let vec_params: Vec<[[I; 3]; 3]> = self.map_fn.iter().map(|x| *x).collect();
+                    let mut f = BufWriter::new(File::create(path).unwrap());
+                    serialize_into(&mut f, &vec_params).unwrap();
+                }
+                // This will return:
+                // - Some if the file exists and is good
+                // - None of the file does not exist
+                // and will panic if the file is exists but is bad.
+                fn new_from_fs(path: &Path) -> Option<Self> {
+                    File::open(&path)
+                        .map(|f| deserialize_from(f).unwrap())
+                        .map(|vec_params: Vec<[[I; 3]; 3]>| {
+                            if vec_params.len() != $len {
+                                panic!("input is of len {} not {}", vec_params.len(), $len);
+                            }
+                            let mut params = [<[[I; 3]; 3]>::default(); $len];
+                            for i in 0..$len {
+                                params[i] = vec_params[i];
+                            }
+                            Conv3x3 {
+                                input_pixel_type: PhantomData,
+                                map_fn: params,
+                                output_type: PhantomData,
+                            }
+                        })
+                        .ok()
+                }
+            }
+        };
+    }
+    impl_saveload_conv3x3!(8);
+    impl_saveload_conv3x3!(16);
+    impl_saveload_conv3x3!(32);
+    impl_saveload_conv3x3!(64);
+    impl_saveload_conv3x3!(128);
+
     #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
     pub struct Patch3x3NotchedConv<I, Patch, FN, O>
     where
@@ -1378,6 +1617,25 @@ pub mod layers {
     impl_saveload!(32);
     impl_saveload!(64);
     impl_saveload!(128);
+
+    pub trait MakePixelHead<Input, OutputImage, Pixel> {
+        fn make_pixel_head(&self, examples: &Vec<(usize, Input)>) -> PixelHead10<Pixel>;
+    }
+
+    impl<
+            Input: Sync + Copy,
+            Pixel: Sync + Patch + Default + Copy,
+            OutputImage: Image2D<Pixel> + Sync + Copy + ExtractPixels<Pixel>,
+            L: Sync + VecApply<Input, OutputImage>,
+        > MakePixelHead<Input, OutputImage, Pixel> for L
+    {
+        fn make_pixel_head(&self, examples: &Vec<(usize, Input)>) -> PixelHead10<Pixel>
+        where
+            PixelHead10<Pixel>: NewFromSplit<OutputImage>,
+        {
+            PixelHead10::<Pixel>::new_from_split(&self.vec_apply(&examples))
+        }
+    }
 
     impl<InputPixel, LayerPatch, LayerFN: Apply<LayerPatch, OutputPixel>, OutputPixel>
         Patch3x3NotchedConv<InputPixel, LayerPatch, LayerFN, OutputPixel>
@@ -1460,8 +1718,8 @@ pub mod layers {
                 Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
             >::new_from_split(&conv_layer.vec_apply(examples));
             for i in 0..iters {
-                let obj = conv_layer.optimize_layer(&mut head, &examples, update_freq);
-                println!("pass: {}, obj: {}", i, obj);
+                let (obj, updates) = conv_layer.optimize_layer(&mut head, &examples, update_freq);
+                println!("pass: {}, obj: {} updates: {}", i, obj, updates);
             }
             conv_layer
         }
@@ -1595,6 +1853,52 @@ pub mod layers {
         output_type: PhantomData<O>,
     }
 
+    macro_rules! impl_saveload_conv2x2 {
+        ($len:expr) => {
+            impl<I, P: Copy + Default, O> SaveLoad for Conv2x2Stride2<I, P, [P; $len], O>
+            where
+                [I; 4]: SimplifyBits<P>,
+                P: serde::Serialize,
+                for<'de> P: serde::Deserialize<'de>,
+            {
+                fn write_to_fs(&self, path: &Path) {
+                    let vec_params: Vec<P> = self.map_fn.iter().map(|x| *x).collect();
+                    let mut f = BufWriter::new(File::create(path).unwrap());
+                    serialize_into(&mut f, &vec_params).unwrap();
+                }
+                // This will return:
+                // - Some if the file exists and is good
+                // - None of the file does not exist
+                // and will panic if the file is exists but is bad.
+                fn new_from_fs(path: &Path) -> Option<Self> {
+                    File::open(&path)
+                        .map(|f| deserialize_from(f).unwrap())
+                        .map(|vec_params: Vec<P>| {
+                            if vec_params.len() != $len {
+                                panic!("input is of len {} not {}", vec_params.len(), $len);
+                            }
+                            let mut params = [P::default(); $len];
+                            for i in 0..$len {
+                                params[i] = vec_params[i];
+                            }
+                            Conv2x2Stride2 {
+                                input_pixel_type: PhantomData,
+                                patch_type: PhantomData,
+                                output_type: PhantomData,
+                                map_fn: params,
+                            }
+                        })
+                        .ok()
+                }
+            }
+        };
+    }
+    impl_saveload_conv2x2!(8);
+    impl_saveload_conv2x2!(16);
+    impl_saveload_conv2x2!(32);
+    impl_saveload_conv2x2!(64);
+    impl_saveload_conv2x2!(128);
+
     impl<I: Sync, P: Sync, FN: Apply<P, O> + Mutate, O: Sync> Mutate for Conv2x2Stride2<I, P, FN, O>
     where
         [I; 4]: SimplifyBits<P>,
@@ -1607,7 +1911,7 @@ pub mod layers {
     }
 
     impl<
-            II: Image2D<I> + Sync + Extract2x2PatchesUnstrided<P> + Copy,
+            II: Image2D<I> + Sync + Extract2x2PatchesStrided<P> + Copy,
             I: Sync,
             O: Sync,
             P: Sync + Copy,
@@ -1686,9 +1990,9 @@ pub mod layers {
     }
 
     patch_conv_2x2_apply_trait!(32, 32);
-    //patch_conv_2x2_apply_trait!(16, 16);
-    //patch_conv_2x2_apply_trait!(8, 8);
-    //patch_conv_2x2_apply_trait!(4, 4);
+    patch_conv_2x2_apply_trait!(16, 16);
+    patch_conv_2x2_apply_trait!(8, 8);
+    patch_conv_2x2_apply_trait!(4, 4);
 
     pub trait ExtractPixels<P> {
         fn pixels(&self) -> Vec<P>;
@@ -1766,13 +2070,48 @@ pub mod layers {
             .collect()
     }
 
-    pub trait Extract2x2PatchesUnstrided<OP> {
+    pub trait Extract3x3Patches<OP> {
+        fn patches(&self) -> Vec<OP>;
+    }
+
+    macro_rules! extract_patch_3x3_trait {
+        ($x_size:expr, $y_size:expr) => {
+            impl<I: Copy> Extract3x3Patches<[[I; 3]; 3]> for [[I; $y_size]; $x_size] {
+                fn patches(&self) -> Vec<[[I; 3]; 3]> {
+                    let mut patches = Vec::with_capacity(($y_size - 2) * ($x_size - 2));
+                    for x in 0..$x_size - 2 {
+                        for y in 0..$y_size - 2 {
+                            patches.push(patch_3x3!(self, x, y));
+                        }
+                    }
+                    patches
+                }
+            }
+        };
+    }
+
+    extract_patch_3x3_trait!(32, 32);
+    extract_patch_3x3_trait!(16, 16);
+    extract_patch_3x3_trait!(8, 8);
+    extract_patch_3x3_trait!(4, 4);
+
+    fn vec_extract_3x3_patches<II: Extract3x3Patches<P>, P: Copy>(
+        inputs: &Vec<(usize, II)>,
+    ) -> Vec<(usize, P)> {
+        inputs
+            .iter()
+            .map(|(class, image)| iter::repeat(*class).zip(image.patches()))
+            .flatten()
+            .collect()
+    }
+
+    pub trait Extract2x2PatchesStrided<OP> {
         fn patches2x2(&self) -> Vec<OP>;
     }
 
     macro_rules! extract_patch_4_trait {
         ($x_size:expr, $y_size:expr) => {
-            impl<I: Copy, O> Extract2x2PatchesUnstrided<O> for [[I; $y_size]; $x_size]
+            impl<I: Copy, O> Extract2x2PatchesStrided<O> for [[I; $y_size]; $x_size]
             where
                 [I; 4]: SimplifyBits<O>,
             {
@@ -1800,11 +2139,11 @@ pub mod layers {
     }
 
     extract_patch_4_trait!(32, 32);
-    //extract_patch_4_trait!(16, 16);
-    //extract_patch_4_trait!(8, 8);
-    //extract_patch_4_trait!(4, 4);
+    extract_patch_4_trait!(16, 16);
+    extract_patch_4_trait!(8, 8);
+    extract_patch_4_trait!(4, 4);
 
-    fn vec_extract_2x2_patches<II: Extract2x2PatchesUnstrided<P>, P: Copy>(
+    fn vec_extract_2x2_patches<II: Extract2x2PatchesStrided<P>, P: Copy>(
         inputs: &Vec<(usize, II)>,
     ) -> Vec<(usize, P)> {
         inputs
