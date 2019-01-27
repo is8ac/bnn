@@ -733,7 +733,7 @@ pub mod layers {
             {
                 fn optimize_head(
                     &mut self,
-                    examples: &Vec<(usize, [[I; $y_size]; $x_size])>,
+                    examples: &[(usize, [[I; $y_size]; $x_size])],
                     update_freq: usize,
                 ) -> f64 {
                     let patches = vec_extract_patches(examples);
@@ -942,18 +942,14 @@ pub mod layers {
     where
         I: Sync,
     {
-        fn optimize_head(&mut self, examples: &Vec<(usize, I)>, update_freq: usize) -> f64;
-        fn avg_objective(&self, examples: &Vec<(usize, I)>) -> f64 {
+        fn optimize_head(&mut self, examples: &[(usize, I)], update_freq: usize) -> f64;
+        fn avg_objective(&self, examples: &[(usize, I)]) -> f64 {
             let sum: f64 = examples.par_iter().map(|i| self.objective(i)).sum();
             sum / examples.len() as f64
         }
     }
 
-    pub trait OptimizeLayer<I, O>: VecApply<I, O>
-    where
-        O: Sync,
-        I: Sync,
-    {
+    pub trait OptimizeLayer<I: Sync, O: Sync>: VecApply<I, O> {
         fn optimize_layer<H: Objective<O> + OptimizeHead<O> + Sync>(
             &mut self,
             head: &mut H,
@@ -973,7 +969,7 @@ pub mod layers {
             update_freq: usize,
         ) -> (f64, u64) {
             let mut updates = 0;
-            println!("starting optimize layer",);
+            println!("starting optimize layer with {} examples", examples.len());
             let new_examples: Vec<(usize, O)> = (*self).vec_apply(examples);
             let mut obj = head.optimize_head(&new_examples, update_freq);
             //let real_obj = head.avg_objective(&new_examples);
@@ -1023,7 +1019,7 @@ pub mod layers {
     }
 
     impl<I: Patch + Copy + Default + Sync> OptimizeHead<I> for [I; 10] {
-        fn optimize_head(&mut self, examples: &Vec<(usize, I)>, _update_freq: usize) -> f64 {
+        fn optimize_head(&mut self, examples: &[(usize, I)], _update_freq: usize) -> f64 {
             let all_start = PreciseTime::now();
             //let before_acc = self.avg_objective(examples);
             for mut_class in 0..10 {
@@ -1204,72 +1200,13 @@ pub mod layers {
             H: OptimizeHead<O>,
         > OptimizeHead<I> for Layer<I, L, O, H>
     {
-        fn optimize_head(&mut self, examples: &Vec<(usize, I)>, update_freq: usize) -> f64 {
+        fn optimize_head(&mut self, examples: &[(usize, I)], update_freq: usize) -> f64 {
             let (obj, _) = self
                 .data
                 .optimize_layer(&mut self.head, examples, update_freq);
             obj
         }
     }
-
-    #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
-    pub struct OrPool2x2<P> {
-        pixel_type: PhantomData<P>,
-    }
-
-    impl<P> Default for OrPool2x2<P> {
-        fn default() -> Self {
-            OrPool2x2 {
-                pixel_type: PhantomData,
-            }
-        }
-    }
-
-    impl<P, I: Image2D<P>> NewFromSplit<I> for OrPool2x2<P> {
-        fn new_from_split(_: &Vec<(usize, I)>) -> Self {
-            OrPool2x2 {
-                pixel_type: PhantomData,
-            }
-        }
-    }
-
-    impl<I: Send + Sync + Image2D<P>, O: Copy + Send + Sync + Image2D<P>, P> OptimizeLayer<I, O>
-        for OrPool2x2<P>
-    where
-        Self: VecApply<I, O>,
-    {
-    }
-
-    macro_rules! or_pool2x2_trait {
-        ($x_len:expr, $y_len:expr) => {
-            impl<P: Patch + Copy + Default>
-                Apply<[[P; $y_len]; $x_len], [[P; ($y_len / 2)]; ($x_len / 2)]> for OrPool2x2<P>
-            {
-                fn apply(
-                    &self,
-                    input: &[[P; $y_len]; $x_len],
-                ) -> [[P; ($y_len / 2)]; ($x_len / 2)] {
-                    let mut pooled = [[P::default(); $y_len / 2]; $x_len / 2];
-                    for x in 0..($x_len / 2) {
-                        let x_base = x * 2;
-                        for y in 0..($y_len / 2) {
-                            let y_base = y * 2;
-                            pooled[x][y] = input[x_base + 0][y_base + 0]
-                                .bit_or(&input[x_base + 0][y_base + 1])
-                                .bit_or(&input[x_base + 1][y_base + 0])
-                                .bit_or(&input[x_base + 1][y_base + 1]);
-                        }
-                    }
-                    pooled
-                }
-            }
-        };
-    }
-
-    or_pool2x2_trait!(32, 32);
-    or_pool2x2_trait!(16, 16);
-    or_pool2x2_trait!(8, 8);
-    or_pool2x2_trait!(4, 4);
 
     pub struct Conv1x1<I, FN, O> {
         input_type: PhantomData<I>,
@@ -1637,94 +1574,6 @@ pub mod layers {
         }
     }
 
-    impl<InputPixel, LayerPatch, LayerFN: Apply<LayerPatch, OutputPixel>, OutputPixel>
-        Patch3x3NotchedConv<InputPixel, LayerPatch, LayerFN, OutputPixel>
-    where
-        [InputPixel; 8]: SimplifyBits<LayerPatch>,
-    {
-        pub fn make_pool_conv_head<
-            InputImage: Image2D<InputPixel> + Sync,
-            OutputImage: Image2D<OutputPixel> + Sync + Copy,
-            PooledImage: Sync,
-            HeadPatch,
-        >(
-            &self,
-            examples: &Vec<(usize, InputImage)>,
-        ) -> Layer<
-            OutputImage,
-            OrPool2x2<OutputPixel>,
-            PooledImage,
-            Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
-        >
-        where
-            [OutputPixel; 8]: SimplifyBits<HeadPatch>,
-            Self: VecApply<InputImage, OutputImage>,
-            Layer<
-                OutputImage,
-                OrPool2x2<OutputPixel>,
-                PooledImage,
-                Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
-            >: NewFromSplit<OutputImage>,
-        {
-            Layer::<
-                OutputImage,
-                OrPool2x2<OutputPixel>,
-                PooledImage,
-                Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
-            >::new_from_split(&self.vec_apply(examples))
-        }
-    }
-
-    impl<
-            InputPixel: Sync,
-            LayerPatch: Sync,
-            LayerFN: Sync + Apply<LayerPatch, OutputPixel>,
-            OutputPixel: Sync,
-        > Patch3x3NotchedConv<InputPixel, LayerPatch, LayerFN, OutputPixel>
-    where
-        [InputPixel; 8]: SimplifyBits<LayerPatch>,
-    {
-        pub fn train<
-            InputImage: Image2D<InputPixel> + Sync,
-            OutputImage: Image2D<OutputPixel> + Sync + Copy,
-            PooledImage: Sync,
-            HeadPatch: Sync,
-        >(
-            examples: &Vec<(usize, InputImage)>,
-            update_freq: usize,
-            iters: usize,
-        ) -> Self
-        where
-            [OutputPixel; 8]: SimplifyBits<HeadPatch>,
-            Self: VecApply<InputImage, OutputImage>
-                + NewFromSplit<InputImage>
-                + OptimizeLayer<InputImage, OutputImage>,
-            Layer<
-                OutputImage,
-                OrPool2x2<OutputPixel>,
-                PooledImage,
-                Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
-            >: NewFromSplit<OutputImage> + Objective<OutputImage> + Sync,
-            OrPool2x2<OutputPixel>:
-                Apply<OutputImage, PooledImage> + OptimizeLayer<OutputImage, PooledImage>,
-            Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>:
-                OptimizeHead<PooledImage>,
-        {
-            let mut conv_layer = Self::new_from_split(&examples);
-            let mut head = Layer::<
-                OutputImage,
-                OrPool2x2<OutputPixel>,
-                PooledImage,
-                Patch3x3NotchedConv<OutputPixel, HeadPatch, [HeadPatch; 10], f64>,
-            >::new_from_split(&conv_layer.vec_apply(examples));
-            for i in 0..iters {
-                let (obj, updates) = conv_layer.optimize_layer(&mut head, &examples, update_freq);
-                println!("pass: {}, obj: {} updates: {}", i, obj, updates);
-            }
-            conv_layer
-        }
-    }
-
     impl<I: Sync, P: Sync, FN: Apply<P, O>, O: Sync> Patch3x3NotchedConv<I, P, FN, O>
     where
         [I; 8]: SimplifyBits<P>,
@@ -1821,12 +1670,12 @@ pub mod layers {
         data: [I; 10],
     }
 
-    impl<II: Sync + Image2D<I> + ExtractPixels<I>, I: Sync + Copy> OptimizeHead<II> for PixelHead10<I>
+    impl<Image: Sync + Image2D<Pixel> + ExtractPixels<Pixel>, Pixel: Sync + Copy> OptimizeHead<Image> for PixelHead10<Pixel>
     where
-        PixelHead10<I>: Objective<II>,
-        [I; 10]: OptimizeHead<I>,
+        PixelHead10<Pixel>: Objective<Image>,
+        [Pixel; 10]: OptimizeHead<Pixel>,
     {
-        fn optimize_head(&mut self, examples: &Vec<(usize, II)>, update_freq: usize) -> f64 {
+        fn optimize_head(&mut self, examples: &[(usize, Image)], update_freq: usize) -> f64 {
             let pixels = vec_extract_pixels(examples);
             self.data.optimize_head(&pixels, update_freq)
         }
@@ -2020,7 +1869,7 @@ pub mod layers {
     extract_pixels_trait!(4, 4);
 
     fn vec_extract_pixels<II: ExtractPixels<P>, P: Copy>(
-        inputs: &Vec<(usize, II)>,
+        inputs: &[(usize, II)],
     ) -> Vec<(usize, P)> {
         inputs
             .iter()
@@ -2061,7 +1910,7 @@ pub mod layers {
     use std::iter;
 
     fn vec_extract_patches<II: ExtractPatches<P>, P: Copy>(
-        inputs: &Vec<(usize, II)>,
+        inputs: &[(usize, II)],
     ) -> Vec<(usize, P)> {
         inputs
             .iter()
@@ -2096,7 +1945,7 @@ pub mod layers {
     extract_patch_3x3_trait!(4, 4);
 
     fn vec_extract_3x3_patches<II: Extract3x3Patches<P>, P: Copy>(
-        inputs: &Vec<(usize, II)>,
+        inputs: &[(usize, II)],
     ) -> Vec<(usize, P)> {
         inputs
             .iter()
@@ -2144,7 +1993,7 @@ pub mod layers {
     extract_patch_4_trait!(4, 4);
 
     fn vec_extract_2x2_patches<II: Extract2x2PatchesStrided<P>, P: Copy>(
-        inputs: &Vec<(usize, II)>,
+        inputs: &[(usize, II)],
     ) -> Vec<(usize, P)> {
         inputs
             .iter()
@@ -2223,7 +2072,7 @@ pub mod layers {
 mod tests {
     use super::layers::{
         unary, Accuracy, Apply, Layer, NewFromSplit, Objective, OptimizeHead, OptimizeLayer,
-        OrPool2x2, Patch3x3NotchedConv,
+        Patch3x3NotchedConv,
     };
     use super::Patch;
     #[test]
@@ -2314,35 +2163,5 @@ mod tests {
         let obj = model.objective(&examples[4]);
         assert!(obj > 0.5f64);
         let obj = model.optimize_head(&examples, 20);
-
-        let mut model = Layer::<
-            [[u8; 8]; 8],
-            Patch3x3NotchedConv<u8, u64, [u64; 16], u16>,
-            [[u16; 8]; 8],
-            Layer<
-                [[u16; 8]; 8],
-                OrPool2x2<u16>,
-                [[u16; 4]; 4],
-                Patch3x3NotchedConv<u16, u128, [u128; 10], f64>,
-            >,
-        >::new_from_split(&examples);
-        let obj = model.objective(&examples[0]);
-        assert_eq!(obj, 1f64);
-        let obj = model.objective(&examples[4]);
-        assert!(obj > 0.5f64);
-        let obj = model.optimize_head(&examples, 20);
-    }
-    #[test]
-    fn to_from_vec() {
-        type ConvType = Patch3x3NotchedConv<u8, u64, [u64; 16], u16>;
-        let input = ConvType::new_from_parameters([123u64; 16]);
-        let vec_form = input.to_vec();
-        let readback = ConvType::from_vec(&vec_form);
-        assert_eq!(input, readback);
-
-        type ConvType2 = Patch3x3NotchedConv<u8, u64, [u64; 64], u64>;
-        let input = ConvType2::new_from_parameters([123u64; 64]);
-        let vec_form = input.to_vec();
-        let readback = ConvType2::from_vec(&vec_form);
     }
 }
