@@ -1210,9 +1210,78 @@ pub mod layers {
 
     pub struct Conv1x1<I, FN, O> {
         input_type: PhantomData<I>,
-        data: FN,
+        map_fn: FN,
         output_type: PhantomData<O>,
     }
+
+    impl<I: Sync, FN: Apply<I, O> + Mutate, O: Sync> Mutate for Conv1x1<I, FN, O> {
+        fn mutate(&mut self, output_index: usize, input_index: usize) {
+            self.map_fn.mutate(output_index, input_index);
+        }
+        const OUTPUT_LEN: usize = FN::OUTPUT_LEN;
+        const INPUT_LEN: usize = FN::INPUT_LEN;
+    }
+
+    impl<
+            II: Image2D<I> + Sync + ExtractPixels<I> + Copy,
+            I: Sync + Copy,
+            O: Sync,
+            FN: NewFromSplit<I>,
+        > NewFromSplit<II> for Conv1x1<I, FN, O>
+    {
+        fn new_from_split(examples: &Vec<(usize, II)>) -> Self {
+            let patches = vec_extract_pixels(examples);
+            Conv1x1 {
+                input_type: PhantomData,
+                map_fn: FN::new_from_split(&patches),
+                output_type: PhantomData,
+            }
+        }
+    }
+
+    macro_rules! impl_saveload_conv1x1 {
+        ($len:expr) => {
+            impl<I: Default + Copy, O> SaveLoad for Conv1x1<I, [I; $len], O>
+            where
+                I: serde::Serialize,
+                for<'de> I: serde::Deserialize<'de>,
+            {
+                fn write_to_fs(&self, path: &Path) {
+                    let vec_params: Vec<I> = self.map_fn.iter().map(|x| *x).collect();
+                    let mut f = BufWriter::new(File::create(path).unwrap());
+                    serialize_into(&mut f, &vec_params).unwrap();
+                }
+                // This will return:
+                // - Some if the file exists and is good
+                // - None of the file does not exist
+                // and will panic if the file is exists but is bad.
+                fn new_from_fs(path: &Path) -> Option<Self> {
+                    File::open(&path)
+                        .map(|f| deserialize_from(f).unwrap())
+                        .map(|vec_params: Vec<I>| {
+                            if vec_params.len() != $len {
+                                panic!("input is of len {} not {}", vec_params.len(), $len);
+                            }
+                            let mut params = [<I>::default(); $len];
+                            for i in 0..$len {
+                                params[i] = vec_params[i];
+                            }
+                            Conv1x1 {
+                                input_type: PhantomData,
+                                map_fn: params,
+                                output_type: PhantomData,
+                            }
+                        })
+                        .ok()
+                }
+            }
+        };
+    }
+    impl_saveload_conv1x1!(8);
+    impl_saveload_conv1x1!(16);
+    impl_saveload_conv1x1!(32);
+    impl_saveload_conv1x1!(64);
+    impl_saveload_conv1x1!(128);
 
     macro_rules! impl_apply_for_conv1x1 {
         ($x_size:expr, $y_size:expr) => {
@@ -1223,7 +1292,7 @@ pub mod layers {
                     let mut target = <[[O; $y_size]; $x_size]>::default();
                     for x in 1..$x_size - 1 {
                         for y in 1..$y_size - 1 {
-                            target[x][y] = self.data.apply(&input[x][y]);
+                            target[x][y] = self.map_fn.apply(&input[x][y]);
                         }
                     }
                     target
@@ -1236,7 +1305,7 @@ pub mod layers {
                 ) {
                     for x in 1..$x_size - 1 {
                         for y in 1..$y_size - 1 {
-                            self.data.update(&input[x][y], &mut target[x][y], index);
+                            self.map_fn.update(&input[x][y], &mut target[x][y], index);
                         }
                     }
                 }
@@ -1245,6 +1314,9 @@ pub mod layers {
     }
 
     impl_apply_for_conv1x1!(32, 32);
+    impl_apply_for_conv1x1!(16, 16);
+    impl_apply_for_conv1x1!(8, 8);
+    impl_apply_for_conv1x1!(4, 4);
 
     pub trait SimpleConcat<T> {
         fn concat(a: &T, b: &T) -> Self;
@@ -1260,6 +1332,9 @@ pub mod layers {
         };
     }
     impl_simple_concat!(u8, u16);
+    impl_simple_concat!(u16, u32);
+    impl_simple_concat!(u32, u64);
+    impl_simple_concat!(u64, u128);
 
     pub trait SimplifyBits<T> {
         fn simplify(&self) -> T;
@@ -1670,7 +1745,8 @@ pub mod layers {
         data: [I; 10],
     }
 
-    impl<Image: Sync + Image2D<Pixel> + ExtractPixels<Pixel>, Pixel: Sync + Copy> OptimizeHead<Image> for PixelHead10<Pixel>
+    impl<Image: Sync + Image2D<Pixel> + ExtractPixels<Pixel>, Pixel: Sync + Copy>
+        OptimizeHead<Image> for PixelHead10<Pixel>
     where
         PixelHead10<Pixel>: Objective<Image>,
         [Pixel; 10]: OptimizeHead<Pixel>,
