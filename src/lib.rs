@@ -230,7 +230,7 @@ pub trait Patch: Send + Sync + Sized + BitLen {
 macro_rules! primitive_patch {
     ($type:ty) => {
         impl Patch for $type {
-            fn hamming_distance(&self, other: &$type) -> u32 {
+            fn hamming_distance(&self, other: &Self) -> u32 {
                 (self ^ other).count_ones()
             }
             fn bit_increment(&self, counters: &mut [u32]) {
@@ -938,6 +938,41 @@ pub mod layers {
     primitive_mutate_matrix_trait!(64);
     primitive_mutate_matrix_trait!(128);
 
+    // activation distribution
+    pub trait ActDist<I> {
+        fn act_dist(&self, inputs: &Vec<I>) -> [f64; 10];
+    }
+    impl<I: Patch + Sync> ActDist<I> for [I; 10] {
+        fn act_dist(&self, inputs: &Vec<I>) -> [f64; 10] {
+            let sums: [u64; 10] = inputs
+                .par_iter()
+                .fold(
+                    || [0u64; 10],
+                    |mut acc: [u64; 10], input: &I| {
+                        for i in 0..10 {
+                            acc[i] += self[i].hamming_distance(input) as u64;
+                        }
+                        acc
+                    },
+                )
+                .reduce(
+                    || [0u64; 10],
+                    |mut a, b| {
+                        for i in 0..10 {
+                            a[i] += b[i]
+                        }
+                        a
+                    },
+                );
+
+            let mut avgs = [0f64; 10];
+            for i in 0..10 {
+                avgs[i] = sums[i] as f64 / inputs.len() as f64;
+            }
+            avgs
+        }
+    }
+
     pub trait OptimizeHead<I>: Sync + Objective<I>
     where
         I: Sync,
@@ -1318,24 +1353,6 @@ pub mod layers {
     impl_apply_for_conv1x1!(8, 8);
     impl_apply_for_conv1x1!(4, 4);
 
-    pub trait SimpleConcat<T> {
-        fn concat(a: &T, b: &T) -> Self;
-    }
-
-    macro_rules! impl_simple_concat {
-        ($in_type:ty, $out_type:ty) => {
-            impl SimpleConcat<$in_type> for $out_type {
-                fn concat(a: &$in_type, b: &$in_type) -> $out_type {
-                    unsafe { transmute::<[$in_type; 2], $out_type>([*a, *b]) }
-                }
-            }
-        };
-    }
-    impl_simple_concat!(u8, u16);
-    impl_simple_concat!(u16, u32);
-    impl_simple_concat!(u32, u64);
-    impl_simple_concat!(u64, u128);
-
     pub trait SimplifyBits<T> {
         fn simplify(&self) -> T;
     }
@@ -1350,6 +1367,8 @@ pub mod layers {
         };
     }
     simplify_bits_trait!([u64; 4], [u128; 2]);
+    simplify_bits_trait!([u16; 2], u32);
+    simplify_bits_trait!([u32; 2], u64);
 
     simplify_bits_trait!([u128; 8], [u128; 8]);
     simplify_bits_trait!([u8; 8], u64);
@@ -1415,23 +1434,28 @@ pub mod layers {
         }
     }
 
-    pub trait ConcatImage<P> {
-        fn concat_images(a: &P, b: &P) -> Self;
+    pub trait ConcatImages<I> {
+        fn concat_images(inputs: I) -> Self;
     }
 
     macro_rules! impl_concat_image {
-        ($x_size:expr, $y_size:expr) => {
-            impl<IP, OP: Default + Copy + SimpleConcat<IP>> ConcatImage<[[IP; $y_size]; $x_size]>
-                for [[OP; $y_size]; $x_size]
+        ($depth:expr, $x_size:expr, $y_size:expr) => {
+            impl<IP: Default + Copy, OP: Default + Copy>
+                ConcatImages<[&[[IP; $y_size]; $x_size]; $depth]> for [[OP; $y_size]; $x_size]
+            where
+                [IP; $depth]: SimplifyBits<OP>,
             {
                 fn concat_images(
-                    a: &[[IP; $y_size]; $x_size],
-                    b: &[[IP; $y_size]; $x_size],
+                    input: [&[[IP; $y_size]; $x_size]; $depth],
                 ) -> [[OP; $y_size]; $x_size] {
                     let mut target = <[[OP; $y_size]; $x_size]>::default();
                     for x in 0..$x_size {
                         for y in 0..$y_size {
-                            target[x][y] = <OP>::concat(&a[x][y], &b[x][y]);
+                            let mut target_pixel = [IP::default(); $depth];
+                            for i in 0..$depth {
+                                target_pixel[i] = input[i][x][y];
+                            }
+                            target[x][y] = target_pixel.simplify();
                         }
                     }
                     target
@@ -1439,22 +1463,50 @@ pub mod layers {
             }
         };
     }
-    impl_concat_image!(32, 32);
-    impl_concat_image!(16, 16);
-    impl_concat_image!(8, 8);
-    impl_concat_image!(4, 4);
+    impl_concat_image!(2, 32, 32);
+    impl_concat_image!(4, 32, 32);
 
-    pub fn vec_concat_examples<I: Sync, C: ConcatImage<I> + Sync + Send>(
-        a: &Vec<(usize, I)>,
-        b: &Vec<(usize, I)>,
+    pub fn vec_concat_2_examples<'a, I: 'a + Sync, C: ConcatImages<[&'a I; 2]> + Sync + Send>(
+        a: &'a Vec<(usize, I)>,
+        b: &'a Vec<(usize, I)>,
     ) -> Vec<(usize, C)> {
         assert_eq!(a.len(), b.len());
         a.par_iter()
             .zip(b.par_iter())
             .map(|((a_class, a_image), (b_class, b_image))| {
                 assert_eq!(a_class, b_class);
-                (*a_class, C::concat_images(&a_image, &b_image))
+                (*a_class, C::concat_images([a_image, b_image]))
             })
+            .collect()
+    }
+
+    pub fn vec_concat_4_examples<'a, I: 'a + Sync, C: ConcatImages<[&'a I; 4]> + Sync + Send>(
+        a: &'a Vec<(usize, I)>,
+        b: &'a Vec<(usize, I)>,
+        c: &'a Vec<(usize, I)>,
+        d: &'a Vec<(usize, I)>,
+    ) -> Vec<(usize, C)> {
+        assert_eq!(a.len(), b.len());
+        assert_eq!(a.len(), c.len());
+        assert_eq!(a.len(), d.len());
+        a.par_iter()
+            .zip(b.par_iter())
+            .zip(c.par_iter())
+            .zip(d.par_iter())
+            .map(
+                |(
+                    (((a_class, a_image), (b_class, b_image)), (c_class, c_image)),
+                    (d_class, d_image),
+                )| {
+                    assert_eq!(a_class, b_class);
+                    assert_eq!(a_class, c_class);
+                    assert_eq!(a_class, d_class);
+                    (
+                        *a_class,
+                        C::concat_images([a_image, b_image, c_image, d_image]),
+                    )
+                },
+            )
             .collect()
     }
 
