@@ -594,13 +594,13 @@ pub mod layers {
     macro_rules! patch_3x3_notched_simplified {
         ($input:expr, $x:expr, $y:expr) => {
             [
-                $input[$x + 1][$y + 0],
-                $input[$x + 2][$y + 0],
-                $input[$x + 0][$y + 1],
                 $input[$x + 1][$y + 1],
-                $input[$x + 2][$y + 1],
-                $input[$x + 0][$y + 2],
+                $input[$x + 1][$y + 0],
                 $input[$x + 1][$y + 2],
+                $input[$x + 0][$y + 1],
+                $input[$x + 2][$y + 1],
+                $input[$x + 2][$y + 0],
+                $input[$x + 0][$y + 2],
                 $input[$x + 2][$y + 2],
             ]
             .simplify()
@@ -851,24 +851,24 @@ pub mod layers {
 
     use rand::rngs::ThreadRng;
     use rand::Rng;
-    pub trait NewFromRng<I> {
-        fn new_from_rng(rng: &mut ThreadRng, input_bit_len: usize) -> Self;
+    pub trait NewFromRng {
+        fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self;
     }
 
     macro_rules! primitive_activations_new_from_seed {
         ($len:expr) => {
-            impl<I: Patch> NewFromRng<I> for [I; $len]
+            impl<I: Patch> NewFromRng for [I; $len]
             where
                 rand::distributions::Standard: rand::distributions::Distribution<I>,
             {
-                fn new_from_rng(rng: &mut ThreadRng, _: usize) -> Self {
+                fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self {
                     rng.gen::<[I; $len]>()
                 }
             }
         };
     }
-    primitive_activations_new_from_seed!(10);
     primitive_activations_new_from_seed!(8);
+    primitive_activations_new_from_seed!(10);
     primitive_activations_new_from_seed!(16);
     primitive_activations_new_from_seed!(32);
 
@@ -1018,7 +1018,7 @@ pub mod layers {
                     if iter % update_freq == 0 {
                         (*self).vec_update(&examples, &mut cache, o);
                         obj = head.optimize_head(&cache, update_freq);
-                        println!("{} output: {:?}%", o, obj * 100f64);
+                        println!("{} output: {:?}", o, obj);
                         iter = 1;
                     }
                     self.mutate(o, b);
@@ -1026,7 +1026,7 @@ pub mod layers {
                     let new_obj = head.avg_objective(&cache);
                     if new_obj > obj {
                         obj = new_obj;
-                        println!("{} {} {:?}%", o, b, obj * 100f64);
+                        println!("{} {} {:?}", o, b, obj);
                         iter += 1;
                         updates += 1;
                     } else {
@@ -1197,12 +1197,12 @@ pub mod layers {
     impl_trait_for_layer!(Objective, objective);
     impl_trait_for_layer!(Accuracy, accuracy);
 
-    impl<I: Sync + Copy + BitLen, O: Sync, L: NewFromRng<I>, H: NewFromRng<O>> NewFromRng<I>
+    impl<I: Sync + Copy + BitLen, O: Sync, L: NewFromRng, H: NewFromRng> NewFromRng
         for Layer<I, L, O, H>
     {
-        fn new_from_rng(rng: &mut ThreadRng, input_bit_len: usize) -> Self {
-            let layer = L::new_from_rng(rng, input_bit_len);
-            let head = H::new_from_rng(rng, I::BIT_LEN);
+        fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self {
+            let layer = L::new_from_rng(rng);
+            let head = H::new_from_rng(rng);
             Layer {
                 input: PhantomData,
                 output: PhantomData,
@@ -1636,6 +1636,21 @@ pub mod layers {
         pub map_fn: FN,
     }
 
+    impl<I: Copy, Patch, FN, O> NewFromRng for Patch3x3NotchedConv<I, Patch, FN, O>
+    where
+        [I; 8]: SimplifyBits<Patch>,
+        FN: NewFromRng,
+    {
+        fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self {
+            Patch3x3NotchedConv {
+                input_pixel_type: PhantomData,
+                patch_type: PhantomData,
+                output_type: PhantomData,
+                map_fn: FN::new_from_rng(rng),
+            }
+        }
+    }
+
     macro_rules! impl_saveload {
         ($len:expr) => {
             impl<I, P: Copy + Default, O> SaveLoad for Patch3x3NotchedConv<I, P, [P; $len], O>
@@ -1795,6 +1810,17 @@ pub mod layers {
     #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
     pub struct PixelHead10<I> {
         data: [I; 10],
+    }
+
+    impl<I: Copy> NewFromRng for PixelHead10<I>
+    where
+        [I; 10]: NewFromRng,
+    {
+        fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self {
+            PixelHead10 {
+                data: <[I; 10]>::new_from_rng(rng),
+            }
+        }
     }
 
     impl<Image: Sync + Image2D<Pixel> + ExtractPixels<Pixel>, Pixel: Sync + Copy>

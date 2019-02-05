@@ -1,3 +1,5 @@
 /target/
 **/*.rs.bk
 mnist
+params/*
+remote_params
