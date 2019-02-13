@@ -220,6 +220,9 @@ array_bit_len!(128);
 
 pub trait Patch: Send + Sync + Sized + BitLen {
     fn hamming_distance(&self, &Self) -> u32;
+    fn distance_and_threshold(&self, other: &Self) -> bool {
+        self.hamming_distance(other) > (Self::BIT_LEN / 2) as u32
+    }
     fn bit_increment(&self, &mut [u32]);
     fn bitpack(&[bool]) -> Self;
     fn bit_or(&self, &Self) -> Self;
@@ -724,6 +727,30 @@ pub mod layers {
     pixel_conv_objective_trait!(8, 8);
     pixel_conv_objective_trait!(4, 4);
 
+    macro_rules! pixel_objective_trait_10 {
+        ($x_size:expr, $y_size:expr) => {
+            impl<I: Sync + Copy> Objective<[[I; $y_size]; $x_size]> for [I; 10]
+            where
+                [I; 10]: IsCorrect<I>,
+            {
+                fn objective(&self, (class, input): &(usize, [[I; $y_size]; $x_size])) -> f64 {
+                    let mut sum = 0u64;
+                    for x in 1..$x_size - 1 {
+                        for y in 1..$y_size - 1 {
+                            sum += self.is_correct(*class, &input[x][y]) as u64;
+                        }
+                    }
+                    sum as f64 / (($x_size - 2) * ($y_size - 2)) as f64
+                }
+            }
+        };
+    }
+
+    pixel_objective_trait_10!(32, 32);
+    pixel_objective_trait_10!(16, 16);
+    pixel_objective_trait_10!(8, 8);
+    pixel_objective_trait_10!(4, 4);
+
     macro_rules! patch_conv_optimizehead_trait {
         ($x_size:expr, $y_size:expr) => {
             impl<I: Sync + Copy, P: Sync + Copy, FN: Sync + Objective<P> + OptimizeHead<P>>
@@ -849,8 +876,6 @@ pub mod layers {
         fn new_from_fs(path: &Path) -> Option<Self>;
     }
 
-    use rand::rngs::ThreadRng;
-    use rand::Rng;
     pub trait NewFromRng {
         fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self;
     }
@@ -1416,6 +1441,10 @@ pub mod layers {
         to_unary!(to_10, u32, 10);
         to_unary!(to_11, u32, 11);
         to_unary!(to_14, u16, 14);
+        to_unary!(to_21, u32, 21);
+        to_unary!(to_22, u32, 22);
+        to_unary!(to_42, u64, 42);
+        to_unary!(to_43, u64, 43);
 
         pub fn rgb_to_u14(pixels: [u8; 3]) -> u16 {
             to_4(pixels[0]) as u16
@@ -1431,6 +1460,16 @@ pub mod layers {
             to_11(pixels[0]) as u32
                 | ((to_11(pixels[1]) as u32) << 11)
                 | ((to_10(pixels[2]) as u32) << 22)
+        }
+        pub fn rgb_to_u64(pixels: [u8; 3]) -> u64 {
+            to_21(pixels[0]) as u64
+                | ((to_21(pixels[1]) as u64) << 21)
+                | ((to_22(pixels[2]) as u64) << 42)
+        }
+        pub fn rgb_to_u128(pixels: [u8; 3]) -> u128 {
+            to_43(pixels[0]) as u128
+                | ((to_43(pixels[1]) as u128) << 43)
+                | ((to_42(pixels[2]) as u128) << 86)
         }
     }
 
