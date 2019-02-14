@@ -176,6 +176,17 @@ macro_rules! for_uints {
     };
 }
 
+macro_rules! for_ref_uints {
+    ($tokens:tt) => {
+        $tokens!(&u8);
+        $tokens!(&u16);
+        $tokens!(&u32);
+        $tokens!(&u64);
+        $tokens!(&u128);
+    };
+}
+
+
 pub trait BitLen: Sized {
     const BIT_LEN: usize;
 }
@@ -218,6 +229,24 @@ array_bit_len!(49);
 array_bit_len!(64);
 array_bit_len!(128);
 
+pub trait HammingDist {
+    fn hd(self, Self) -> u32;
+}
+
+macro_rules! impl_hammingdist {
+    ($type:ty) => {
+        impl HammingDist for $type {
+            #[inline(always)]
+            fn hd(self, other: Self) -> u32 {
+                (self ^ other).count_ones()
+            }
+        }
+    };
+}
+for_uints!(impl_hammingdist);
+for_ref_uints!(impl_hammingdist);
+
+
 pub trait Patch: Send + Sync + Sized + BitLen {
     fn hamming_distance(&self, &Self) -> u32;
     fn distance_and_threshold(&self, other: &Self) -> bool {
@@ -233,6 +262,7 @@ pub trait Patch: Send + Sync + Sized + BitLen {
 macro_rules! primitive_patch {
     ($type:ty) => {
         impl Patch for $type {
+            #[inline(always)]
             fn hamming_distance(&self, other: &Self) -> u32 {
                 (self ^ other).count_ones()
             }
@@ -562,7 +592,7 @@ pub mod featuregen {
 #[macro_use]
 pub mod layers {
     use super::featuregen;
-    use super::{BitLen, Patch};
+    use super::{BitLen, Patch, HammingDist};
     use bincode::{deserialize_from, serialize_into};
     use rayon::prelude::*;
     use std::fs::File;
@@ -611,21 +641,21 @@ pub mod layers {
     }
 
     pub trait IsCorrect<I> {
-        fn is_correct(&self, target: usize, input: &I) -> bool;
-        fn not_incorrect(&self, target: usize, input: &I) -> bool;
+        fn is_correct(&self, target: usize, input: I) -> bool;
+        fn not_incorrect(&self, target: usize, input: I) -> bool;
     }
     // Note the neither of these implementations have a mean of 0.1
     // for an input of 128 bits, is_correct is ~0.0844437
     // and not_incorrect is ~0.118793.
     // Both should approach 0.1 as bitlen of the input reaches infinity.
     // is_correct is slightly faster then not_incorrect.
-    impl<I: Patch> IsCorrect<I> for [I; 10] {
+    impl<I: HammingDist + Copy> IsCorrect<I> for [I; 10] {
         // the max activation is the target.
-        fn is_correct(&self, target: usize, input: &I) -> bool {
-            let max = self[target].hamming_distance(input);
+        fn is_correct(&self, target: usize, input: I) -> bool {
+            let max = self[target].hd(input);
             for i in 0..10 {
                 if i != target {
-                    if self[i].hamming_distance(input) >= max {
+                    if self[i].hd(input) >= max {
                         return false;
                     }
                 }
@@ -633,11 +663,11 @@ pub mod layers {
             true
         }
         // the target activation is not less then then the max activation.
-        fn not_incorrect(&self, target: usize, input: &I) -> bool {
-            let max = self[target].hamming_distance(input);
+        fn not_incorrect(&self, target: usize, input: I) -> bool {
+            let max = self[target].hd(input);
             for i in 0..10 {
                 if i != target {
-                    if self[i].hamming_distance(input) > max {
+                    if self[i].hd(input) > max {
                         return false;
                     }
                 }
@@ -659,12 +689,12 @@ pub mod layers {
         }
     }
 
-    impl<I: Patch> Objective<I> for [I; 10]
+    impl<I: Patch + Copy> Objective<I> for [I; 10]
     where
         Self: IsCorrect<I>,
     {
         fn objective(&self, (target, input): &(usize, I)) -> f64 {
-            self.is_correct(*target, input) as u8 as f64
+            self.is_correct(*target, *input) as u8 as f64
         }
     }
 
@@ -713,7 +743,7 @@ pub mod layers {
                     let mut sum = 0u64;
                     for x in 1..$x_size - 1 {
                         for y in 1..$y_size - 1 {
-                            sum += self.data.is_correct(*class, &input[x][y]) as u64;
+                            sum += self.data.is_correct(*class, input[x][y]) as u64;
                         }
                     }
                     sum as f64 / (($x_size - 2) * ($y_size - 2)) as f64
@@ -737,7 +767,7 @@ pub mod layers {
                     let mut sum = 0u64;
                     for x in 1..$x_size - 1 {
                         for y in 1..$y_size - 1 {
-                            sum += self.is_correct(*class, &input[x][y]) as u64;
+                            sum += self.is_correct(*class, input[x][y]) as u64;
                         }
                     }
                     sum as f64 / (($x_size - 2) * ($y_size - 2)) as f64
@@ -1078,7 +1108,7 @@ pub mod layers {
         }
     }
 
-    impl<I: Patch + Copy + Default + Sync> OptimizeHead<I> for [I; 10] {
+    impl<I: Patch + Copy + Default + Sync + HammingDist> OptimizeHead<I> for [I; 10] {
         fn optimize_head(&mut self, examples: &[(usize, I)], _update_freq: usize) -> f64 {
             let all_start = PreciseTime::now();
             //let before_acc = self.avg_objective(examples);
@@ -1153,6 +1183,29 @@ pub mod layers {
             self.avg_objective(examples)
         }
     }
+
+    macro_rules! impl_optimizehead_for_pixel_head {
+        ($x_size:expr, $y_size:expr) => {
+            impl<P: Copy + Patch + HammingDist> OptimizeHead<[[P; $y_size]; $x_size]> for [P; 10]
+            where
+                [P; 10]: OptimizeHead<P>,
+            {
+                fn optimize_head(
+                    &mut self,
+                    examples: &[(usize, [[P; $y_size]; $x_size])],
+                    update_freq: usize,
+                ) -> f64 {
+                    let pixels = vec_extract_pixels(examples);
+                    self.optimize_head(&pixels, update_freq)
+                }
+            }
+        };
+    }
+    impl_optimizehead_for_pixel_head!(32, 32);
+    impl_optimizehead_for_pixel_head!(16, 16);
+    impl_optimizehead_for_pixel_head!(8, 8);
+    impl_optimizehead_for_pixel_head!(4, 4);
+
     #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
     pub struct Layer<I, L, O, H> {
         input: PhantomData<I>,

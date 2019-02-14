@@ -7,12 +7,17 @@ extern crate rayon;
 extern crate time;
 use bitnn::datasets::cifar;
 use bitnn::layers::unary;
-use bitnn::layers::{Apply, IsCorrect, Mutate, NewFromRng, Objective, PixelMap};
-use bitnn::{BitLen, Patch};
+use bitnn::layers::{
+    Apply, IsCorrect, Mutate, NewFromRng, Objective, OptimizeHead, OptimizeLayer, PixelMap,
+    SaveLoad,
+};
+use bitnn::{BitLen, HammingDist, Patch};
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;
 use std::marker::PhantomData;
+use std::ops::BitXor;
+use std::path::Path;
 use time::PreciseTime;
 
 pub fn u32_to_rbg(bits: u32) -> [u8; 3] {
@@ -196,7 +201,7 @@ struct Mirror3x3Cache<L, I, S, O> {
 
 macro_rules! impl_mirror3x3cache {
     ($x_size:expr, $y_size:expr, $output_type:ty) => {
-        impl<I: BitLen + Copy>
+        impl<I: BitLen + Copy + BitXor + Patch + HammingDist>
             Mirror3x3Cache<
                 Conv3x3Mirror<I, [[[I; 3]; 3]; <$output_type>::BIT_LEN / 2], $output_type>,
                 [[I; $y_size]; $x_size],
@@ -226,11 +231,15 @@ macro_rules! impl_mirror3x3cache {
                 i_seg: usize,
             ) {
                 for x in 0..32 {
-                    self.sums[y][x][i_seg] = layer.kernel[b][i_seg].hamming_distance(&[
-                        self.input[x][y + 0],
-                        self.input[x][y + 1],
-                        self.input[x][y + 2],
-                    ]) as u16;
+                    self.sums[y][x][i_seg] = ((layer.kernel[b][i_seg][0].hd(self.input[x][y + 0]))
+                        + (layer.kernel[b][i_seg][1].hd(self.input[x][y + 1]))
+                        + (layer.kernel[b][i_seg][2].hd(self.input[x][y + 2])))
+                        as u16;
+                    //self.sums[y][x][i_seg] = layer.kernel[b][i_seg].hamming_distance(&[
+                    //    self.input[x][y + 0],
+                    //    self.input[x][y + 1],
+                    //    self.input[x][y + 2],
+                    //]) as u16;
                 }
             }
             // clean all of the input. Same as calling 0, 2 and center. but fused and faster.
@@ -297,7 +306,7 @@ impl_mirror3x3cache!(32, 32, u128);
 
 macro_rules! impl_traincache_for_mirror3x3cache {
     ($x_size:expr, $y_size:expr, $output_type:ty) => {
-        impl<I: BitLen + Copy + Default>
+        impl<I: BitLen + Copy + Default + BitXor + Patch + HammingDist>
             TrainCache<
                 [[I; $y_size]; $x_size],
                 Conv3x3Mirror<I, [[[I; 3]; 3]; <$output_type>::BIT_LEN / 2], $output_type>,
@@ -377,7 +386,7 @@ macro_rules! impl_traincache_for_mirror3x3cache {
                             as $output_type)
                             << (b + <$output_type>::BIT_LEN / 2);
 
-                        sum_obj += head.is_correct(self.class, &self.output[x + 1][y + 1]) as u64;
+                        sum_obj += head.is_correct(self.class, self.output[x + 1][y + 1]) as u64;
                     }
                 }
                 self.unclean_b = b;
@@ -460,15 +469,115 @@ fn flip_image<P: Copy + Default>(input: &[[P; 32]; 32]) -> [[P; 32]; 32] {
     target
 }
 
-fn new_rand_weights<RNG: rand::Rng>(rng: &mut RNG) -> [[[IP; 3]; 3]; 64] {
-    let mut output = [[[IP::default(); 3]; 3]; 64];
-    for i in 0..64 {
-        output[i] = rng.gen();
+macro_rules! impl_newfromrng_for_conv3x3mirror {
+    ($output_type:ty) => {
+        impl<I: Default + Copy> NewFromRng
+            for Conv3x3Mirror<I, [[[I; 3]; 3]; <$output_type>::BIT_LEN / 2], $output_type>
+        where
+            rand::distributions::Standard: rand::distributions::Distribution<[[I; 3]; 3]>,
+        {
+            fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self {
+                let mut kernel = [[[I::default(); 3]; 3]; <$output_type>::BIT_LEN / 2];
+                for i in 0..<$output_type>::BIT_LEN / 2 {
+                    kernel[i] = rng.gen();
+                }
+                Conv3x3Mirror {
+                    input_pixel_type: PhantomData,
+                    kernel: kernel,
+                    output_type: PhantomData,
+                }
+            }
+        }
+    };
+}
+
+impl_newfromrng_for_conv3x3mirror!(u128);
+impl_newfromrng_for_conv3x3mirror!(u64);
+impl_newfromrng_for_conv3x3mirror!(u32);
+impl_newfromrng_for_conv3x3mirror!(u16);
+impl_newfromrng_for_conv3x3mirror!(u8);
+
+trait Train<I, O, H> {
+    fn train_new_layer<RNG: rand::Rng>(
+        examples: &Vec<(usize, I)>,
+        fs_path: &Path,
+        rng: &mut RNG,
+        head_update_freq: usize,
+        depth: usize,
+    ) -> Vec<(usize, O)>;
+    fn train(
+        layer: &mut Self,
+        head: &mut H,
+        examples_batch: &[(usize, I)],
+        head_update_freq: usize,
+        depth: usize,
+    );
+}
+
+impl<
+        I: Sync,
+        O: Sync,
+        P: Copy + Default + Sync,
+        L: OptimizeLayer<I, O> + SaveLoad + NewFromRng,
+    > Train<I, O, [P; 10]> for L
+where
+    [P; 10]: OptimizeHead<O> + IsCorrect<P> + Objective<O> + Sync + NewFromRng,
+{
+    fn train_new_layer<RNG: rand::Rng>(
+        examples: &Vec<(usize, I)>,
+        fs_path: &Path,
+        rng: &mut RNG,
+        head_update_freq: usize,
+        depth: usize,
+    ) -> Vec<(usize, O)> {
+        let layer = Self::new_from_fs(fs_path).unwrap_or_else(|| {
+            println!("{} not found, training", &fs_path.to_str().unwrap());
+            let mut layer: Self = Self::new_from_rng(rng);
+            let mut head = <[P; 10]>::new_from_rng(rng);
+
+            let start = PreciseTime::now();
+            Self::train(&mut layer, &mut head, examples, head_update_freq, depth);
+            let (obj, updates) =
+                layer.optimize_layer::<[P; 10]>(&mut head, &examples, head_update_freq);
+            println!(
+                "obj: {}, depth: {}, {}",
+                obj,
+                depth,
+                start.to(PreciseTime::now())
+            );
+            //write_to_log_event(start.to(PreciseTime::now()), obj, depth, &fs_path);
+            layer.write_to_fs(&fs_path);
+            layer
+        });
+        layer.vec_apply(&examples)
     }
-    output
+    // run time is ~constant with depth.
+    fn train(
+        layer: &mut Self,
+        head: &mut [P; 10],
+        examples: &[(usize, I)],
+        head_update_freq: usize,
+        depth: usize,
+    ) {
+        dbg!(depth);
+        if depth > 0 {
+            Self::train(
+                layer,
+                head,
+                &examples[0..examples.len() / 2],
+                head_update_freq,
+                depth - 1,
+            );
+        } else {
+            // train half
+        }
+        dbg!(examples.len());
+        // train other half
+    }
 }
 
 type IP = u128;
+const UPDATE_FREQ: usize = 20;
 
 fn main() {
     // In rayon 1.0.3 we need to tell rayon to give the workers a larger stack.
@@ -476,25 +585,15 @@ fn main() {
         .stack_size(2usize.pow(22))
         .build_global()
         .unwrap();
+
     let mut rng = Hc128Rng::seed_from_u64(42);
-
-    let mut layer: Conv3x3Mirror<IP, [[[IP; 3]; 3]; 64], u128> = Conv3x3Mirror {
-        input_pixel_type: PhantomData,
-        kernel: new_rand_weights(&mut rng),
-        output_type: PhantomData,
-    };
-
-    let head = <[u128; 10]>::new_from_rng(&mut rng);
     let examples = load_data();
 
-    for example in examples.iter().take(100) {
-        Mirror3x3Cache::<
-            Conv3x3Mirror<IP, [[[IP; 3]; 3]; 64], u128>,
-            [[IP; 32]; 32],
-            [[[u16; 3]; 32]; 30],
-            [[u128; 32]; 32],
-        >::self_test(&mut layer, example.0, &head, &example.1);
-    }
+    let mut layer = Conv3x3Mirror::<IP, [[[IP; 3]; 3]; 64], u128>::new_from_rng(&mut rng);
+    let mut head = <[u128; 10]>::new_from_rng(&mut rng);
+    //let obj = layer.optimize_layer(&mut head, &examples, UPDATE_FREQ);
+
+    //let l1 = Conv3x3Mirror::<IP, [[[IP; 3]; 3]; 64], u128>::train_new_layer(&mut rng);
 
     dbg!("creating cache");
     let mut cache_vec: Vec<_> = examples
@@ -526,7 +625,7 @@ fn main() {
     let apply_objs: Vec<f64> = examples
         .par_iter()
         .map(|(class, input_image)| head.objective(&(*class, simple_apply(&layer, input_image))))
-        //.map(|(class, input_image)| head.objective(&(*class, layer.apply(input_image))))
+        //.map(|(class, input_image)| head.objective(&(*class, layer.apply(input_image))))Conv3x3Mirror<IP, [[[IP; 3]; 3]; 64], u128>
         .collect();
     println!(
         "apply duration: {:?}",
@@ -538,6 +637,14 @@ fn main() {
     dbg!(apply_sum / apply_objs.len() as f64);
     assert_eq!(cache_objs, apply_objs);
 
+    for example in examples.iter().take(100) {
+        Mirror3x3Cache::<
+            Conv3x3Mirror<IP, [[[IP; 3]; 3]; 64], u128>,
+            [[IP; 32]; 32],
+            [[[u16; 3]; 32]; 30],
+            [[u128; 32]; 32],
+        >::self_test(&mut layer, example.0, &head, &example.1);
+    }
     ////apply duration: 11747
     ////update duration: 193
 
