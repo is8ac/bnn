@@ -9,7 +9,7 @@ use bitnn::datasets::cifar;
 use bitnn::layers::unary;
 use bitnn::layers::{
     Apply, IsCorrect, Mutate, NewFromRng, Objective, OptimizeHead, OptimizeLayer, PixelMap,
-    SaveLoad,
+    SaveLoad, VecApply,
 };
 use bitnn::{BitLen, HammingDist, Patch};
 use rand::SeedableRng;
@@ -48,6 +48,7 @@ fn save_image(input: &[[u32; 32]; 32]) {
 // so as to speed up computation when only one bit of the params has been changed.
 pub trait TrainCache<I, L: Apply<I, O> + Mutate, O, H: Objective<O>>: Sized {
     fn new(layer: &L, class: usize, input: &I) -> Self;
+    fn output(&mut self, &L) -> (usize, O);
     // old is the part of layer that is dirty from time.
     // new is the part of layer that was mutated this time.
     fn obj(&mut self, layer: &L, head: &H, i: usize, o: usize) -> f64;
@@ -89,49 +90,49 @@ impl<I: BitLen, K: Mutate, O: BitLen> Mutate for Conv3x3Mirror<I, K, O> {
     const INPUT_LEN: usize = I::BIT_LEN * 3 * 3;
 }
 
-fn simple_apply<I: Patch + Copy + Default>(
-    weights: &Conv3x3Mirror<I, [[[I; 3]; 3]; 64], u128>,
-    input: &[[I; 32]; 32],
-) -> [[u128; 32]; 32] {
-    let mut flip_kern = [[[I::default(); 3]; 3]; 64];
-    for b in 0..64 {
-        flip_kern[b] = [
-            weights.kernel[b][2],
-            weights.kernel[b][1],
-            weights.kernel[b][0],
-        ];
-    }
-
-    let mut target = [[0u128; 32]; 32];
-    for x in 0..32 - 2 {
-        for y in 0..32 - 2 {
-            let patch = [
-                [
-                    input[x + 0][y + 0],
-                    input[x + 0][y + 1],
-                    input[x + 0][y + 2],
-                ],
-                [
-                    input[x + 1][y + 0],
-                    input[x + 1][y + 1],
-                    input[x + 1][y + 2],
-                ],
-                [
-                    input[x + 2][y + 0],
-                    input[x + 2][y + 1],
-                    input[x + 2][y + 2],
-                ],
-            ];
-            for i in 0..64 {
-                target[x + 1][y + 1] |=
-                    (weights.kernel[i].distance_and_threshold(&patch) as u128) << i;
-                target[x + 1][y + 1] |=
-                    (flip_kern[i].distance_and_threshold(&patch) as u128) << (i + 64);
-            }
-        }
-    }
-    target
-}
+//fn simple_apply<I: Patch + Copy + Default>(
+//    weights: &Conv3x3Mirror<I, [[[I; 3]; 3]; 64], u128>,
+//    input: &[[I; 32]; 32],
+//) -> [[u128; 32]; 32] {
+//    let mut flip_kern = [[[I::default(); 3]; 3]; 64];
+//    for b in 0..64 {
+//        flip_kern[b] = [
+//            weights.kernel[b][2],
+//            weights.kernel[b][1],
+//            weights.kernel[b][0],
+//        ];
+//    }
+//
+//    let mut target = [[0u128; 32]; 32];
+//    for x in 0..32 - 2 {
+//        for y in 0..32 - 2 {
+//            let patch = [
+//                [
+//                    input[x + 0][y + 0],
+//                    input[x + 0][y + 1],
+//                    input[x + 0][y + 2],
+//                ],
+//                [
+//                    input[x + 1][y + 0],
+//                    input[x + 1][y + 1],
+//                    input[x + 1][y + 2],
+//                ],
+//                [
+//                    input[x + 2][y + 0],
+//                    input[x + 2][y + 1],
+//                    input[x + 2][y + 2],
+//                ],
+//            ];
+//            for i in 0..64 {
+//                target[x + 1][y + 1] |=
+//                    (weights.kernel[i].distance_and_threshold(&patch) as u128) << i;
+//                target[x + 1][y + 1] |=
+//                    (flip_kern[i].distance_and_threshold(&patch) as u128) << (i + 64);
+//            }
+//        }
+//    }
+//    target
+//}
 
 macro_rules! impl_conv3x3mirror_apply {
     ($x_size:expr, $y_size:expr, $output_type:ty) => {
@@ -141,10 +142,13 @@ macro_rules! impl_conv3x3mirror_apply {
         where
             [I; 3]: Patch,
         {
-            fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[u128; $y_size]; $x_size] {
-                let mut target = [[0u128; $y_size]; $x_size];
+            fn apply(
+                &self,
+                input: &[[I; $y_size]; $x_size],
+            ) -> [[$output_type; $y_size]; $x_size] {
+                let mut target = [[<$output_type>::default(); $y_size]; $x_size];
                 for y in 0..$y_size - 2 {
-                    for b in 0..64 {
+                    for b in 0..<$output_type>::BIT_LEN / 2 {
                         let mut buf = [[0u16; 3]; $x_size];
 
                         let strip = [input[0][y + 0], input[0][y + 1], input[0][y + 2]];
@@ -171,14 +175,14 @@ macro_rules! impl_conv3x3mirror_apply {
                             target[x + 1][y + 1] |=
                                 ((buf[x + 0][0] + buf[x + 1][1] + buf[x + 2][2]
                                     > (9 * I::BIT_LEN as u16 / 2))
-                                    as u128)
+                                    as $output_type)
                                     << b;
 
                             target[x + 1][y + 1] |=
                                 ((buf[x + 0][2] + buf[x + 1][1] + buf[x + 2][0]
                                     > (9 * I::BIT_LEN as u16 / 2))
-                                    as u128)
-                                    << (b + 64);
+                                    as $output_type)
+                                    << (b + (<$output_type>::BIT_LEN / 2));
                         }
                     }
                 }
@@ -188,6 +192,8 @@ macro_rules! impl_conv3x3mirror_apply {
     };
 }
 impl_conv3x3mirror_apply!(32, 32, u128);
+impl_conv3x3mirror_apply!(32, 32, u64);
+impl_conv3x3mirror_apply!(32, 32, u32);
 
 struct Mirror3x3Cache<L, I, S, O> {
     unclean_i_section: usize,
@@ -303,6 +309,8 @@ macro_rules! impl_mirror3x3cache {
 }
 
 impl_mirror3x3cache!(32, 32, u128);
+impl_mirror3x3cache!(32, 32, u64);
+impl_mirror3x3cache!(32, 32, u32);
 
 macro_rules! impl_traincache_for_mirror3x3cache {
     ($x_size:expr, $y_size:expr, $output_type:ty) => {
@@ -341,6 +349,17 @@ macro_rules! impl_traincache_for_mirror3x3cache {
                 cache.clean_all_sums_all_rows(layer, 0);
                 cache
             }
+            fn output(
+                &mut self,
+                layer: &Conv3x3Mirror<I, [[[I; 3]; 3]; <$output_type>::BIT_LEN / 2], $output_type>,
+            ) -> (usize, [[$output_type; $y_size]; $x_size]) {
+                for y in 0..$y_size - 2 {
+                    let unclean_b = self.unclean_b;
+                    let unclean_i_section = self.unclean_i_section;
+                    self.clean_sums_row(layer, y, unclean_b, unclean_i_section);
+                }
+                (self.class, self.output)
+            }
             fn obj(
                 &mut self,
                 layer: &Conv3x3Mirror<I, [[[I; 3]; 3]; <$output_type>::BIT_LEN / 2], $output_type>,
@@ -348,7 +367,6 @@ macro_rules! impl_traincache_for_mirror3x3cache {
                 i: usize,
                 b: usize,
             ) -> f64 {
-                //self.clean_all_sums_all_rows(layer, b);
                 let mut sum_obj = 0;
                 let unclean_b = self.unclean_b;
                 let unclean_i_seg = self.unclean_i_section;
@@ -398,50 +416,44 @@ macro_rules! impl_traincache_for_mirror3x3cache {
 }
 
 impl_traincache_for_mirror3x3cache!(32, 32, u128);
+impl_traincache_for_mirror3x3cache!(32, 32, u64);
+impl_traincache_for_mirror3x3cache!(32, 32, u32);
 
-struct CachedObjective<I, O, L: Apply<I, O> + Mutate, C: TrainCache<I, L, O, H>, H: Objective<O>> {
-    input_type: PhantomData<I>,
-    output_type: PhantomData<O>,
-    layer: L,
-    head: H,
-    examples: Vec<C>,
-}
+//fn update(
+//    weights: &Conv3x3Mirror<u32, [[[u32; 3]; 3]; 64], u128>,
+//    input: &[[u32; 32]; 32],
+//    target: &mut [[u128; 32]; 32],
+//    b: usize,
+//) {
+//    for y in 0..32 - 2 {
+//        let mut buf = [[0u16; 3]; 32];
+//        let strip = [input[0][y + 0], input[0][y + 1], input[0][y + 2]];
+//        buf[0][0] = weights.kernel[b][0].hamming_distance(&strip) as u16;
+//        buf[0][2] = weights.kernel[b][2].hamming_distance(&strip) as u16;
+//
+//        for x in 1..32 - 1 {
+//            let strip = [input[x][y + 0], input[x][y + 1], input[x][y + 2]];
+//            buf[x] = [
+//                weights.kernel[b][0].hamming_distance(&strip) as u16,
+//                weights.kernel[b][1].hamming_distance(&strip) as u16,
+//                weights.kernel[b][2].hamming_distance(&strip) as u16,
+//            ];
+//        }
+//        let strip = [input[31][y + 0], input[31][y + 1], input[31][y + 2]];
+//        buf[31][0] = weights.kernel[b][0].hamming_distance(&strip) as u16;
+//        buf[31][2] = weights.kernel[b][2].hamming_distance(&strip) as u16;
+//
+//        for x in 0..32 - 2 {
+//            target[x + 1][y + 1] |=
+//                ((buf[x + 0][0] + buf[x + 1][1] + buf[x + 2][2] > (9 * 16)) as u128) << b;
+//
+//            target[x + 1][y + 1] |=
+//                ((buf[x + 0][2] + buf[x + 1][1] + buf[x + 2][0] > (9 * 16)) as u128) << (b + 64);
+//        }
+//    }
+//}
 
-fn update(
-    weights: &Conv3x3Mirror<u32, [[[u32; 3]; 3]; 64], u128>,
-    input: &[[u32; 32]; 32],
-    target: &mut [[u128; 32]; 32],
-    b: usize,
-) {
-    for y in 0..32 - 2 {
-        let mut buf = [[0u16; 3]; 32];
-        let strip = [input[0][y + 0], input[0][y + 1], input[0][y + 2]];
-        buf[0][0] = weights.kernel[b][0].hamming_distance(&strip) as u16;
-        buf[0][2] = weights.kernel[b][2].hamming_distance(&strip) as u16;
-
-        for x in 1..32 - 1 {
-            let strip = [input[x][y + 0], input[x][y + 1], input[x][y + 2]];
-            buf[x] = [
-                weights.kernel[b][0].hamming_distance(&strip) as u16,
-                weights.kernel[b][1].hamming_distance(&strip) as u16,
-                weights.kernel[b][2].hamming_distance(&strip) as u16,
-            ];
-        }
-        let strip = [input[31][y + 0], input[31][y + 1], input[31][y + 2]];
-        buf[31][0] = weights.kernel[b][0].hamming_distance(&strip) as u16;
-        buf[31][2] = weights.kernel[b][2].hamming_distance(&strip) as u16;
-
-        for x in 0..32 - 2 {
-            target[x + 1][y + 1] |=
-                ((buf[x + 0][0] + buf[x + 1][1] + buf[x + 2][2] > (9 * 16)) as u128) << b;
-
-            target[x + 1][y + 1] |=
-                ((buf[x + 0][2] + buf[x + 1][1] + buf[x + 2][0] > (9 * 16)) as u128) << (b + 64);
-        }
-    }
-}
-
-fn load_data() -> Vec<(usize, [[u128; 32]; 32])> {
+fn load_data() -> Vec<(usize, [[u64; 32]; 32])> {
     let size: usize = 10_000;
     let paths = vec![
         String::from("/home/isaac/big/cache/datasets/cifar-10-batches-bin/data_batch_1.bin"),
@@ -457,7 +469,7 @@ fn load_data() -> Vec<(usize, [[u128; 32]; 32])> {
     }
     images
         .iter()
-        .map(|(class, image)| (*class, image.pixel_map(&|input| unary::rgb_to_u128(*input))))
+        .map(|(class, image)| (*class, image.pixel_map(&|input| unary::rgb_to_u64(*input))))
         .collect()
 }
 
@@ -497,8 +509,8 @@ impl_newfromrng_for_conv3x3mirror!(u32);
 impl_newfromrng_for_conv3x3mirror!(u16);
 impl_newfromrng_for_conv3x3mirror!(u8);
 
-trait Train<I, O, H> {
-    fn train_new_layer<RNG: rand::Rng>(
+trait Train<I, O, H: Objective<O>>: Mutate + Apply<I, O> + Sized {
+    fn train_new_layer<RNG: rand::Rng, C: TrainCache<I, Self, O, H> + Objective<O> + Sync + Send>(
         examples: &Vec<(usize, I)>,
         fs_path: &Path,
         rng: &mut RNG,
@@ -515,15 +527,18 @@ trait Train<I, O, H> {
 }
 
 impl<
-        I: Sync,
-        O: Sync,
+        I: Sync + Copy + Patch,
+        O: Sync + Send,
         P: Copy + Default + Sync,
-        L: OptimizeLayer<I, O> + SaveLoad + NewFromRng,
+        L: SaveLoad + NewFromRng + Mutate + Apply<I, O> + Sync + VecApply<I, O>,
     > Train<I, O, [P; 10]> for L
 where
     [P; 10]: OptimizeHead<O> + IsCorrect<P> + Objective<O> + Sync + NewFromRng,
 {
-    fn train_new_layer<RNG: rand::Rng>(
+    fn train_new_layer<
+        RNG: rand::Rng,
+        C: TrainCache<I, L, O, [P; 10]> + Objective<O> + Sync + Send,
+    >(
         examples: &Vec<(usize, I)>,
         fs_path: &Path,
         rng: &mut RNG,
@@ -537,6 +552,13 @@ where
 
             let start = PreciseTime::now();
             Self::train(&mut layer, &mut head, examples, head_update_freq, depth);
+            let obj = train_layer_with_cache::<I, L, O, [P; 10], C>(
+                &examples,
+                &mut layer,
+                &mut head,
+                UPDATE_FREQ,
+            );
+
             let (obj, updates) =
                 layer.optimize_layer::<[P; 10]>(&mut head, &examples, head_update_freq);
             println!(
@@ -576,8 +598,65 @@ where
     }
 }
 
-type IP = u128;
+fn train_layer_with_cache<
+    I: Sync,
+    L: Sync + Mutate + Apply<I, O>,
+    O: Sync + Send,
+    H: Sync + Objective<O> + OptimizeHead<O>,
+    C: Sync + Send + TrainCache<I, L, O, H>,
+>(
+    examples: &[(usize, I)],
+    layer: &mut L,
+    head: &mut H,
+    head_update_freq: usize,
+) -> f64 {
+    let mut cache: Vec<C> = examples
+        .par_iter()
+        .map(|(class, input_image)| C::new(&layer, *class, input_image))
+        .collect();
+
+    let obj_sum: f64 = cache
+        .par_iter_mut()
+        .map(|cache| cache.obj(&layer, &head, 0, 0))
+        .sum();
+    let mut cur_obj = obj_sum / cache.len() as f64;
+    let mut iter = 0;
+    for o in 0..L::OUTPUT_LEN {
+        for i in 0..L::INPUT_LEN {
+            if iter % head_update_freq == 0 {
+                let outputs: Vec<(usize, O)> = cache
+                    .par_iter_mut()
+                    .map(|cache| cache.output(layer))
+                    .collect();
+                cur_obj = head.optimize_head(&outputs, 0);
+                println!("head update: {} {} {}", o, i, cur_obj);
+                iter += 1;
+            }
+            layer.mutate(o, i);
+            let obj_sum: f64 = cache
+                .par_iter_mut()
+                .map(|cache| cache.obj(&layer, &head, i, o))
+                .sum();
+            let new_obj = obj_sum / cache.len() as f64;
+            if new_obj > cur_obj {
+                cur_obj = new_obj;
+                iter += 1;
+                println!("{} {} {}", o, i, cur_obj);
+            } else {
+                layer.mutate(o, i);
+                //dbg!(cur_obj);
+            }
+        }
+    }
+    cur_obj
+}
+
+type IP = u64;
+type OP = u32;
+
 const UPDATE_FREQ: usize = 20;
+
+// head update: 63 569 0.18607844444444444
 
 fn main() {
     // In rayon 1.0.3 we need to tell rayon to give the workers a larger stack.
@@ -589,8 +668,55 @@ fn main() {
     let mut rng = Hc128Rng::seed_from_u64(42);
     let examples = load_data();
 
-    let mut layer = Conv3x3Mirror::<IP, [[[IP; 3]; 3]; 64], u128>::new_from_rng(&mut rng);
-    let mut head = <[u128; 10]>::new_from_rng(&mut rng);
+    let mut layer =
+        Conv3x3Mirror::<IP, [[[IP; 3]; 3]; OP::BIT_LEN / 2], OP>::new_from_rng(&mut rng);
+    let mut head = <[OP; 10]>::new_from_rng(&mut rng);
+
+    //let examples2 = Conv3x3Mirror::<IP, [[[IP; 3]; 3]; OP::BIT_LEN / 2], OP>::train_new_layer::<
+    //    Hc128Rng,
+    //    Mirror3x3Cache<
+    //        Conv3x3Mirror<IP, [[[IP; 3]; 3]; OP::BIT_LEN / 2], OP>,
+    //        [[IP; 32]; 32],
+    //        [[[u16; 3]; 32]; 30],
+    //        [[OP; 32]; 32],
+    //    >,
+    //>(
+    //    &examples,
+    //    &Path::new("params/mirror_test/l1"),
+    //    &mut rng,
+    //    UPDATE_FREQ,
+    //    5,
+    //);
+
+    let start = PreciseTime::now();
+    for &(start, end) in [
+        (0usize, 1000usize),
+        (1000, 2000),
+        (2000, 4000),
+        (4000, 8000),
+        (8000, 16000),
+        (16000, 25000),
+        (25000, 50000),
+        (0, 50000),
+    ]
+    .iter()
+    {
+        println!("examples[{}..{}]", start, end);
+        let obj = train_layer_with_cache::<
+            [[IP; 32]; 32],
+            Conv3x3Mirror<IP, [[[IP; 3]; 3]; OP::BIT_LEN / 2], OP>,
+            [[OP; 32]; 32],
+            [OP; 10],
+            Mirror3x3Cache<
+                Conv3x3Mirror<IP, [[[IP; 3]; 3]; OP::BIT_LEN / 2], OP>,
+                [[IP; 32]; 32],
+                [[[u16; 3]; 32]; 30],
+                [[OP; 32]; 32],
+            >,
+        >(&examples[start..end], &mut layer, &mut head, UPDATE_FREQ);
+    }
+    println!("cached train duration: {:?}", start.to(PreciseTime::now()));
+
     //let obj = layer.optimize_layer(&mut head, &examples, UPDATE_FREQ);
 
     //let l1 = Conv3x3Mirror::<IP, [[[IP; 3]; 3]; 64], u128>::train_new_layer(&mut rng);
@@ -600,10 +726,10 @@ fn main() {
         .par_iter()
         .map(|(class, input_image)| {
             Mirror3x3Cache::<
-                Conv3x3Mirror<IP, [[[IP; 3]; 3]; 64], u128>,
+                Conv3x3Mirror<IP, [[[IP; 3]; 3]; OP::BIT_LEN / 2], OP>,
                 [[IP; 32]; 32],
                 [[[u16; 3]; 32]; 30],
-                [[u128; 32]; 32],
+                [[OP; 32]; 32],
             >::new(&layer, *class, input_image)
         })
         .collect();
@@ -621,30 +747,30 @@ fn main() {
         start.to(PreciseTime::now()).num_milliseconds()
     );
 
-    let start = PreciseTime::now();
-    let apply_objs: Vec<f64> = examples
-        .par_iter()
-        .map(|(class, input_image)| head.objective(&(*class, simple_apply(&layer, input_image))))
-        //.map(|(class, input_image)| head.objective(&(*class, layer.apply(input_image))))Conv3x3Mirror<IP, [[[IP; 3]; 3]; 64], u128>
-        .collect();
-    println!(
-        "apply duration: {:?}",
-        start.to(PreciseTime::now()).num_milliseconds()
-    );
-    let cache_sum: f64 = cache_objs.iter().sum();
-    let apply_sum: f64 = apply_objs.iter().sum();
-    dbg!(cache_sum / cache_objs.len() as f64);
-    dbg!(apply_sum / apply_objs.len() as f64);
-    assert_eq!(cache_objs, apply_objs);
+    //let start = PreciseTime::now();
+    //let apply_objs: Vec<f64> = examples
+    //    .par_iter()
+    //    .map(|(class, input_image)| head.objective(&(*class, simple_apply(&layer, input_image))))
+    //    //.map(|(class, input_image)| head.objective(&(*class, layer.apply(input_image))))Conv3x3Mirror<IP, [[[IP; 3]; 3]; 64], u128>
+    //    .collect();
+    //println!(
+    //    "apply duration: {:?}",
+    //    start.to(PreciseTime::now()).num_milliseconds()
+    //);
+    //let cache_sum: f64 = cache_objs.iter().sum();
+    //let apply_sum: f64 = apply_objs.iter().sum();
+    //dbg!(cache_sum / cache_objs.len() as f64);
+    //dbg!(apply_sum / apply_objs.len() as f64);
+    //assert_eq!(cache_objs, apply_objs);
 
-    for example in examples.iter().take(100) {
-        Mirror3x3Cache::<
-            Conv3x3Mirror<IP, [[[IP; 3]; 3]; 64], u128>,
-            [[IP; 32]; 32],
-            [[[u16; 3]; 32]; 30],
-            [[u128; 32]; 32],
-        >::self_test(&mut layer, example.0, &head, &example.1);
-    }
+    //for example in examples.iter().take(100) {
+    //    Mirror3x3Cache::<
+    //        Conv3x3Mirror<IP, [[[IP; 3]; 3]; OP::BIT_LEN / 2], OP>,
+    //        [[IP; 32]; 32],
+    //        [[[u16; 3]; 32]; 30],
+    //        [[OP; 32]; 32],
+    //    >::self_test(&mut layer, example.0, &head, &example.1);
+    //}
     ////apply duration: 11747
     ////update duration: 193
 

@@ -1110,8 +1110,9 @@ pub mod layers {
 
     impl<I: Patch + Copy + Default + Sync + HammingDist> OptimizeHead<I> for [I; 10] {
         fn optimize_head(&mut self, examples: &[(usize, I)], _update_freq: usize) -> f64 {
+            let backup_self = *self;
             let all_start = PreciseTime::now();
-            //let before_acc = self.avg_objective(examples);
+            let before_acc = self.avg_objective(examples);
             for mut_class in 0..10 {
                 // first we need to calculate the activations for each example.
                 let mut activation_diffs: Vec<(I, u32, bool)> = examples
@@ -1176,11 +1177,14 @@ pub mod layers {
                     }
                 }
             }
-            //if before_acc > after_acc {
-            //    println!("reverting acc regression: {} > {}", before_acc, after_acc);
-            //}
+            let mut after_acc = self.avg_objective(examples);
+            if before_acc > after_acc {
+                println!("reverting acc regression: {} > {}", before_acc, after_acc);
+                *self = backup_self;
+                after_acc = before_acc;
+            }
             println!("head update time: {:?}", all_start.to(PreciseTime::now()));
-            self.avg_objective(examples)
+            after_acc
         }
     }
 
