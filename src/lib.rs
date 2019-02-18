@@ -5,6 +5,7 @@ extern crate rand;
 extern crate rayon;
 extern crate serde;
 extern crate time;
+use std::ops::{Index, IndexMut};
 
 pub mod datasets {
     pub mod cifar {
@@ -186,7 +187,6 @@ macro_rules! for_ref_uints {
     };
 }
 
-
 pub trait BitLen: Sized {
     const BIT_LEN: usize;
 }
@@ -229,6 +229,49 @@ array_bit_len!(49);
 array_bit_len!(64);
 array_bit_len!(128);
 
+// types that are FullLen can have an array as long as there are bits in the type.
+pub trait FullLen<K> {
+    type FullArray;
+}
+
+macro_rules! impl_full_len {
+    ($target:ty) => {
+        impl<K> FullLen<K> for $target {
+            type FullArray = [K; <$target>::BIT_LEN];
+        }
+    };
+}
+for_uints!(impl_full_len);
+
+// types that are HalfLen can have an array half as long as there are bits in the type.
+pub trait HalfLen<K> {
+    type HalfArray;
+    //fn new_from_fn(kernel_fn: &mut FnMut() -> K) -> Self::HalfArray;
+}
+
+macro_rules! impl_half_len {
+    ($target:ty) => {
+        impl<K: Default + Copy + Sized> HalfLen<K> for $target {
+            type HalfArray = [K; <$target>::BIT_LEN / 2];
+            //fn new_from_fn(kernel_fn: &mut FnMut() -> K) -> Self::HalfArray {
+            //    let mut kernel = [K::default(); <$target>::BIT_LEN / 2];
+            //    for i in 0..<$target>::BIT_LEN / 2 {
+            //        kernel[i] = kernel_fn();
+            //    }
+            //    kernel
+            //}
+        }
+        //impl Index<usize> for [K; <$target>::BIT_LEN / 2] {
+        //    type Output=K;
+        //    fn index(&self, i: usize) -> K {
+        //        self[i]
+        //    }
+        //}
+    };
+}
+impl_half_len!(u32);
+//for_uints!(impl_half_len);
+
 pub trait HammingDist {
     fn hd(self, Self) -> u32;
 }
@@ -245,7 +288,6 @@ macro_rules! impl_hammingdist {
 }
 for_uints!(impl_hammingdist);
 for_ref_uints!(impl_hammingdist);
-
 
 pub trait Patch: Send + Sync + Sized + BitLen {
     fn hamming_distance(&self, &Self) -> u32;
@@ -592,7 +634,7 @@ pub mod featuregen {
 #[macro_use]
 pub mod layers {
     use super::featuregen;
-    use super::{BitLen, Patch, HammingDist};
+    use super::{BitLen, HammingDist, Patch};
     use bincode::{deserialize_from, serialize_into};
     use rayon::prelude::*;
     use std::fs::File;
