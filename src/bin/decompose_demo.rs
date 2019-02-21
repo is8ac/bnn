@@ -577,7 +577,7 @@ const DEPTH: usize = 12;
 
 fn main() {
     //let base_path = Path::new("params/mirror_conv_decompose_1skip");
-    let base_path = Path::new("params/mirror_conv_decompose_0skip");
+    let base_path = Path::new("params/mirror_conv_decompose_32x32_deeptest_noskip");
     fs::create_dir_all(base_path).unwrap();
     // We need to tell rayon to give the workers a larger stack.
     rayon::ThreadPoolBuilder::new()
