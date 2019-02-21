@@ -9,22 +9,23 @@ extern crate time;
 use bincode::{deserialize_from, serialize_into};
 use bitnn::datasets::cifar;
 use bitnn::layers::unary;
+use bitnn::layers::vec_concat_2_examples;
 use bitnn::layers::{
     Apply, Extract3x3Patches, IsCorrect, Mutate, NewFromRng, OptimizeHead, PixelMap, SaveLoad,
 };
-use bitnn::{BitLen, HalfLen, HammingDist, Patch};
+use bitnn::{BitLen, HammingDist, Patch};
+use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;
-use std::convert::{From, Into};
+use std::convert::From;
+use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::io::BufWriter;
 use std::iter;
 use std::marker::PhantomData;
-use std::ops::{Add, BitAndAssign, BitOrAssign, BitXor, Not, Shl};
-use std::ops::{Index, IndexMut};
 use std::path::Path;
 use time::PreciseTime;
 
@@ -146,8 +147,8 @@ macro_rules! impl_mirror3x3patchcache_clean {
             Conv3x3Mirror<P, [[[P; 3]; 3]; <$output_type>::BIT_LEN / 2], $output_type>: Apply<[[P; 3]; 3], $output_type>,
         {
             fn new(layer: &Conv3x3Mirror<P, [[[P; 3]; 3]; <$output_type>::BIT_LEN / 2], $output_type>, class: u8, patch: &[[P; 3]; 3]) -> Self {
-                let mut pixel_sums = [[[0u16; 3]; 3]; 2];
-                let mut strip_sums = [[0u16; 3]; 2];
+                let pixel_sums = [[[0u16; 3]; 3]; 2];
+                let strip_sums = [[0u16; 3]; 2];
                 let mut cache = Mirror3x3PatchCache{
                     layer: PhantomData,
                     class: class,
@@ -475,7 +476,7 @@ where
         // if we can't load the layer from disk, train it.
         let layer = Self::new_from_fs(fs_path).unwrap_or_else(|| {
             println!("{} not found, training", &fs_path.to_str().unwrap());
-            let mut patches = {
+            let patches = {
                 // decompose the images into patches,
                 let mut patches: Vec<(u8, [[I; 3]; 3])> = examples
                     .iter()
@@ -483,7 +484,8 @@ where
                     .flatten()
                     .collect();
                 // and shuffle them
-                rng.shuffle(&mut patches);
+                patches.shuffle(rng);
+                //rng.shuffle(&mut patches);
                 patches
             };
             // construct the layer and the head.
@@ -539,11 +541,7 @@ where
                 depth - 1,
             );
         } else {
-            let obj = layer.train_layer_with_cache(
-                &examples[0..examples.len() / 2],
-                head,
-                head_update_freq,
-            );
+            layer.train_layer_with_cache(&examples[0..examples.len() / 2], head, head_update_freq);
         }
         dbg!(examples.len());
         // train other half
@@ -571,16 +569,16 @@ fn write_to_log_event(duration: time::Duration, obj: f64, depth: usize, layer_na
     .unwrap();
 }
 
-type IP = u32;
-type OP = u32;
-
-type L1 = Conv3x3Mirror<IP, [[[IP; 3]; 3]; OP::BIT_LEN / 2], OP>;
+type MC3_32_32 = Conv3x3Mirror<u32, [[[u32; 3]; 3]; 16], u32>;
+//type MC3_64_32 = Conv3x3Mirror<u64, [[[u64; 3]; 3]; 16], u32>;
 
 const MOD: usize = 20;
 const DEPTH: usize = 12;
 
 fn main() {
-    let base_path = Path::new("params/mirror_conv_decompose_stack");
+    //let base_path = Path::new("params/mirror_conv_decompose_1skip");
+    let base_path = Path::new("params/mirror_conv_decompose_0skip");
+    fs::create_dir_all(base_path).unwrap();
     // We need to tell rayon to give the workers a larger stack.
     rayon::ThreadPoolBuilder::new()
         .stack_size(2usize.pow(22))
@@ -588,10 +586,21 @@ fn main() {
         .unwrap();
 
     let mut rng = Hc128Rng::seed_from_u64(42);
-    let s0: Vec<(usize, [[IP; 32]; 32])> = load_data();
+    let mut s0: Vec<(usize, [[u32; 32]; 32])> = load_data();
+    //let mut s1 =
+    //    MC3_32_32::train_new_layer(&s0, &base_path.join("l0_c3m_32-32"), &mut rng, MOD, DEPTH);
 
     let start = PreciseTime::now();
-    let s1 = L1::train_new_layer(&s0, &base_path.join("l0_c3m_32-32"), &mut rng, MOD, DEPTH);
-    let s2 = L1::train_new_layer(&s1, &base_path.join("l1_c3m_32-32"), &mut rng, MOD, DEPTH);
+    for i in 0..100 {
+        //let cc: Vec<(usize, [[u64; 32]; 32])> = vec_concat_2_examples(&s1, &s0);
+        //s0 = s1;
+        s0 = MC3_32_32::train_new_layer(
+            &s0,
+            &base_path.join(format!("l{}_c3m_32-32", i)),
+            &mut rng,
+            MOD,
+            DEPTH,
+        );
+    }
     println!("cached train duration: {:?}", start.to(PreciseTime::now()));
 }

@@ -5,7 +5,6 @@ extern crate rand;
 extern crate rayon;
 extern crate serde;
 extern crate time;
-use std::ops::{Index, IndexMut};
 
 pub mod datasets {
     pub mod cifar {
@@ -420,17 +419,17 @@ pub mod layers {
             [
                 [
                     $input[$x + 0][$y + 0],
-                    $input[$x + 1][$y + 0],
-                    $input[$x + 2][$y + 0],
-                ],
-                [
                     $input[$x + 0][$y + 1],
-                    $input[$x + 1][$y + 1],
-                    $input[$x + 2][$y + 1],
+                    $input[$x + 0][$y + 2],
                 ],
                 [
-                    $input[$x + 0][$y + 2],
+                    $input[$x + 1][$y + 0],
+                    $input[$x + 1][$y + 1],
                     $input[$x + 1][$y + 2],
+                ],
+                [
+                    $input[$x + 2][$y + 0],
+                    $input[$x + 2][$y + 1],
                     $input[$x + 2][$y + 2],
                 ],
             ]
@@ -549,45 +548,7 @@ pub mod layers {
     primitive_mutate_matrix_trait!(64);
     primitive_mutate_matrix_trait!(128);
 
-    // activation distribution
-    pub trait ActDist<I> {
-        fn act_dist(&self, inputs: &Vec<I>) -> [f64; 10];
-    }
-    impl<I: Patch + Sync> ActDist<I> for [I; 10] {
-        fn act_dist(&self, inputs: &Vec<I>) -> [f64; 10] {
-            let sums: [u64; 10] = inputs
-                .par_iter()
-                .fold(
-                    || [0u64; 10],
-                    |mut acc: [u64; 10], input: &I| {
-                        for i in 0..10 {
-                            acc[i] += self[i].hamming_distance(input) as u64;
-                        }
-                        acc
-                    },
-                )
-                .reduce(
-                    || [0u64; 10],
-                    |mut a, b| {
-                        for i in 0..10 {
-                            a[i] += b[i]
-                        }
-                        a
-                    },
-                );
-
-            let mut avgs = [0f64; 10];
-            for i in 0..10 {
-                avgs[i] = sums[i] as f64 / inputs.len() as f64;
-            }
-            avgs
-        }
-    }
-
-    pub trait OptimizeHead<I>: Sync
-    where
-        I: Sync,
-    {
+    pub trait OptimizeHead<I> {
         fn optimize_head(&mut self, examples: &[(u8, I)]) -> u64;
     }
 
@@ -1100,18 +1061,6 @@ pub mod layers {
     extract_pixels_trait!(8, 8);
     extract_pixels_trait!(4, 4);
 
-    fn vec_extract_pixels<II: ExtractPixels<P>, P: Copy>(
-        inputs: &[(usize, II)],
-    ) -> Vec<(usize, P)> {
-        inputs
-            .iter()
-            .map(|(class, image)| iter::repeat(*class).zip(image.pixels()))
-            .flatten()
-            .collect()
-    }
-
-    use std::iter;
-
     pub trait Extract3x3Patches<P> {
         fn patches(&self) -> Vec<[[P; 3]; 3]>;
     }
@@ -1136,16 +1085,6 @@ pub mod layers {
     extract_patch_3x3_trait!(16, 16);
     extract_patch_3x3_trait!(8, 8);
     extract_patch_3x3_trait!(4, 4);
-
-    fn vec_extract_3x3_patches<II: Extract3x3Patches<P>, P: Copy>(
-        inputs: &[(usize, II)],
-    ) -> Vec<(usize, [[P; 3]; 3])> {
-        inputs
-            .iter()
-            .map(|(class, image)| iter::repeat(*class).zip(image.patches()))
-            .flatten()
-            .collect()
-    }
 
     pub trait Extract2x2PatchesStrided<OP> {
         fn patches2x2(&self) -> Vec<OP>;
@@ -1184,54 +1123,6 @@ pub mod layers {
     extract_patch_4_trait!(16, 16);
     extract_patch_4_trait!(8, 8);
     extract_patch_4_trait!(4, 4);
-
-    fn vec_extract_2x2_patches<II: Extract2x2PatchesStrided<P>, P: Copy>(
-        inputs: &[(usize, II)],
-    ) -> Vec<(usize, P)> {
-        inputs
-            .iter()
-            .map(|(class, image)| iter::repeat(*class).zip(image.patches2x2()))
-            .flatten()
-            .collect()
-    }
-
-    pub trait Image2D<P> {}
-
-    macro_rules! image2d_trait {
-        ($size:expr) => {
-            impl<P> Image2D<P> for [[P; $size]; $size] {}
-        };
-    }
-    image2d_trait!(32);
-    image2d_trait!(16);
-    image2d_trait!(8);
-    image2d_trait!(4);
-
-    pub trait PatchMap<IP, IA, O, OP> {
-        fn patch_map(&self, &Fn(&IA, &mut OP)) -> O;
-    }
-
-    macro_rules! patch_map_trait_pixel {
-        ($x_size:expr, $y_size:expr) => {
-            impl<IP, OP: Copy + Default> PatchMap<IP, IP, [[OP; $y_size]; $x_size], OP>
-                for [[IP; $y_size]; $x_size]
-            {
-                fn patch_map(&self, map_fn: &Fn(&IP, &mut OP)) -> [[OP; $y_size]; $x_size] {
-                    let mut output = [[OP::default(); $y_size]; $x_size];
-                    for x in 0..$x_size {
-                        for y in 0..$y_size {
-                            map_fn(&self[x][y], &mut output[x][y]);
-                        }
-                    }
-                    output
-                }
-            }
-        };
-    }
-
-    patch_map_trait_pixel!(32, 32);
-    patch_map_trait_pixel!(28, 28);
-    patch_map_trait_pixel!(16, 16);
 
     pub trait PixelMap<I, O, OI> {
         fn pixel_map(&self, &Fn(&I) -> O) -> OI;
