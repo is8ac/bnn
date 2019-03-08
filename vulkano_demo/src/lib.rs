@@ -103,27 +103,26 @@ impl<I: HammingDistance> IsCorrect<I> for [I; 10] {
     }
 }
 
-pub trait ObjectiveEvalCreator<InputPatch, Weights, OutputPixel> {
+pub trait ObjectiveEvalCreator<InputPatch, Weights, Embedding> {
     type ObjectiveEvalType;
-    fn new(
+    fn new_obj_eval(
         &self,
         weights: &Weights,
-        head: &[OutputPixel; 10],
+        head: &[Embedding; 10],
         examples: &[(u8, InputPatch)],
     ) -> Self::ObjectiveEvalType;
 }
 
-pub trait ObjectiveEval<InputPatch, Weights, OutputPixel> {
+pub trait ObjectiveEval<InputPatch, Weights, Embedding> {
     fn flip_weights_bit(&mut self, o: usize, i: usize);
     fn flip_head_bit(&mut self, o: usize, i: usize);
-    fn get_params(&self) -> (Weights, [OutputPixel; 10]);
     fn obj(&self) -> u64;
 }
 
-pub struct TestCPUObjectiveEvalCreator<InputPatch, Weights, OutputPixel> {
+pub struct TestCPUObjectiveEvalCreator<InputPatch, Weights, Embedding> {
     input_pixel_type: PhantomData<InputPatch>,
     weights_type: PhantomData<Weights>,
-    output_pixel_type: PhantomData<OutputPixel>,
+    embedding_type: PhantomData<Embedding>,
 }
 
 impl TestCPUObjectiveEvalCreator<[[[u32; 2]; 3]; 3], [[[[u32; 2]; 3]; 3]; 32], u32> {
@@ -131,7 +130,7 @@ impl TestCPUObjectiveEvalCreator<[[[u32; 2]; 3]; 3], [[[[u32; 2]; 3]; 3]; 32], u
         TestCPUObjectiveEvalCreator {
             input_pixel_type: PhantomData,
             weights_type: PhantomData,
-            output_pixel_type: PhantomData,
+            embedding_type: PhantomData,
         }
     }
 }
@@ -141,7 +140,7 @@ impl ObjectiveEvalCreator<[[[u32; 2]; 3]; 3], [[[[u32; 2]; 3]; 3]; 32], u32>
 {
     type ObjectiveEvalType =
         TestCPUObjectiveEval<[[[u32; 2]; 3]; 3], [[[[u32; 2]; 3]; 3]; 32], u32>;
-    fn new(
+    fn new_obj_eval(
         &self,
         weights: &[[[[u32; 2]; 3]; 3]; 32],
         head: &[u32; 10],
@@ -155,12 +154,13 @@ impl ObjectiveEvalCreator<[[[u32; 2]; 3]; 3], [[[[u32; 2]; 3]; 3]; 32], u32>
     }
 }
 
-pub struct TestCPUObjectiveEval<InputPatch, Weights, OutputPixel> {
+pub struct TestCPUObjectiveEval<InputPatch, Weights, Embedding> {
     weights: Weights,
-    head: [OutputPixel; 10],
+    head: [Embedding; 10],
     examples: Vec<(u8, InputPatch)>,
 }
 
+// This is a slow implementation of obj() and should not be used if performance is desired.
 impl ObjectiveEval<[[[u32; 2]; 3]; 3], [[[[u32; 2]; 3]; 3]; 32], u32>
     for TestCPUObjectiveEval<[[[u32; 2]; 3]; 3], [[[[u32; 2]; 3]; 3]; 32], u32>
 {
@@ -169,9 +169,6 @@ impl ObjectiveEval<[[[u32; 2]; 3]; 3], [[[[u32; 2]; 3]; 3]; 32], u32>
     }
     fn flip_head_bit(&mut self, o: usize, i: usize) {
         self.head[o].flip_bit(i);
-    }
-    fn get_params(&self) -> ([[[[u32; 2]; 3]; 3]; 32], [u32; 10]) {
-        (self.weights, self.head)
     }
     fn obj(&self) -> u64 {
         self.examples
@@ -183,6 +180,7 @@ impl ObjectiveEval<[[[u32; 2]; 3]; 3], [[[[u32; 2]; 3]; 3]; 32], u32>
             .sum()
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -229,8 +227,5 @@ mod tests {
         obj_eval.flip_weights_bit(22, 5);
         let obj3: u64 = obj_eval.obj();
         assert_eq!(obj1, obj3);
-
-        let (weights2, head2) = obj_eval.get_params();
-        assert_eq!(weights, weights2);
     }
 }
