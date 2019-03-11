@@ -80,18 +80,4 @@ void main() {
     is_good = ((bitCount(head.data[o] ^ embedding.data[gl_GlobalInvocationID.x]) < max_obj) || (o==label.data[gl_GlobalInvocationID.x])) && is_good;
   }
   objective.data[gl_GlobalInvocationID.x] = uint(is_good);
-
-  //max_obj = bitCount(head.data[label.data[gl_GlobalInvocationID.x]] ^
-  //               embedding.data[gl_GlobalInvocationID.x]);
-  //for (o = 0; o < 10; o += 1) {
-  //  if (o != label.data[gl_GlobalInvocationID.x]) {
-  //    if (bitCount(head.data[o] ^ embedding.data[gl_GlobalInvocationID.x]) >=
-  //        max_obj) {
-  //      objective.data[gl_GlobalInvocationID.x] = 0;
-  //      return;
-  //    }
-  //  }
-  //}
-  //objective.data[gl_GlobalInvocationID.x] = 1;
-
 }
