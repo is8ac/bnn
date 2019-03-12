@@ -112,6 +112,29 @@ array_flip_bit!(1);
 array_flip_bit!(2);
 array_flip_bit!(3);
 
+pub trait FlipBitIndexed {
+    fn flip_bit_indexed(&mut self, o: usize, b: usize);
+}
+
+impl<T: FlipBit> FlipBitIndexed for [T; 32] {
+    fn flip_bit_indexed(&mut self, o: usize, b: usize) {
+        self[o].flip_bit(b);
+    }
+}
+
+macro_rules! impl_flipbitindexed_for_array {
+    ($len:expr) => {
+        impl<T: FlipBit> FlipBitIndexed for [[T; 32]; $len] {
+            fn flip_bit_indexed(&mut self, o: usize, b: usize) {
+                self[o / 32][o % 32].flip_bit(b);
+            }
+        }
+    };
+}
+
+impl_flipbitindexed_for_array!(1);
+impl_flipbitindexed_for_array!(2);
+
 pub trait HammingDistance {
     fn hamming_distance(&self, other: &Self) -> u32;
 }
@@ -165,7 +188,7 @@ pub mod layers {
     macro_rules! impl_apply_for_array_output {
         ($len:expr) => {
             impl<I, T: Apply<I, u32>> Apply<I, [u32; $len]> for [T; $len] {
-                fn apply(&self, input: &I) -> [T; $len] {
+                fn apply(&self, input: &I) -> [u32; $len] {
                     let mut target = [0u32; $len];
                     for i in 0..$len {
                         target[i] = self[i].apply(input);
@@ -210,15 +233,12 @@ pub mod layers {
 
     macro_rules! conv3x3_apply_trait {
         ($x_size:expr, $y_size:expr) => {
-            impl<I: Copy> Apply<[[I; $y_size]; $x_size], [[[u32; 1]; $y_size]; $x_size]> for [[[I; 3]; 3]; 32]
-            where
-                [[[I; 3]; 3]; 32]: Apply<[[I; 3]; 3], u32>,
-            {
-                fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[[u32; 1]; $y_size]; $x_size] {
-                    let mut target = [[[0u32; 1]; $y_size]; $x_size];
+            impl<I: Copy, O: Copy + Default, W: Apply<[[I; 3]; 3], O>> Apply<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]> for W {
+                fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size]; $x_size] {
+                    let mut target = [[O::default(); $y_size]; $x_size];
                     for x in 0..$x_size - 2 {
                         for y in 0..$y_size - 2 {
-                            target[x + 1][y + 1][0] = self.apply(&patch_3x3!(input, x, y));
+                            target[x + 1][y + 1] = self.apply(&patch_3x3!(input, x, y));
                         }
                     }
                     target
@@ -228,6 +248,7 @@ pub mod layers {
     }
 
     conv3x3_apply_trait!(32, 32);
+
 
     pub trait NewFromRng {
         fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self;
@@ -279,6 +300,40 @@ pub mod layers {
     //conv3x3_apply_trait!(16, 16);
     //conv3x3_apply_trait!(8, 8);
     //conv3x3_apply_trait!(4, 4);
+
+    macro_rules! impl_saveload_conv3x3_array {
+        ($input_len:expr, $output_len:expr) => {
+            impl SaveLoad for [[[[[u32; $input_len]; 3]; 3]; 32]; $output_len] {
+                fn write_to_fs(&self, path: &Path) {
+                    let vec_params: Vec<[[[[u32; $input_len]; 3]; 3]; 32]> = self.iter().cloned().collect();
+                    let mut f = BufWriter::new(File::create(path).unwrap());
+                    serialize_into(&mut f, &vec_params).unwrap();
+                }
+                // This will return:
+                // - Some if the file exists and is good
+                // - None of the file does not exist
+                // and will panic if the file is exists but is bad.
+                fn new_from_fs(path: &Path) -> Option<Self> {
+                    File::open(&path)
+                        .map(|f| deserialize_from(f).unwrap())
+                        .map(|vec_params: Vec<[[[[u32; $input_len]; 3]; 3]; 32]>| {
+                            if vec_params.len() != $output_len {
+                                panic!("input is of len {} not {}", vec_params.len(), $output_len);
+                            }
+                            let mut params = [<[[[[u32; $input_len]; 3]; 3]; 32]>::default(); $output_len];
+                            for i in 0..$output_len {
+                                params[i] = vec_params[i];
+                            }
+                            params
+                        })
+                        .ok()
+                }
+            }
+        };
+    }
+    impl_saveload_conv3x3_array!(2, 1);
+    impl_saveload_conv3x3_array!(1, 1);
+
 
     macro_rules! impl_saveload_conv3x3_32 {
         ($len:expr) => {
@@ -385,6 +440,32 @@ extract_patch_3x3_trait!(16, 16);
 extract_patch_3x3_trait!(8, 8);
 extract_patch_3x3_trait!(4, 4);
 
+pub trait Extract2x2Patches<P> {
+    fn patches(&self) -> Vec<[[P; 2]; 2]>;
+}
+
+macro_rules! extract_patch_2x2_trait {
+    ($x_size:expr, $y_size:expr) => {
+        impl<P: Copy> Extract2x2Patches<P> for [[P; $y_size]; $x_size] {
+            fn patches(&self) -> Vec<[[P; 2]; 2]> {
+                let mut patches = Vec::with_capacity(($y_size / 2) * ($x_size / 2));
+                for x in 0..($x_size / 2) {
+                    let x_base = x * 2;
+                    for y in 0..($y_size / 2) {
+                        let y_base = y * 2;
+                        patches.push(patch_2x2!(self, x_base, y_base));
+                    }
+                }
+                patches
+            }
+        }
+    };
+}
+
+extract_patch_2x2_trait!(32, 32);
+extract_patch_2x2_trait!(16, 16);
+extract_patch_2x2_trait!(8, 8);
+
 pub trait ConcatImages<I> {
     fn concat_images(inputs: I) -> Self;
 }
@@ -443,7 +524,7 @@ pub mod objective_eval {
     extern crate rand;
     extern crate time;
     use super::layers::Apply;
-    use super::{BitLen, FlipBit, HammingDistance};
+    use super::{BitLen, FlipBit, FlipBitIndexed, HammingDistance};
     use rayon::prelude::*;
     use std::collections::HashSet;
     use std::marker::PhantomData;
@@ -508,48 +589,46 @@ pub mod objective_eval {
         }
     }
 
-    macro_rules! impl_objectiveevalcreator_for_testcpuobjectiveevalcreator {
-        ($len:expr) => {
-            impl ObjectiveEvalCreator<[[[u32; $len]; 3]; 3], [[[[u32; $len]; 3]; 3]; 32], u32> for TestCPUObjectiveEvalCreator {
-                type ObjectiveEvalType = TestCPUObjectiveEval<[[[u32; $len]; 3]; 3], [[[[u32; $len]; 3]; 3]; 32], u32>;
-                fn new_obj_eval(
-                    &self,
-                    weights: &[[[[u32; $len]; 3]; 3]; 32],
-                    head: &[u32; 10],
-                    examples: &[(u8, [[[u32; $len]; 3]; 3])],
-                ) -> TestCPUObjectiveEval<[[[u32; $len]; 3]; 3], [[[[u32; $len]; 3]; 3]; 32], u32> {
-                    TestCPUObjectiveEval {
-                        weights: *weights,
-                        head: *head,
-                        examples: examples.iter().cloned().collect(),
-                    }
-                }
+    impl<Patch: Copy, Weights: Apply<Patch, Embedding> + Copy, Embedding: Copy> ObjectiveEvalCreator<Patch, Weights, Embedding>
+        for TestCPUObjectiveEvalCreator
+    {
+        type ObjectiveEvalType = TestCPUObjectiveEval<Patch, Weights, Embedding>;
+        fn new_obj_eval(
+            &self,
+            weights: &Weights,
+            head: &[Embedding; 10],
+            examples: &[(u8, Patch)],
+        ) -> TestCPUObjectiveEval<Patch, Weights, Embedding> {
+            TestCPUObjectiveEval {
+                weights: *weights,
+                head: *head,
+                examples: examples.iter().cloned().collect(),
             }
-
-            // This is a slow implementation of obj() and should not be used if performance is desired.
-            impl ObjectiveEval<[[[u32; $len]; 3]; 3], [[[[u32; $len]; 3]; 3]; 32], u32>
-                for TestCPUObjectiveEval<[[[u32; $len]; 3]; 3], [[[[u32; $len]; 3]; 3]; 32], u32>
-            {
-                fn flip_weights_bit(&mut self, o: usize, i: usize) {
-                    self.weights[o].flip_bit(i);
-                }
-                fn flip_head_bit(&mut self, o: usize, i: usize) {
-                    self.head[o].flip_bit(i);
-                }
-                fn obj(&mut self) -> u64 {
-                    self.examples
-                        .par_iter()
-                        .map(|(class, patch)| {
-                            let embedding = self.weights.apply(patch);
-                            self.head.is_correct(*class, embedding) as u64
-                        })
-                        .sum()
-                }
-            }
-        };
+        }
     }
-    impl_objectiveevalcreator_for_testcpuobjectiveevalcreator!(1);
-    impl_objectiveevalcreator_for_testcpuobjectiveevalcreator!(2);
+
+    // This is a slow implementation of obj() and should not be used if performance is desired.
+    impl<Patch: Sync, Weights: Sync + Apply<Patch, Embedding> + FlipBitIndexed, Embedding: Sync + FlipBit> ObjectiveEval<Patch, Weights, Embedding>
+        for TestCPUObjectiveEval<Patch, Weights, Embedding>
+    where
+        [Embedding; 10]: IsCorrect<Embedding>,
+    {
+        fn flip_weights_bit(&mut self, o: usize, i: usize) {
+            self.weights.flip_bit_indexed(o, i);
+        }
+        fn flip_head_bit(&mut self, o: usize, i: usize) {
+            self.head[o].flip_bit(i);
+        }
+        fn obj(&mut self) -> u64 {
+            self.examples
+                .par_iter()
+                .map(|(class, patch)| {
+                    let embedding = self.weights.apply(patch);
+                    self.head.is_correct(*class, embedding) as u64
+                })
+                .sum()
+        }
+    }
 
     pub struct GlslLikeCPUObjectiveEvalCreator {}
 
@@ -655,7 +734,7 @@ pub mod objective_eval {
                             ),
                             PersistentDescriptorSetBuf<Arc<ImmutableBuffer<[u32]>>>,
                         ),
-                        PersistentDescriptorSetBuf<Arc<DeviceLocalBuffer<[u32]>>>,
+                        PersistentDescriptorSetBuf<Arc<DeviceLocalBuffer<[Embedding]>>>,
                     ),
                     PersistentDescriptorSetBuf<Arc<DeviceLocalBuffer<[u32]>>>,
                 ),
@@ -692,7 +771,7 @@ pub mod objective_eval {
     }
 
     macro_rules! impl_objectiveevalcreator_for_vulkanobjectiveevalcreator {
-        ($len:expr, $shader_mod_name:ident, $shader_path:expr) => {
+        ($input_len:expr, $output_len:expr, $shader_mod_name:ident, $shader_path:expr) => {
             mod $shader_mod_name {
                 vulkano_shaders::shader! {
                     ty: "compute",
@@ -700,14 +779,21 @@ pub mod objective_eval {
                 }
             }
 
-            impl ObjectiveEvalCreator<[[[u32; $len]; 3]; 3], [[[[u32; $len]; 3]; 3]; 32], u32> for VulkanObjectiveEvalCreator {
-                type ObjectiveEvalType =
-                    VulkanObjectiveEval<$shader_mod_name::Layout, reduce_sum::Layout, [[[u32; $len]; 3]; 3], [[[[u32; $len]; 3]; 3]; 32], u32>;
+            impl ObjectiveEvalCreator<[[[u32; $input_len]; 3]; 3], [[[[[u32; $input_len]; 3]; 3]; 32]; $output_len], [u32; $output_len]>
+                for VulkanObjectiveEvalCreator
+            {
+                type ObjectiveEvalType = VulkanObjectiveEval<
+                    $shader_mod_name::Layout,
+                    reduce_sum::Layout,
+                    [[[u32; $input_len]; 3]; 3],
+                    [[[[[u32; $input_len]; 3]; 3]; 32]; $output_len],
+                    [u32; $output_len],
+                >;
                 fn new_obj_eval(
                     &self,
-                    weights: &[[[[u32; $len]; 3]; 3]; 32],
-                    head: &[u32; 10],
-                    examples: &[(u8, [[[u32; $len]; 3]; 3])],
+                    weights: &[[[[[u32; $input_len]; 3]; 3]; 32]; $output_len],
+                    head: &[[u32; $output_len]; 10],
+                    examples: &[(u8, [[[u32; $input_len]; 3]; 3])],
                 ) -> Self::ObjectiveEvalType {
                     let physical = PhysicalDevice::enumerate(&self.instance).next().expect("no device available");
 
@@ -738,7 +824,7 @@ pub mod objective_eval {
                         ImmutableBuffer::from_iter(examples.iter().map(|(label, _)| *label as u32), BufferUsage::all(), queue.clone())
                             .expect("failed to create buffer");
 
-                    let embeddings_buffer: Arc<DeviceLocalBuffer<[u32]>> =
+                    let embeddings_buffer: Arc<DeviceLocalBuffer<[[u32; $output_len]]>> =
                         DeviceLocalBuffer::array(device.clone(), examples.len(), BufferUsage::all(), [queue_family].iter().cloned())
                             .expect("failed to create DeviceLocalBuffer");
 
@@ -809,10 +895,19 @@ pub mod objective_eval {
                 }
             }
 
-            impl VulkanObjectiveEval<$shader_mod_name::Layout, reduce_sum::Layout, [[[u32; $len]; 3]; 3], [[[[u32; $len]; 3]; 3]; 32], u32> {
+            impl
+                VulkanObjectiveEval<
+                    $shader_mod_name::Layout,
+                    reduce_sum::Layout,
+                    [[[u32; $input_len]; 3]; 3],
+                    [[[[[u32; $input_len]; 3]; 3]; 32]; $output_len],
+                    [u32; $output_len],
+                >
+            {
                 fn patch_apply(&mut self, output_index: usize, apply_level: u32) {
                     let pa_push_constants = $shader_mod_name::ty::PushConstantData {
-                        output_index: output_index as u32,
+                        embedding_word_index: output_index as u32 / 32,
+                        embedding_bit_index: output_index as u32 % 32,
                         full_apply: apply_level,
                     };
                     let pa_command_buffer = AutoCommandBufferBuilder::new(self.device.clone(), self.queue.family())
@@ -860,12 +955,18 @@ pub mod objective_eval {
                 }
             }
 
-            impl ObjectiveEval<[[[u32; $len]; 3]; 3], [[[[u32; $len]; 3]; 3]; 32], u32>
-                for VulkanObjectiveEval<$shader_mod_name::Layout, reduce_sum::Layout, [[[u32; $len]; 3]; 3], [[[[u32; $len]; 3]; 3]; 32], u32>
+            impl ObjectiveEval<[[[u32; $input_len]; 3]; 3], [[[[[u32; $input_len]; 3]; 3]; 32]; $output_len], [u32; $output_len]>
+                for VulkanObjectiveEval<
+                    $shader_mod_name::Layout,
+                    reduce_sum::Layout,
+                    [[[u32; $input_len]; 3]; 3],
+                    [[[[[u32; $input_len]; 3]; 3]; 32]; $output_len],
+                    [u32; $output_len],
+                >
             {
                 fn flip_weights_bit(&mut self, o: usize, i: usize) {
                     let mut weights = self.weights_buffer.write().unwrap();
-                    weights[o].flip_bit(i);
+                    weights.flip_bit_indexed(o, i);
                     self.unclean_output_bits.insert(o);
                     self.embedding_is_clean = false;
                     self.obj_sum_is_clean = false;
@@ -897,31 +998,32 @@ pub mod objective_eval {
             }
         };
     }
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(1, apply_shader_1_1, "shaders/patch_apply_1-1.glsl");
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(2, apply_shader_2_1, "shaders/patch_apply_2-1.glsl");
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, apply_shader_3_1, "shaders/patch_apply_3-1.glsl");
+    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(1, 1, apply_shader_1_1, "shaders/patch_apply_1-1.glsl");
+    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(2, 1, apply_shader_2_1, "shaders/patch_apply_2-1.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3,1, apply_shader_3_1, "shaders/patch_apply_3-1.glsl");
 
     #[cfg(test)]
     mod tests {
+        use super::{FlipBit, FlipBitIndexed};
         use super::{
             ObjectiveEval, ObjectiveEvalCreator, TestCPUObjectiveEval, TestCPUObjectiveEvalCreator, VulkanObjectiveEval, VulkanObjectiveEvalCreator,
         };
+        use crate::layers::Apply;
         use rand::prelude::*;
         use rand_hc::Hc128Rng;
 
         #[test]
-        fn test_cpu_obj() {
+        fn test_cpu_obj_array() {
             // use a prime to make the shader code more likely to fail.
             const N_EXAMPLES: usize = 104729;
             let mut rng = Hc128Rng::seed_from_u64(42);
-            let weights: [[[[u32; 2]; 3]; 3]; 32] = rng.gen();
-            let head: [u32; 10] = rng.gen();
+            let mut weights: [[[[[u32; 2]; 3]; 3]; 32]; 2] = rng.gen();
+            let mut head: [[u32; 2]; 10] = rng.gen();
             let examples: Vec<(u8, [[[u32; 2]; 3]; 3])> = (0..N_EXAMPLES).map(|_| (rng.gen_range(0, 10), rng.gen())).collect();
 
             let eval_creator: TestCPUObjectiveEvalCreator = TestCPUObjectiveEvalCreator::new();
-            let mut obj_eval: TestCPUObjectiveEval<[[[u32; 2]; 3]; 3], [[[[u32; 2]; 3]; 3]; 32], u32> =
+            let mut obj_eval: TestCPUObjectiveEval<[[[u32; 2]; 3]; 3], [[[[[u32; 2]; 3]; 3]; 32]; 2], [u32; 2]> =
                 eval_creator.new_obj_eval(&weights, &head, &examples);
-
             let obj1: u64 = obj_eval.obj();
             dbg!(obj1);
             let avg_obj = obj1 as f64 / N_EXAMPLES as f64;
@@ -944,28 +1046,10 @@ pub mod objective_eval {
             assert_eq!(obj1, obj3);
         }
         #[test]
-        fn glsl_like_cpu() {
-            const N_EXAMPLES: usize = 104729;
-            let mut rng = Hc128Rng::seed_from_u64(42);
-            let weights: [[[[u32; 2]; 3]; 3]; 32] = rng.gen();
-            let head: [u32; 10] = rng.gen();
-            let examples: Vec<(u8, [[[u32; 2]; 3]; 3])> = (0..N_EXAMPLES).map(|_| (rng.gen_range(0, 10), rng.gen())).collect();
-
-            let test_eval_creator = TestCPUObjectiveEvalCreator::new();
-            let mut test_obj_eval = test_eval_creator.new_obj_eval(&weights, &head, &examples);
-            let test_obj: u64 = test_obj_eval.obj();
-
-            let glsl_like_eval_creator = TestCPUObjectiveEvalCreator::new();
-            let mut glsl_like_obj_eval = glsl_like_eval_creator.new_obj_eval(&weights, &head, &examples);
-            let glsl_like_obj = glsl_like_obj_eval.obj();
-
-            assert_eq!(test_obj, glsl_like_obj);
-        }
-        #[test]
         fn vulkan_obj() {
             let mut rng = Hc128Rng::seed_from_u64(1);
-            let weights: [[[[u32; 2]; 3]; 3]; 32] = rng.gen();
-            let head: [u32; 10] = rng.gen();
+            let weights: [[[[[u32; 2]; 3]; 3]; 32]; 1] = rng.gen();
+            let head: [[u32; 1]; 10] = rng.gen();
             let examples: Vec<(u8, [[[u32; 2]; 3]; 3])> = (0..104729).map(|_| (rng.gen_range(0, 10), rng.gen())).collect();
 
             let vk_eval_creator = VulkanObjectiveEvalCreator::new(98);
@@ -978,8 +1062,8 @@ pub mod objective_eval {
             assert_eq!(vk_obj, test_obj);
 
             let mut rng = Hc128Rng::seed_from_u64(2);
-            let weights: [[[[u32; 2]; 3]; 3]; 32] = rng.gen();
-            let head: [u32; 10] = rng.gen();
+            let weights: [[[[[u32; 2]; 3]; 3]; 32]; 1] = rng.gen();
+            let head: [[u32; 1]; 10] = rng.gen();
             let examples: Vec<(u8, [[[u32; 2]; 3]; 3])> = (0..100000).map(|_| (rng.gen_range(0, 10), rng.gen())).collect();
             let mut vk_obj_eval = vk_eval_creator.new_obj_eval(&weights, &head, &examples);
             let mut test_obj_eval = test_eval_creator.new_obj_eval(&weights, &head, &examples);
