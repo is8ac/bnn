@@ -134,6 +134,7 @@ macro_rules! impl_flipbitindexed_for_array {
 
 impl_flipbitindexed_for_array!(1);
 impl_flipbitindexed_for_array!(2);
+impl_flipbitindexed_for_array!(3);
 
 pub trait HammingDistance {
     fn hamming_distance(&self, other: &Self) -> u32;
@@ -168,7 +169,6 @@ array_hamming_distance!(3);
 pub mod layers {
     use super::{BitLen, HammingDistance};
     use bincode::{deserialize_from, serialize_into};
-    use rayon::prelude::*;
     use std::fs::File;
     use std::io::BufWriter;
     use std::marker::PhantomData;
@@ -248,7 +248,6 @@ pub mod layers {
     }
 
     conv3x3_apply_trait!(32, 32);
-
 
     pub trait NewFromRng {
         fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self;
@@ -333,7 +332,6 @@ pub mod layers {
     }
     impl_saveload_conv3x3_array!(2, 1);
     impl_saveload_conv3x3_array!(1, 1);
-
 
     macro_rules! impl_saveload_conv3x3_32 {
         ($len:expr) => {
@@ -520,16 +518,173 @@ pub fn vec_extract_patches<I: Extract3x3Patches<P>, P, RNG: rand::Rng>(rng: &mut
     patches
 }
 
+pub mod optimize {
+    use crate::layers::{Apply, SaveLoad};
+    use crate::objective_eval::{ObjectiveEval, ObjectiveEvalCreator};
+    use crate::{vec_extract_patches, BitLen, Extract3x3Patches, FlipBit, FlipBitIndexed};
+    use rayon::prelude::*;
+    use std::fs::OpenOptions;
+    use std::io::prelude::*;
+    use std::path::Path;
+    use time::PreciseTime;
+
+    pub trait Train<EvalCreator, InputPatch, Weights, Embedding> {
+        fn train_pass(
+            eval_creator: &EvalCreator,
+            weights: &mut Weights,
+            head: &mut [Embedding; 10],
+            patches: &[(u8, InputPatch)],
+            head_update_freq: usize,
+        ) -> u64;
+        fn recurs_train(
+            eval_creator: &EvalCreator,
+            weights: &mut Weights,
+            head: &mut [Embedding; 10],
+            patches: &[(u8, InputPatch)],
+            depth: usize,
+            head_update_freq: usize,
+        ) -> f64;
+    }
+
+    impl<Patch: BitLen, Weights: FlipBitIndexed, Embedding: FlipBit, EvalCreator: ObjectiveEvalCreator<Patch, Weights, Embedding>>
+        Train<EvalCreator, Patch, Weights, Embedding> for Patch
+    where
+        EvalCreator::ObjectiveEvalType: ObjectiveEval<Patch, Weights, Embedding>,
+    {
+        fn train_pass(
+            eval_creator: &EvalCreator,
+            weights: &mut Weights,
+            head: &mut [Embedding; 10],
+            patches: &[(u8, Patch)],
+            head_update_freq: usize,
+        ) -> u64 {
+            dbg!(patches.len());
+
+            let mut gpu_obj_eval = eval_creator.new_obj_eval(&weights, &head, &patches);
+
+            let start = PreciseTime::now();
+            let mut cur_obj = gpu_obj_eval.obj();
+            for e in 0..32 {
+                let mut iter = 0;
+                for i in 0..<Patch>::BIT_LEN {
+                    if iter % head_update_freq == 0 {
+                        for o in 0..10 {
+                            gpu_obj_eval.flip_head_bit(o, e);
+                            let new_obj = gpu_obj_eval.obj();
+                            if new_obj >= cur_obj {
+                                cur_obj = new_obj;
+                                println!("head: {} {}: {} {}", e, o, new_obj, new_obj as f64 / patches.len() as f64);
+                                head[o].flip_bit(e);
+                            } else {
+                                gpu_obj_eval.flip_head_bit(o, e);
+                            }
+                        }
+                        iter += 1;
+                    }
+                    gpu_obj_eval.flip_weights_bit(e, i);
+                    let new_obj = gpu_obj_eval.obj();
+                    if new_obj >= cur_obj {
+                        iter += 1;
+                        cur_obj = new_obj;
+                        println!("{} {}: {} {}", e, i, new_obj, new_obj as f64 / patches.len() as f64);
+                        weights.flip_bit_indexed(e, i);
+                    } else {
+                        gpu_obj_eval.flip_weights_bit(e, i);
+                    }
+                }
+            }
+            println!("{} {}", patches.len(), start.to(PreciseTime::now()));
+            cur_obj
+        }
+        fn recurs_train(eval_creator: &EvalCreator, weights: &mut Weights, head: &mut [Embedding; 10], patches: &[(u8, Patch)], depth: usize, head_update_freq: usize) -> f64 {
+            if depth == 0 {
+                Self::train_pass(eval_creator, weights, head, &patches[0..patches.len() / 2], head_update_freq);
+            } else {
+                Self::recurs_train(eval_creator, weights, head, &patches[0..patches.len() / 2], depth - 1, head_update_freq);
+            }
+            Self::train_pass(eval_creator, weights, head, &patches[patches.len() / 2..], head_update_freq) as f64 / (patches.len() / 2) as f64
+        }
+    }
+    pub trait TrainLayer<EvalCreator, Pixel, Embedding, InputImage, OutputImage> {
+        fn train_from_images<RNG: rand::Rng>(
+            rng: &mut RNG,
+            eval_creator: &EvalCreator,
+            images: &Vec<(usize, InputImage)>,
+            fs_path: &Path,
+            depth: usize,
+            head_update_freq: usize,
+            log_file_path: &Path,
+        ) -> Vec<(usize, OutputImage)>;
+    }
+
+    impl<
+            Pixel,
+            Weights: SaveLoad + Sync,
+            Embedding,
+            EvalCreator: ObjectiveEvalCreator<[[Pixel; 3]; 3], Weights, Embedding>,
+            InputImage: Sync + Extract3x3Patches<Pixel>,
+            OutputImage: Sync + Send,
+        > TrainLayer<EvalCreator, Pixel, Embedding, InputImage, OutputImage> for Weights
+    where
+        Self: Apply<InputImage, OutputImage>,
+        <EvalCreator as ObjectiveEvalCreator<[[Pixel; 3]; 3], Weights, Embedding>>::ObjectiveEvalType: ObjectiveEval<[[Pixel; 3]; 3], Weights, Embedding>,
+        rand::distributions::Standard: rand::distributions::Distribution<Weights>,
+        rand::distributions::Standard: rand::distributions::Distribution<Embedding>,
+        [[Pixel; 3]; 3]: Train<EvalCreator, [[Pixel; 3]; 3], Weights, Embedding>,
+    {
+        fn train_from_images<RNG: rand::Rng>(
+            rng: &mut RNG,
+            eval_creator: &EvalCreator,
+            images: &Vec<(usize, InputImage)>,
+            fs_path: &Path,
+            depth: usize,
+            head_update_freq: usize,
+            log_file_path: &Path,
+        ) -> Vec<(usize, OutputImage)> {
+            let weights = Self::new_from_fs(fs_path).unwrap_or_else(|| {
+                println!("{} not found, training", &fs_path.to_str().unwrap());
+                let patches: Vec<(u8, [[Pixel; 3]; 3])> = vec_extract_patches(rng, &images);
+
+                let mut weights: Weights = rng.gen();
+                let mut head: [Embedding; 10] = rng.gen();
+
+                let start = PreciseTime::now();
+                let obj = <[[Pixel; 3]; 3]>::recurs_train(eval_creator, &mut weights, &mut head, &patches, depth, head_update_freq);
+                println!("obj: {}, time: {}", obj, start.to(PreciseTime::now()));
+                write_to_log_event(log_file_path, fs_path, start.to(PreciseTime::now()), head_update_freq, obj, depth, images.len());
+                weights.write_to_fs(&fs_path);
+                weights
+            });
+
+            images.par_iter().map(|(class, image)| (*class, weights.apply(image))).collect()
+        }
+    }
+
+    fn write_to_log_event(file_path: &Path, layer_name: &Path, duration: time::Duration, head_update_freq: usize, obj: f64, depth: usize, n: usize) {
+        let mut file = OpenOptions::new().write(true).append(true).open(file_path).unwrap();
+        writeln!(
+            file,
+            "{} depth: {}, obj: {}, head_update_freq: {}, n: {}, {}",
+            layer_name.to_str().unwrap(),
+            depth,
+            obj,
+            head_update_freq,
+            n,
+            duration,
+        )
+        .unwrap();
+    }
+}
+
 pub mod objective_eval {
     extern crate rand;
     extern crate time;
     use super::layers::Apply;
-    use super::{BitLen, FlipBit, FlipBitIndexed, HammingDistance};
+    use super::{FlipBit, FlipBitIndexed, HammingDistance};
     use rayon::prelude::*;
     use std::collections::HashSet;
     use std::marker::PhantomData;
     use std::sync::Arc;
-    use time::PreciseTime;
     use vulkano::buffer::BufferUsage;
     use vulkano::buffer::{CpuAccessibleBuffer, DeviceLocalBuffer, ImmutableBuffer};
     use vulkano::command_buffer::AutoCommandBufferBuilder;
@@ -998,9 +1153,17 @@ pub mod objective_eval {
             }
         };
     }
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(1, 1, apply_shader_1_1, "shaders/patch_apply_1-1.glsl");
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(2, 1, apply_shader_2_1, "shaders/patch_apply_2-1.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3,1, apply_shader_3_1, "shaders/patch_apply_3-1.glsl");
+    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(1, 1, apply_shader_1_1, "shaders/conv3x3_1-1.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(1, 2, apply_shader_1_2, "shaders/conv3x3_1-2.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(1, 3, apply_shader_1_3, "shaders/conv3x3_1-3.glsl");
+
+    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(2, 1, apply_shader_2_1, "shaders/conv3x3_2-1.glsl");
+    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(2, 2, apply_shader_2_2, "shaders/conv3x3_2-2.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(2, 3, apply_shader_2_3, "shaders/conv3x3_2-3.glsl");
+
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, 1, apply_shader_3_1, "shaders/conv3x3_3-1.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, 2, apply_shader_3_2, "shaders/conv3x3_3-2.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, 3, apply_shader_3_3, "shaders/conv3x3_3-3.glsl");
 
     #[cfg(test)]
     mod tests {
@@ -1011,6 +1174,75 @@ pub mod objective_eval {
         use crate::layers::Apply;
         use rand::prelude::*;
         use rand_hc::Hc128Rng;
+
+        macro_rules! vk_test {
+            ($input_len:expr, $output_len:expr) => {
+                let mut rng = Hc128Rng::seed_from_u64(1);
+                let weights: [[[[[u32; $input_len]; 3]; 3]; 32]; $output_len] = rng.gen();
+                let head: [[u32; $output_len]; 10] = rng.gen();
+                let examples: Vec<(u8, [[[u32; $input_len]; 3]; 3])> = (0..104729).map(|_| (rng.gen_range(0, 10), rng.gen())).collect();
+
+                let vk_eval_creator = VulkanObjectiveEvalCreator::new(98);
+                let mut vk_obj_eval = vk_eval_creator.new_obj_eval(&weights, &head, &examples);
+                let test_eval_creator = TestCPUObjectiveEvalCreator::new();
+                let mut test_obj_eval = test_eval_creator.new_obj_eval(&weights, &head, &examples);
+
+                let vk_obj: u64 = vk_obj_eval.obj();
+                let test_obj: u64 = test_obj_eval.obj();
+                assert_eq!(vk_obj, test_obj);
+
+                let mut rng = Hc128Rng::seed_from_u64(2);
+                let weights: [[[[[u32; $input_len]; 3]; 3]; 32]; $output_len] = rng.gen();
+                let head: [[u32; $output_len]; 10] = rng.gen();
+                let examples: Vec<(u8, [[[u32; $input_len]; 3]; 3])> = (0..100000).map(|_| (rng.gen_range(0, 10), rng.gen())).collect();
+                let mut vk_obj_eval = vk_eval_creator.new_obj_eval(&weights, &head, &examples);
+                let mut test_obj_eval = test_eval_creator.new_obj_eval(&weights, &head, &examples);
+
+                for &(o, i) in &[(0, 0), (0, 5), (1, 5), (0, 0), ((32 * $output_len) - 1, 9 * 32 * $input_len - 1)] {
+                    vk_obj_eval.flip_weights_bit(o, i);
+                    test_obj_eval.flip_weights_bit(o, i);
+
+                    let vk_obj: u64 = vk_obj_eval.obj();
+                    let test_obj: u64 = test_obj_eval.obj();
+                    assert_eq!(vk_obj, test_obj);
+                }
+
+                for updates in &[
+                    vec![(0, 0), (0, 0), (0, 0)],
+                    vec![(0, 0), (2, 0), (2, 3)],
+                    vec![(5, 0), (5, 1), (5, 2)],
+                    vec![(3, 1), (3, 2), (4, 3)],
+                    vec![(0, 0)],
+                    vec![],
+                ] {
+                    for &(i, o) in updates {
+                        vk_obj_eval.flip_weights_bit(o, i);
+                        test_obj_eval.flip_weights_bit(o, i);
+                    }
+
+                    let vk_obj: u64 = vk_obj_eval.obj();
+                    let test_obj: u64 = test_obj_eval.obj();
+                    assert_eq!(vk_obj, test_obj);
+                }
+                for updates in &[
+                    vec![(0, 0), (0, 0), (0, 0)],
+                    vec![(0, 0), (2, 0), (2, 3)],
+                    vec![(5, 0), (5, 1), (5, 2)],
+                    vec![(3, 1), (3, 2), (4, 3)],
+                    vec![(0, 0)],
+                    vec![],
+                ] {
+                    for &(i, o) in updates {
+                        vk_obj_eval.flip_head_bit(o, i);
+                        test_obj_eval.flip_head_bit(o, i);
+                    }
+
+                    let vk_obj: u64 = vk_obj_eval.obj();
+                    let test_obj: u64 = test_obj_eval.obj();
+                    assert_eq!(vk_obj, test_obj);
+                }
+            };
+        }
 
         #[test]
         fn test_cpu_obj_array() {
@@ -1046,71 +1278,17 @@ pub mod objective_eval {
             assert_eq!(obj1, obj3);
         }
         #[test]
-        fn vulkan_obj() {
-            let mut rng = Hc128Rng::seed_from_u64(1);
-            let weights: [[[[[u32; 2]; 3]; 3]; 32]; 1] = rng.gen();
-            let head: [[u32; 1]; 10] = rng.gen();
-            let examples: Vec<(u8, [[[u32; 2]; 3]; 3])> = (0..104729).map(|_| (rng.gen_range(0, 10), rng.gen())).collect();
+        fn vk_array_1_1() {
+            vk_test!(1, 1);
+        }
+        #[test]
+        fn vk_array_2_1() {
+            vk_test!(2, 1);
+        }
 
-            let vk_eval_creator = VulkanObjectiveEvalCreator::new(98);
-            let mut vk_obj_eval = vk_eval_creator.new_obj_eval(&weights, &head, &examples);
-            let test_eval_creator = TestCPUObjectiveEvalCreator::new();
-            let mut test_obj_eval = test_eval_creator.new_obj_eval(&weights, &head, &examples);
-
-            let vk_obj: u64 = vk_obj_eval.obj();
-            let test_obj: u64 = test_obj_eval.obj();
-            assert_eq!(vk_obj, test_obj);
-
-            let mut rng = Hc128Rng::seed_from_u64(2);
-            let weights: [[[[[u32; 2]; 3]; 3]; 32]; 1] = rng.gen();
-            let head: [[u32; 1]; 10] = rng.gen();
-            let examples: Vec<(u8, [[[u32; 2]; 3]; 3])> = (0..100000).map(|_| (rng.gen_range(0, 10), rng.gen())).collect();
-            let mut vk_obj_eval = vk_eval_creator.new_obj_eval(&weights, &head, &examples);
-            let mut test_obj_eval = test_eval_creator.new_obj_eval(&weights, &head, &examples);
-
-            for &(o, i) in &[(0, 0), (0, 5), (1, 5), (0, 0), (31, 9 * 32 * 2 - 1)] {
-                vk_obj_eval.flip_weights_bit(o, i);
-                test_obj_eval.flip_weights_bit(o, i);
-
-                let vk_obj: u64 = vk_obj_eval.obj();
-                let test_obj: u64 = test_obj_eval.obj();
-                assert_eq!(vk_obj, test_obj);
-            }
-
-            for updates in &[
-                vec![(0, 0), (0, 0), (0, 0)],
-                vec![(0, 0), (2, 0), (2, 3)],
-                vec![(5, 0), (5, 1), (5, 2)],
-                vec![(3, 1), (3, 2), (4, 3)],
-                vec![(0, 0)],
-                vec![],
-            ] {
-                for &(i, o) in updates {
-                    vk_obj_eval.flip_weights_bit(o, i);
-                    test_obj_eval.flip_weights_bit(o, i);
-                }
-
-                let vk_obj: u64 = vk_obj_eval.obj();
-                let test_obj: u64 = test_obj_eval.obj();
-                assert_eq!(vk_obj, test_obj);
-            }
-            for updates in &[
-                vec![(0, 0), (0, 0), (0, 0)],
-                vec![(0, 0), (2, 0), (2, 3)],
-                vec![(5, 0), (5, 1), (5, 2)],
-                vec![(3, 1), (3, 2), (4, 3)],
-                vec![(0, 0)],
-                vec![],
-            ] {
-                for &(i, o) in updates {
-                    vk_obj_eval.flip_head_bit(o, i);
-                    test_obj_eval.flip_head_bit(o, i);
-                }
-
-                let vk_obj: u64 = vk_obj_eval.obj();
-                let test_obj: u64 = test_obj_eval.obj();
-                assert_eq!(vk_obj, test_obj);
-            }
+        #[test]
+        fn vk_array_2_2() {
+            vk_test!(2, 2);
         }
     }
 }
