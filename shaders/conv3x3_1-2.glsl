@@ -33,7 +33,7 @@ pc;
 
 void main() {
   const uint onebits = 4294967295;
-  const uint threshold = (32 * 1 * 9) / 2;
+  const uint threshold = (32 * 1 * (3 * 3)) / 2;
   uint x;
   uint y;
   uint b;

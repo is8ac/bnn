@@ -3,22 +3,22 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) buffer Prms {
-  uint[1][32][3][3][1] data;
+  uint[3][32][2][2][1] data;
 }
 prms;
 
-layout(set = 0, binding = 1) buffer ObjHead { uint[10][1] data; }
+layout(set = 0, binding = 1) buffer ObjHead { uint[10][3] data; }
 head;
 
 layout(set = 0, binding = 2) buffer InputPatch {
-  uint[3][3][1] data[];
+  uint[2][2][1] data[];
 }
 input_patch;
 
 layout(set = 0, binding = 3) buffer Label { uint data[]; }
 label;
 
-layout(set = 0, binding = 4) buffer Embedding { uint[1] data[]; }
+layout(set = 0, binding = 4) buffer Embedding { uint[3] data[]; }
 embedding;
 
 layout(set = 0, binding = 5) buffer Objective { uint data[]; }
@@ -33,7 +33,7 @@ pc;
 
 void main() {
   const uint onebits = 4294967295;
-  const uint threshold = (32 * 1 * (3 * 3)) / 2;
+  const uint threshold = (32 * 1 * (2 * 2)) / 2;
   uint x;
   uint y;
   uint b;
@@ -47,12 +47,12 @@ void main() {
   bool is_good;
 
   if (pc.full_apply == 1) {
-    for (e = 0; e < 1; e += 1) {
+    for (e = 0; e < 3; e += 1) {
       target = 0;
       for (b = 0; b < 32; b += 1) {
         sum_bits = 0;
-        for (x = 0; x < 3; x += 1) {
-          for (y = 0; y < 3; y += 1) {
+        for (x = 0; x < 2; x += 1) {
+          for (y = 0; y < 2; y += 1) {
             for (i = 0; i < 1; i += 1) {
               sum_bits +=
                   bitCount(prms.data[e][b][x][y][i] ^
@@ -66,8 +66,8 @@ void main() {
     }
   } else if (pc.full_apply == 0) {
     sum_bits = 0;
-    for (x = 0; x < 3; x += 1) {
-      for (y = 0; y < 3; y += 1) {
+    for (x = 0; x < 2; x += 1) {
+      for (y = 0; y < 2; y += 1) {
         for (i = 0; i < 1; i += 1) {
           sum_bits +=
               bitCount(prms.data[pc.embedding_word_index]
@@ -85,13 +85,13 @@ void main() {
   // now we can start on the objective head
   is_good = true;
   max_obj = 0;
-  for (e = 0; e < 1; e += 1) {
+  for (e = 0; e < 3; e += 1) {
     max_obj += bitCount(head.data[label.data[gl_GlobalInvocationID.x]][e] ^
                         embedding.data[gl_GlobalInvocationID.x][e]);
   }
   for (o = 0; o < 10; o += 1) {
     new_obj = 0;
-    for (e = 0; e < 1; e += 1) {
+    for (e = 0; e < 3; e += 1) {
       new_obj += bitCount(head.data[o][e] ^
                           embedding.data[gl_GlobalInvocationID.x][e]);
     }

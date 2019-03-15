@@ -3,7 +3,7 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) buffer Prms {
-  uint[1][32][3][3][1] data;
+  uint[1][32][3][3][4] data;
 }
 prms;
 
@@ -11,7 +11,7 @@ layout(set = 0, binding = 1) buffer ObjHead { uint[10][1] data; }
 head;
 
 layout(set = 0, binding = 2) buffer InputPatch {
-  uint[3][3][1] data[];
+  uint[3][3][4] data[];
 }
 input_patch;
 
@@ -33,7 +33,7 @@ pc;
 
 void main() {
   const uint onebits = 4294967295;
-  const uint threshold = (32 * 1 * (3 * 3)) / 2;
+  const uint threshold = (32 * 4 * (3 * 3)) / 2;
   uint x;
   uint y;
   uint b;
@@ -53,7 +53,7 @@ void main() {
         sum_bits = 0;
         for (x = 0; x < 3; x += 1) {
           for (y = 0; y < 3; y += 1) {
-            for (i = 0; i < 1; i += 1) {
+            for (i = 0; i < 4; i += 1) {
               sum_bits +=
                   bitCount(prms.data[e][b][x][y][i] ^
                            input_patch.data[gl_GlobalInvocationID.x][x][y][i]);
@@ -68,7 +68,7 @@ void main() {
     sum_bits = 0;
     for (x = 0; x < 3; x += 1) {
       for (y = 0; y < 3; y += 1) {
-        for (i = 0; i < 1; i += 1) {
+        for (i = 0; i < 4; i += 1) {
           sum_bits +=
               bitCount(prms.data[pc.embedding_word_index]
                                 [pc.embedding_bit_index][x][y][i] ^
