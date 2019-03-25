@@ -194,16 +194,34 @@ pub mod layers {
     use std::path::Path;
     use time::PreciseTime;
 
-    impl<I: HammingDistance + BitLen> Apply<[I; 3], u32> for [[I; 3]; 16] {
+    pub trait MirrorHammingDistance<T> {
+        fn normal_hamming_distance(&self, input: &[T; 3]) -> u32;
+        fn fliped_hamming_distance(&self, input: &[T; 3]) -> u32;
+    }
+
+    impl<T: HammingDistance> MirrorHammingDistance<T> for [T; 3] {
+        fn normal_hamming_distance(&self, input: &[T; 3]) -> u32 {
+            self[0].hamming_distance(&input[0]) + self[1].hamming_distance(&input[1]) + self[2].hamming_distance(&input[2])
+        }
+        fn fliped_hamming_distance(&self, input: &[T; 3]) -> u32 {
+            self[0].hamming_distance(&input[2]) + self[1].hamming_distance(&input[1]) + self[2].hamming_distance(&input[0])
+        }
+    }
+
+    impl<I: HammingDistance + BitLen> Apply<[I; 3], u32> for [[I; 3]; 16]
+    where
+        [I; 3]: MirrorHammingDistance<I>,
+    {
         fn apply(&self, input: &[I; 3]) -> u32 {
             let threshold: u32 = ((I::BIT_LEN * 3) as u32 / 2);
             let mut target = 0u32;
             for i in 0..16 {
-                let center = self[i][1].hamming_distance(&input[1]);
+                //let center = self[i][1].hamming_distance(&input[1]);
 
-                target |= (((self[i][0].hamming_distance(&input[0]) + center + self[i][2].hamming_distance(&input[2])) > threshold) as u32) << i;
-                target |=
-                    (((self[i][0].hamming_distance(&input[2]) + center + self[i][2].hamming_distance(&input[0])) > threshold) as u32) << (16 + i);
+                //target |= (((self[i][0].hamming_distance(&input[0]) + center + self[i][2].hamming_distance(&input[2])) > threshold) as u32) << i;
+                //target |= (((self[i][0].hamming_distance(&input[2]) + center + self[i][2].hamming_distance(&input[0])) > threshold) as u32) << (16 + i);
+                target |= ((self[i].normal_hamming_distance(input) > threshold) as u32) << i;
+                target |= ((self[i].fliped_hamming_distance(input) > threshold) as u32) << (16 + i);
             }
             target
         }
@@ -278,6 +296,8 @@ pub mod layers {
     }
 
     patch_conv_2x2_apply_trait!(32, 32);
+    patch_conv_2x2_apply_trait!(16, 16);
+    patch_conv_2x2_apply_trait!(8, 8);
 
     macro_rules! conv3x3_apply_trait {
         ($x_size:expr, $y_size:expr) => {
@@ -297,27 +317,7 @@ pub mod layers {
 
     conv3x3_apply_trait!(32, 32);
     conv3x3_apply_trait!(16, 16);
-
-    pub trait NewFromRng {
-        fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self;
-    }
-
-    macro_rules! primitive_activations_new_from_seed {
-        ($len:expr) => {
-            impl<I> NewFromRng for [I; $len]
-            where
-                rand::distributions::Standard: rand::distributions::Distribution<I>,
-            {
-                fn new_from_rng<RNG: rand::Rng>(rng: &mut RNG) -> Self {
-                    rng.gen::<[I; $len]>()
-                }
-            }
-        };
-    }
-    primitive_activations_new_from_seed!(8);
-    primitive_activations_new_from_seed!(10);
-    primitive_activations_new_from_seed!(16);
-    primitive_activations_new_from_seed!(32);
+    conv3x3_apply_trait!(8, 8);
 
     pub trait SaveLoad
     where
@@ -366,6 +366,7 @@ pub mod layers {
     impl_saveload_conv3x3_array!(16, 2, 1);
     impl_saveload_conv3x3_array!(16, 2, 2);
     impl_saveload_conv3x3_array!(16, 4, 2);
+    impl_saveload_conv3x3_array!(16, 4, 4);
 
     macro_rules! impl_saveload_conv2x2_array {
         ($input_len:expr, $output_len:expr) => {
@@ -401,16 +402,31 @@ pub mod layers {
     impl_saveload_conv2x2_array!(1, 2);
     impl_saveload_conv2x2_array!(2, 1);
     impl_saveload_conv2x2_array!(2, 2);
+    impl_saveload_conv2x2_array!(2, 4);
 }
 
-pub trait Extract3x3Patches<P> {
-    fn patches(&self) -> Vec<[[P; 3]; 3]>;
+pub trait Image2D<Pixel> {}
+
+macro_rules! impl_image2d {
+    ($x_size:expr, $y_size:expr) => {
+        impl<Pixel> Image2D<Pixel> for [[Pixel; $y_size]; $y_size] {}
+    };
+}
+
+impl_image2d!(32, 32);
+impl_image2d!(16, 16);
+impl_image2d!(8, 8);
+impl_image2d!(3, 3);
+impl_image2d!(2, 2);
+
+pub trait ExtractPatches<Patch> {
+    fn patches(&self) -> Vec<Patch>;
 }
 
 macro_rules! extract_patch_3x3_trait {
     ($x_size:expr, $y_size:expr) => {
-        impl<P: Copy> Extract3x3Patches<P> for [[P; $y_size]; $x_size] {
-            fn patches(&self) -> Vec<[[P; 3]; 3]> {
+        impl<Pixel: Copy> ExtractPatches<[[Pixel; 3]; 3]> for [[Pixel; $y_size]; $x_size] {
+            fn patches(&self) -> Vec<[[Pixel; 3]; 3]> {
                 let mut patches = Vec::with_capacity(($y_size - 2) * ($x_size - 2));
                 for x in 0..$x_size - 2 {
                     for y in 0..$y_size - 2 {
@@ -420,22 +436,8 @@ macro_rules! extract_patch_3x3_trait {
                 patches
             }
         }
-    };
-}
-
-extract_patch_3x3_trait!(32, 32);
-extract_patch_3x3_trait!(16, 16);
-extract_patch_3x3_trait!(8, 8);
-extract_patch_3x3_trait!(4, 4);
-
-pub trait Extract2x2Patches<P> {
-    fn patches(&self) -> Vec<[[P; 2]; 2]>;
-}
-
-macro_rules! extract_patch_2x2_trait {
-    ($x_size:expr, $y_size:expr) => {
-        impl<P: Copy> Extract2x2Patches<P> for [[P; $y_size]; $x_size] {
-            fn patches(&self) -> Vec<[[P; 2]; 2]> {
+        impl<Pixel: Copy> ExtractPatches<[[Pixel; 2]; 2]> for [[Pixel; $y_size]; $x_size] {
+            fn patches(&self) -> Vec<[[Pixel; 2]; 2]> {
                 let mut patches = Vec::with_capacity(($y_size / 2) * ($x_size / 2));
                 for x in 0..($x_size / 2) {
                     let x_base = x * 2;
@@ -450,9 +452,9 @@ macro_rules! extract_patch_2x2_trait {
     };
 }
 
-extract_patch_2x2_trait!(32, 32);
-extract_patch_2x2_trait!(16, 16);
-extract_patch_2x2_trait!(8, 8);
+extract_patch_3x3_trait!(32, 32);
+extract_patch_3x3_trait!(16, 16);
+extract_patch_3x3_trait!(8, 8);
 
 pub trait ConcatImages<I> {
     fn concat_images(inputs: I) -> Self;
@@ -496,22 +498,10 @@ pub fn vec_concat_2_examples<'a, I: 'a + Sync, C: ConcatImages<[&'a I; 2]> + Syn
         .collect()
 }
 
-pub fn vec_extract_patches<I: Extract3x3Patches<P>, P, RNG: rand::Rng>(rng: &mut RNG, images: &Vec<(usize, I)>) -> Vec<(u8, [[P; 3]; 3])> {
-    // decompose the images into patches,
-    let mut patches: Vec<(u8, [[P; 3]; 3])> = images
-        .iter()
-        .map(|(class, image)| iter::repeat(*class as u8).zip(image.patches()))
-        .flatten()
-        .collect();
-    // and shuffle them
-    patches.shuffle(rng);
-    patches
-}
-
 pub mod optimize {
     use crate::layers::{Apply, SaveLoad};
     use crate::objective_eval::{ObjectiveEval, ObjectiveEvalCreator};
-    use crate::{vec_extract_patches, BitLen, Extract2x2Patches, Extract3x3Patches, FlipBit, FlipBitIndexed};
+    use crate::{BitLen, ExtractPatches, FlipBit, FlipBitIndexed, Image2D};
     use rand::prelude::*;
     use rayon::prelude::*;
     use std::fs::OpenOptions;
@@ -527,7 +517,7 @@ pub mod optimize {
             head: &mut [Embedding; 10],
             patches: &[(u8, InputPatch)],
             head_update_freq: usize,
-        ) -> u64;
+        ) -> f64;
         fn recurs_train(
             eval_creator: &EvalCreator,
             weights: &mut Weights,
@@ -549,7 +539,7 @@ pub mod optimize {
             head: &mut [Embedding; 10],
             patches: &[(u8, Patch)],
             head_update_freq: usize,
-        ) -> u64 {
+        ) -> f64 {
             dbg!(patches.len());
 
             let mut gpu_obj_eval = eval_creator.new_obj_eval(&weights, &head, &patches);
@@ -586,8 +576,9 @@ pub mod optimize {
                 }
             }
             println!("{} {}", patches.len(), start.to(PreciseTime::now()));
-            cur_obj
+            cur_obj as f64 / patches.len() as f64
         }
+        // TODO: implement non 0.5 minibatch division.
         fn recurs_train(
             eval_creator: &EvalCreator,
             weights: &mut Weights,
@@ -601,7 +592,7 @@ pub mod optimize {
             } else {
                 Self::recurs_train(eval_creator, weights, head, &patches[0..patches.len() / 2], depth - 1, head_update_freq);
             }
-            Self::train_pass(eval_creator, weights, head, &patches[patches.len() / 2..], head_update_freq) as f64 / (patches.len() / 2) as f64
+            Self::train_pass(eval_creator, weights, head, &patches[patches.len() / 2..], head_update_freq)
         }
     }
     pub trait TrainLayer<EvalCreator, Pixel, Patch, Embedding, InputImage, OutputImage> {
@@ -613,24 +604,26 @@ pub mod optimize {
             depth: usize,
             head_update_freq: usize,
             log_file_path: &Path,
+            do_final_pass: bool,
         ) -> Vec<(usize, OutputImage)>;
     }
 
     impl<
             Pixel,
+            Patch: Image2D<Pixel>,
             Weights: SaveLoad + Sync,
             Embedding,
-            EvalCreator: ObjectiveEvalCreator<[[Pixel; 3]; 3], Weights, Embedding>,
-            InputImage: Sync + Extract3x3Patches<Pixel>,
+            EvalCreator: ObjectiveEvalCreator<Patch, Weights, Embedding>,
+            InputImage: Sync + ExtractPatches<Patch> + Image2D<Pixel>,
             OutputImage: Sync + Send,
-        > TrainLayer<EvalCreator, Pixel, [[Pixel; 3]; 3], Embedding, InputImage, OutputImage> for Weights
+        > TrainLayer<EvalCreator, Pixel, Patch, Embedding, InputImage, OutputImage> for Weights
     where
         Self: Apply<InputImage, OutputImage>,
-        <EvalCreator as ObjectiveEvalCreator<[[Pixel; 3]; 3], Weights, Embedding>>::ObjectiveEvalType:
-            ObjectiveEval<[[Pixel; 3]; 3], Weights, Embedding>,
+        <EvalCreator as ObjectiveEvalCreator<Patch, Weights, Embedding>>::ObjectiveEvalType: ObjectiveEval<Patch, Weights, Embedding>,
+        EvalCreator: ObjectiveEvalCreator<Patch, Weights, Embedding>,
         rand::distributions::Standard: rand::distributions::Distribution<Weights>,
         rand::distributions::Standard: rand::distributions::Distribution<Embedding>,
-        [[Pixel; 3]; 3]: Train<EvalCreator, [[Pixel; 3]; 3], Weights, Embedding>,
+        Patch: Train<EvalCreator, Patch, Weights, Embedding>,
     {
         fn train_from_images<RNG: rand::Rng>(
             rng: &mut RNG,
@@ -640,66 +633,12 @@ pub mod optimize {
             depth: usize,
             head_update_freq: usize,
             log_file_path: &Path,
+            do_final_pass: bool,
         ) -> Vec<(usize, OutputImage)> {
             let weights = Self::new_from_fs(fs_path).unwrap_or_else(|| {
                 println!("{} not found, training", &fs_path.to_str().unwrap());
-                let patches: Vec<(u8, [[Pixel; 3]; 3])> = vec_extract_patches(rng, &images);
-
-                let mut weights: Weights = rng.gen();
-                let mut head: [Embedding; 10] = rng.gen();
-
-                let start = PreciseTime::now();
-
-                <[[Pixel; 3]; 3]>::recurs_train(eval_creator, &mut weights, &mut head, &patches, depth, head_update_freq);
-                let obj = <[[Pixel; 3]; 3]>::train_pass(eval_creator, &mut weights, &mut head, &patches, 100);
-                println!("obj: {}, time: {}", obj, start.to(PreciseTime::now()));
-                write_to_log_event(
-                    log_file_path,
-                    fs_path,
-                    start.to(PreciseTime::now()),
-                    head_update_freq,
-                    obj as f64 / patches.len() as f64,
-                    depth,
-                    images.len(),
-                );
-                weights.write_to_fs(&fs_path);
-                weights
-            });
-
-            images.par_iter().map(|(class, image)| (*class, weights.apply(image))).collect()
-        }
-    }
-
-    impl<
-            Pixel,
-            Weights: SaveLoad + Sync,
-            Embedding,
-            EvalCreator: ObjectiveEvalCreator<[[Pixel; 2]; 2], Weights, Embedding>,
-            InputImage: Sync + Extract2x2Patches<Pixel>,
-            OutputImage: Sync + Send,
-        > TrainLayer<EvalCreator, Pixel, [[Pixel; 2]; 2], Embedding, InputImage, OutputImage> for Weights
-    where
-        Self: Apply<InputImage, OutputImage>,
-        <EvalCreator as ObjectiveEvalCreator<[[Pixel; 2]; 2], Weights, Embedding>>::ObjectiveEvalType:
-            ObjectiveEval<[[Pixel; 2]; 2], Weights, Embedding>,
-        rand::distributions::Standard: rand::distributions::Distribution<Weights>,
-        rand::distributions::Standard: rand::distributions::Distribution<Embedding>,
-        [[Pixel; 2]; 2]: Train<EvalCreator, [[Pixel; 2]; 2], Weights, Embedding>,
-    {
-        fn train_from_images<RNG: rand::Rng>(
-            rng: &mut RNG,
-            eval_creator: &EvalCreator,
-            images: &Vec<(usize, InputImage)>,
-            fs_path: &Path,
-            depth: usize,
-            head_update_freq: usize,
-            log_file_path: &Path,
-        ) -> Vec<(usize, OutputImage)> {
-            let weights = Self::new_from_fs(fs_path).unwrap_or_else(|| {
-                println!("{} not found, training", &fs_path.to_str().unwrap());
-                //let patches: Vec<(u8, [[Pixel; 2]; 2])> = vec_extract_patches(rng, &images);
-                let patches: Vec<(u8, [[Pixel; 2]; 2])> = {
-                    let mut patches: Vec<(u8, [[Pixel; 2]; 2])> = images
+                let patches = {
+                    let mut patches: Vec<(u8, Patch)> = images
                         .iter()
                         .map(|(class, image)| iter::repeat(*class as u8).zip(image.patches()))
                         .flatten()
@@ -713,14 +652,18 @@ pub mod optimize {
                 let mut head: [Embedding; 10] = rng.gen();
 
                 let start = PreciseTime::now();
-                let obj = <[[Pixel; 2]; 2]>::recurs_train(eval_creator, &mut weights, &mut head, &patches, depth, head_update_freq);
-                println!("obj: {}, time: {}", obj, start.to(PreciseTime::now()));
+
+                let mut avg_obj = <Patch>::recurs_train(eval_creator, &mut weights, &mut head, &patches, depth, head_update_freq);
+                if do_final_pass {
+                    avg_obj = <Patch>::train_pass(eval_creator, &mut weights, &mut head, &patches, 100);
+                }
+                println!("obj: {}, time: {}", avg_obj, start.to(PreciseTime::now()));
                 write_to_log_event(
                     log_file_path,
                     fs_path,
                     start.to(PreciseTime::now()),
                     head_update_freq,
-                    obj,
+                    avg_obj,
                     depth,
                     images.len(),
                 );
@@ -870,7 +813,7 @@ pub mod objective_eval {
     }
 
     pub struct VulkanObjectiveEval<ApplyLayout, ReduceSumLayout, InputPatch, Weights, Embedding> {
-        N_EXAMPLES: usize,
+        n_examples: usize,
         input_patch_type: PhantomData<InputPatch>,
         device: Arc<Device>,
         queue: Arc<Queue>,
@@ -1038,7 +981,7 @@ pub mod objective_eval {
                     );
 
                     Self::ObjectiveEvalType {
-                        N_EXAMPLES: examples.len(),
+                        n_examples: examples.len(),
                         input_patch_type: PhantomData,
                         device: device.clone(),
                         queue: queue,
@@ -1076,7 +1019,7 @@ pub mod objective_eval {
                     let pa_command_buffer = AutoCommandBufferBuilder::new(self.device.clone(), self.queue.family())
                         .unwrap()
                         .dispatch(
-                            [(self.N_EXAMPLES as f64 / 64f64).ceil() as u32, 1, 1],
+                            [(self.n_examples as f64 / 64f64).ceil() as u32, 1, 1],
                             self.apply_compute_pipeline.clone(),
                             self.apply_descriptor_set.clone(),
                             pa_push_constants,
@@ -1098,7 +1041,7 @@ pub mod objective_eval {
                         .unwrap()
                         .dispatch(
                             [
-                                ((self.N_EXAMPLES as f64 / 64f64) / self.reduce_sum_batch_size as f64).ceil() as u32,
+                                ((self.n_examples as f64 / 64f64) / self.reduce_sum_batch_size as f64).ceil() as u32,
                                 1,
                                 1,
                             ],
@@ -1181,11 +1124,15 @@ pub mod objective_eval {
     //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, 3, apply_shader_3_3, "shaders/conv3x3_3-3.glsl");
 
     impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 2, 2, 2, apply_shader_2x2_2_2, "shaders/conv2x2_2-2.glsl");
+    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 2, 1, 2, apply_shader_2x2_1_2, "shaders/conv2x2_1-2.glsl");
+    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 2, 2, 4, apply_shader_2x2_2_4, "shaders/conv2x2_2-4.glsl");
 
     impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 1, 1, mirror_apply_shader_3x3_1_1, "shaders/mirror3x3_1-1.glsl");
     impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 2, 1, mirror_apply_shader_3x3_2_1, "shaders/mirror3x3_2-1.glsl");
     impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 2, 2, mirror_apply_shader_3x3_2_2, "shaders/mirror3x3_2-2.glsl");
     impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 4, 2, mirror_apply_shader_3x3_4_2, "shaders/mirror3x3_4-2.glsl");
+    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 2, 4, mirror_apply_shader_3x3_2_4, "shaders/mirror3x3_2-4.glsl");
+    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 4, 4, mirror_apply_shader_3x3_4_4, "shaders/mirror3x3_4-4.glsl");
 
     #[cfg(test)]
     mod tests {
@@ -1349,6 +1296,10 @@ pub mod objective_eval {
         #[test]
         fn vk_array_32_2x2_2_2() {
             vk_test!(32, 2, 2, 2);
+        }
+        #[test]
+        fn vk_array_32_2x2_2_4() {
+            vk_test!(32, 2, 2, 4);
         }
 
         #[test]
