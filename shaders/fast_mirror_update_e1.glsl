@@ -3,7 +3,7 @@
 struct CacheExampleMirrored {
   uint[2] input_word;
   uint[2] input_partial_sums;
-  uint embedding_word;
+  uint[1] embedding;
   uint true_class;
 } fast_cache;
 
@@ -24,8 +24,9 @@ objective_sums;
 // pc;
 
 layout(push_constant) uniform PushConstantData {
-  uint[10] head_words;
+  uint[10][1] head;
   uint embedding_bit_index;
+  uint embedding_word;
   uint threshold;
   uint weights_word;
   uint batch_size;
@@ -53,8 +54,9 @@ void main() {
         (bitCount(pc.weights_word ^ cache_data.cache[index].input_word[1]) +
          cache_data.cache[index].input_partial_sums[1]) > pc.threshold);
 
-    uint new_embedding =
-        cache_data.cache[index].embedding_word &
+    uint[1] new_embedding;
+    new_embedding[0] =
+        cache_data.cache[index].embedding[0] &
             (onebits ^ (uint(1) << (0 + pc.embedding_bit_index))) &
             (onebits ^ (uint(1) << (16 + pc.embedding_bit_index))) |
         (normal << (0 + pc.embedding_bit_index)) |
@@ -67,7 +69,7 @@ void main() {
     uint act;
 
     for (c = 0; c < 10; c++) {
-      act = bitCount(new_embedding ^ pc.head_words[c]);
+      act = bitCount(new_embedding[0] ^ pc.head[c][0]);
       max_act = max(max_act, ((c != true_class ? act : 0)));
       true_act += (c == true_class) ? act : 0;
     }
