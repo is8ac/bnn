@@ -3,7 +3,7 @@ extern crate rand;
 extern crate time;
 use bitnn::layers::{Apply, MirrorHammingDistance};
 use bitnn::objective_eval::IsCorrect;
-use bitnn::objective_eval::{ObjectiveEval, ObjectiveEvalCreator, TestCPUObjectiveEval, TestCPUObjectiveEvalCreator, VulkanObjectiveEvalCreator};
+use bitnn::objective_eval::{ObjectiveEval, ObjectiveEvalCreator, TestCPUObjectiveEvalCreator};
 use bitnn::{BitLen, HammingDistance};
 use rand::prelude::*;
 use rand::SeedableRng;
@@ -14,7 +14,7 @@ use rayon::prelude::*;
 use std::marker::PhantomData;
 
 use time::PreciseTime;
-use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, DeviceLocalBuffer, ImmutableBuffer};
+use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, ImmutableBuffer};
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::descriptor::pipeline_layout::PipelineLayout;
@@ -33,13 +33,32 @@ mod fast_obj_update {
         path: "shaders/fast_mirror_update.glsl",
     }
 }
+
+//mod transition_input_word {
+//    vulkano_shaders::shader! {
+//        ty: "compute",
+//        path: "shaders/fast_mirror_input_word_trans.glsl",
+//    }
+//}
+
+
 #[derive(Debug, Copy, Clone)]
 pub struct FastExampleMirrored {
     input_word: [u32; 2],         // a pair of 32 bits. This is mirrored, so we need a normal and a flipped input word.
     input_partial_sums: [u32; 2], // a pair of integers, one for normal one for flipped.
     embedding_word: u32,          // 32 bits. This is the bits of the embedding, two bits will be updated acording to the input and weights.
-    head_partial_sums: [u32; 10], // integers
     true_class: u32,
+}
+
+impl FastExampleMirrored {
+    fn is_good(&self, head_words: &[u32; 10]) -> bool {
+        let max_obj = (self.embedding_word ^ head_words[self.true_class as usize]).count_ones();
+        let mut is_good = true;
+        for c in 0..10 {
+            is_good = ((c == self.true_class as usize) | ((self.embedding_word ^ head_words[c]).count_ones() < max_obj)) && is_good;
+        }
+        is_good
+    }
 }
 
 pub trait NewMirror3x3FastCache<InputPatch, Weights, Embedding> {
@@ -73,11 +92,6 @@ macro_rules! impl_NewMirror3x3FastCache_for_FastExampleMirrored {
                 input_pixel_word: usize,
             ) -> FastExampleMirrored {
                 let embedding = weights.apply(input);
-                let mut head_partial_sums = [0u32; 10];
-                for c in 0..10 {
-                    head_partial_sums[c] =
-                        head[c].hamming_distance(&embedding) - head[c][embedding_word].hamming_distance(&embedding[embedding_word]);
-                }
                 let input_words = if input_x == 0 {
                     [input[0][input_y][input_pixel_word], input[2][input_y][input_pixel_word]]
                 } else if input_x == 2 {
@@ -94,7 +108,6 @@ macro_rules! impl_NewMirror3x3FastCache_for_FastExampleMirrored {
                             - weights[embedding_word][embedding_bit][input_x][input_y][input_pixel_word].hamming_distance(&input_words[1]),
                     ],
                     embedding_word: embedding[embedding_word],
-                    head_partial_sums: head_partial_sums,
                     true_class: class as u32,
                 }
             }
@@ -125,10 +138,13 @@ macro_rules! impl_NewMirror3x3FastCache_for_FastExampleMirrored {
         }
     };
 }
-impl_NewMirror3x3FastCache_for_FastExampleMirrored!(4, 2);
-impl_NewMirror3x3FastCache_for_FastExampleMirrored!(3, 2);
-impl_NewMirror3x3FastCache_for_FastExampleMirrored!(2, 2);
+//impl_NewMirror3x3FastCache_for_FastExampleMirrored!(4, 2);
+//impl_NewMirror3x3FastCache_for_FastExampleMirrored!(3, 2);
+//impl_NewMirror3x3FastCache_for_FastExampleMirrored!(2, 2);
 impl_NewMirror3x3FastCache_for_FastExampleMirrored!(1, 1);
+impl_NewMirror3x3FastCache_for_FastExampleMirrored!(2, 1);
+impl_NewMirror3x3FastCache_for_FastExampleMirrored!(3, 1);
+impl_NewMirror3x3FastCache_for_FastExampleMirrored!(4, 1);
 
 pub struct FastCacheVKObjEval<InputPatch, Weights, Embedding> {
     n_examples: usize,
@@ -215,10 +231,10 @@ pub trait GetHeadWords {
 macro_rules! impl_getheadwords_for_head {
     ($len:expr) => {
         impl GetHeadWords for [[u32; $len]; 10] {
-            fn get_head_words(&self, embedding_word: usize) -> [u32; 10] {
+            fn get_head_words(&self, embedding_word_index: usize) -> [u32; 10] {
                 let mut head_words = [0u32; 10];
                 for c in 0..10 {
-                    head_words[c] = self[c][0];
+                    head_words[c] = self[c][embedding_word_index];
                 }
                 head_words
             }
@@ -227,9 +243,9 @@ macro_rules! impl_getheadwords_for_head {
 }
 
 impl_getheadwords_for_head!(1);
-impl_getheadwords_for_head!(2);
-impl_getheadwords_for_head!(3);
-impl_getheadwords_for_head!(4);
+//impl_getheadwords_for_head!(2);
+//impl_getheadwords_for_head!(3);
+//impl_getheadwords_for_head!(4);
 
 impl<InputPatch: Sync + GetWord + BitLen, Weights: Sync + GetPatch<InputPatch>, Embedding: Sync> FastCacheVKObjEval<InputPatch, Weights, Embedding>
 where
@@ -270,7 +286,19 @@ where
 
         let data_vec: Vec<_> = examples
             .par_iter()
-            .map(|(class, patch)| FastExampleMirrored::new(&patch, weights, &head, *class as usize, 0, embedding_bit_index as usize, 0, 0, 0))
+            .map(|(class, patch)| {
+                FastExampleMirrored::new(
+                    &patch,
+                    weights,
+                    &head,
+                    *class as usize,
+                    embedding_index / 16,
+                    embedding_index % 16,
+                    0,
+                    0,
+                    0,
+                )
+            })
             .collect();
         let (cache_buffer, _) = ImmutableBuffer::from_iter(data_vec.iter().cloned(), BufferUsage::all(), queue.clone()).unwrap();
 
@@ -283,7 +311,6 @@ where
                 .build()
                 .unwrap(),
         );
-
         FastCacheVKObjEval {
             n_examples: examples.len(),
             sum_batch_size: batch_size,
@@ -297,26 +324,25 @@ where
             obj_sums_buffer: sums_buffer,
             update_pipeline: pipeline,
             update_descriptor_set: set,
-            embedding_word_index: 0,
-            embedding_bit_index: 0,
-            weights_patch_word: weights.get_patch(embedding_index).get_word(0),
+            embedding_word_index: embedding_index / 16,
+            embedding_bit_index: embedding_index % 16,
+            weights_patch_word: weights.get_patch(embedding_index % 16).get_word(embedding_index / 16),
         }
     }
 
     fn sum_obj(&self) -> u64 {
         let pa_push_constants = fast_obj_update::ty::PushConstantData {
-            embedding_bit_index: embedding_bit_index as u32,
+            head_words: self.head_words,
+            embedding_bit_index: self.embedding_bit_index as u32,
             threshold: (<InputPatch>::BIT_LEN / 2) as u32,
             weights_word: self.weights_patch_word,
-            head_words: self.head_words,
             batch_size: self.sum_batch_size as u32,
         };
-
-        // In order to execute our operation, we have to build a command buffer.
+        let n_workgroups = ((self.n_examples as f64 / 256f64) / self.sum_batch_size as f64).ceil() as u32;
         let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(self.device.clone(), self.queue.family())
             .unwrap()
             .dispatch(
-                [((self.n_examples as f64 / 64f64) / self.sum_batch_size as f64).ceil() as u32, 1, 1],
+                [n_workgroups, 1, 1],
                 self.update_pipeline.clone(),
                 self.update_descriptor_set.clone(),
                 pa_push_constants,
@@ -325,8 +351,6 @@ where
             .build()
             .unwrap();
 
-        // Let's execute this command buffer now.
-        // To do so, we TODO: this is a bit clumsy, probably needs a shortcut
         let future = sync::now(self.device.clone())
             .then_execute(self.queue.clone(), command_buffer)
             .unwrap()
@@ -337,18 +361,21 @@ where
         let start = PreciseTime::now();
         let data_buffer_content = self.obj_sums_buffer.read().unwrap();
         let gpu_sum: u64 = data_buffer_content.par_iter().map(|&x| x as u64).sum();
-        println!("cpu sum time mills: {}", start.to(PreciseTime::now()).num_milliseconds());
         gpu_sum
+    }
+    fn transition_input_word(&mut self, target_input_index: usize) {
+
     }
 }
 
-const N_EXAMPLES: usize = 50000 * 900 / 4;
-//const N_EXAMPLES: usize = 104729 * 13 * 7;
-//const N_EXAMPLES: usize = 65536;
-const BATCH_SIZE: usize = 7000;
-const embedding_bit_index: usize = 7;
+const N_EXAMPLES: usize = 50000 * 900;
+//const N_EXAMPLES: usize = 65536 * 16;
+//const N_EXAMPLES: usize = 104729;
+const BATCH_SIZE: usize = 5 * 5 * 5 * 3 * 3;
+const EMBEDDING_BIT_INDEX: usize = 5;
 
 const INPUT_LEN: usize = 1;
+
 
 fn main() {
     let mut rng = Hc128Rng::seed_from_u64(1);
@@ -356,34 +383,24 @@ fn main() {
     let full_head: [[u32; 1]; 10] = rng.gen();
     let examples: Vec<_> = (0..N_EXAMPLES as u32).map(|_| (rng.gen_range(0, 10), rng.gen())).collect();
 
-    let fast_cache = FastCacheVKObjEval::new_vk_fast_cache(&examples, &full_weights, &full_head, embedding_bit_index, BATCH_SIZE);
-    let cf_gpu_sum = fast_cache.sum_obj();
+    let mut fast_cache = FastCacheVKObjEval::new_vk_fast_cache(&examples, &full_weights, &full_head, EMBEDDING_BIT_INDEX, BATCH_SIZE);
+    let _ = fast_cache.sum_obj();
 
-    let vk_eval_creator = VulkanObjectiveEvalCreator::new(BATCH_SIZE);
-    let mut vk_obj_eval = vk_eval_creator.new_obj_eval(&full_weights, &full_head, &examples);
     let test_eval_creator = TestCPUObjectiveEvalCreator::new();
     let mut test_obj_eval = test_eval_creator.new_obj_eval(&full_weights, &full_head, &examples);
 
+    test_obj_eval.flip_weights_bit(EMBEDDING_BIT_INDEX, 7);
+    fast_cache.weights_patch_word ^= 1 << 7;
+
     let start = PreciseTime::now();
-    let fc_gpu_sum = fast_cache.sum_obj();
+    println!("starting gpu");
+    for i in 0..1000 {
+        let fc_gpu_sum = fast_cache.sum_obj();
+    }
     println!("fast gpu mills: {}", start.to(PreciseTime::now()).num_milliseconds());
 
-    let start = PreciseTime::now();
-    let vk_obj: u64 = vk_obj_eval.obj();
-    println!("old vk mills: {}", start.to(PreciseTime::now()).num_milliseconds());
+    let fc_gpu_sum = fast_cache.sum_obj();
     let test_obj: u64 = test_obj_eval.obj();
-    assert_eq!(vk_obj, test_obj);
-
-
-    let simple_cpu_sum: u64 = examples
-        .par_iter()
-        .map(|(class, input)| {
-            let true_embedding = full_weights.apply(input);
-            let true_correct = full_head.is_correct(*class as u8, true_embedding);
-            true_correct as u64
-        })
-        .sum();
-
-    assert_eq!(simple_cpu_sum, fc_gpu_sum);
+    assert_eq!(fc_gpu_sum, test_obj);
     dbg!(fc_gpu_sum);
 }
