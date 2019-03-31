@@ -1,10 +1,13 @@
 # bitnets
-This project is currently in development.
+This project is currently in development. Do not expect it to work.
 
-To try it out, run
-```
-cargo run --release --bin mnist_conv
-```
+In current greedy layer wise training:
+- Time is liner with number of parameters and also linear with training set size
+- Memory usage is linear with training set size
+
+Memory usage linear with training set size is fine for CIFAR, but will be an issue for ImageNet.
+
+
 
 
 # Literature
@@ -36,17 +39,9 @@ cargo run --release --bin mnist_conv
 
 [AdaComp : Adaptive Residual Gradient Compression for Data-Parallel Distributed Training](https://arxiv.org/abs/1712.02679)
 
-Stages:
-- For each layer:
-  - Allocate an empty vector to hold filter sets
-  - For each boosting:
-    - Filter the set of patches to those which none of the existing filter sets can correct classify
-    - Calculate the average grads for all patches
-    - Calculate the average grads for the patches of each label
-    - Subtract the global average grads from the label specific average grads
-    - Threshold at 0 and bitpack
-    - Push the set of bitpacked filters into the vector of filter sets.
-  - Flatten the filter set and de-duplicate
-  - Take output_chans * 64 filters from the de-duplicated set of filters, and use as the layer filters
-  - Calculate the mean of all activations for each filter, and use as the thresholds
-  - Use both the layer filters and the thresholds to calculate the bitpacked output of the layer to be used as input to the next layer.
+
+# Layerwise training
+https://openreview.net/pdf?id=ryxfHnCctX
+https://arxiv.org/abs/1901.06656
+https://arxiv.org/abs/1803.09522
+https://arxiv.org/abs/1812.11446

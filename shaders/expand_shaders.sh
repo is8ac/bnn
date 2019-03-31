@@ -1,6 +1,6 @@
 #! /bin/bash
 
-for OUTPUT_LEN in {1..3}
+for OUTPUT_LEN in {1..4}
 do
   export OUTPUT_LEN=$OUTPUT_LEN
   for INPUT_LEN in {1..4}

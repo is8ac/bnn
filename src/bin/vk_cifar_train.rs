@@ -18,24 +18,21 @@ use std::fs;
 use std::path::Path;
 use time::PreciseTime;
 
-const HEAD_UPDATE_FREQ: usize = 17;
+const HEAD_UPDATE_FREQ: usize = 30;
 // reduce sum batch size should have strictly no effect on obj.
 const RS_BATCH: usize = 400;
 // depth shoud have approximately no effect on run time.
-const DEPTH: usize = 8;
+const DEPTH: usize = 9;
 
 fn main() {
     let log_file_path = Path::new("vk_train_log.txt");
-    let base_path = Path::new("params/vk_mirror_test");
+    let base_path = Path::new("params/vk_cheap_noskip");
     fs::create_dir_all(base_path).unwrap();
     let mut rng = Hc128Rng::seed_from_u64(42);
     let cifar_base_path = Path::new("/home/isaac/big/cache/datasets/cifar-10-batches-bin");
 
     let mut l0_images = cifar::load_images_from_base(cifar_base_path, 50_000);
     let eval_creator = VulkanObjectiveEvalCreator::new(RS_BATCH);
-
-    let weights = [[[[[0u32; 1]; 3]; 3]; 16]; 1];
-    let output: [[[u32; 1]; 32]; 32] = weights.apply(&l0_images[0].1);
 
     let start = PreciseTime::now();
     let mut l1_images: Vec<(usize, [[[u32; 1]; 32]; 32])> = <[[[[[u32; 1]; 3]; 3]; 16]; 1]>::train_from_images(
@@ -46,6 +43,7 @@ fn main() {
         DEPTH,
         HEAD_UPDATE_FREQ,
         &log_file_path,
+        false,
     );
 
     for l in 1..7 {
@@ -59,6 +57,7 @@ fn main() {
             DEPTH,
             HEAD_UPDATE_FREQ,
             &log_file_path,
+            false,
         );
     }
 
@@ -72,16 +71,18 @@ fn main() {
         DEPTH,
         HEAD_UPDATE_FREQ,
         &log_file_path,
+        true,
     );
 
     let mut l8_images = <[[[[[u32; 2]; 3]; 3]; 16]; 2]>::train_from_images(
         &mut rng,
         &eval_creator,
         &l7_images,
-        &base_path.join(format!("l{}_3x2_2-2", 8)),
+        &base_path.join(format!("l{}_3x3_2-2", 8)),
         DEPTH,
         HEAD_UPDATE_FREQ,
         &log_file_path,
+        true,
     );
     for l in 9..30 {
         let c7_8_images: Vec<(usize, [[[u32; 4]; 16]; 16])> = vec_concat_2_examples(&l7_images, &l8_images);
@@ -90,10 +91,11 @@ fn main() {
             &mut rng,
             &eval_creator,
             &c7_8_images,
-            &base_path.join(format!("l{}_3x2_4-2", l)),
+            &base_path.join(format!("l{}_3x3_4-2", l)),
             DEPTH,
             HEAD_UPDATE_FREQ,
             &log_file_path,
+            true,
         );
     }
 
