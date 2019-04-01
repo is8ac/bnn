@@ -5,6 +5,7 @@ use bitnn::layers::{Apply, MirrorHammingDistance};
 use bitnn::objective_eval::IsCorrect;
 use bitnn::objective_eval::{ObjectiveEval, ObjectiveEvalCreator, TestCPUObjectiveEvalCreator};
 use bitnn::{BitLen, HammingDistance};
+use bitnn::{FlipBit, GetMirroredWords, GetPatch, GetWord, WordLen};
 use rand::prelude::*;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
@@ -41,12 +42,12 @@ mod fast_obj_update_e2 {
     }
 }
 
-//mod transition_input_word {
-//    vulkano_shaders::shader! {
-//        ty: "compute",
-//        path: "shaders/fast_mirror_input_word_trans.glsl",
-//    }
-//}
+mod transition_input_word {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "shaders/fast_mirror_input_word_trans.glsl",
+    }
+}
 
 // Note that when embedding word len get to be ~8, it may be worth switching to cached head partial sum so as to make head obj linear with embedding size.
 // However while it is small, the memory overhead of the 10 nonconstant partial sums is probably not worth the compute cost savings.
@@ -54,7 +55,7 @@ mod fast_obj_update_e2 {
 // For 100 classes, the transition point will be far larger and it's probably not worth it.
 #[derive(Debug, Copy, Clone)]
 pub struct FastExampleMirrored<Embedding> {
-    input_word: [u32; 2],         // a pair of 32 bits. This is mirrored, so we need a normal and a flipped input word.
+    input_word: [u32; 2], // a pair of 32 bits. This is mirrored, so we need a normal and a flipped input word.
     input_partial_sums: [u32; 2], // a pair of integers, one for normal one for flipped.
     embedding: Embedding,
     true_class: u32,
@@ -62,10 +63,14 @@ pub struct FastExampleMirrored<Embedding> {
 
 impl<Embedding: HammingDistance> FastExampleMirrored<Embedding> {
     fn is_good(&self, head_words: &[Embedding; 10]) -> bool {
-        let max_obj = self.embedding.hamming_distance(&head_words[self.true_class as usize]);
+        let max_obj = self
+            .embedding
+            .hamming_distance(&head_words[self.true_class as usize]);
         let mut is_good = true;
         for c in 0..10 {
-            is_good = ((c == self.true_class as usize) | (self.embedding.hamming_distance(&head_words[c]) < max_obj)) && is_good;
+            is_good = ((c == self.true_class as usize)
+                | (self.embedding.hamming_distance(&head_words[c]) < max_obj))
+                && is_good;
         }
         is_good
     }
@@ -78,16 +83,18 @@ pub trait NewMirror3x3FastCache<InputPatch, Weights, Embedding> {
         class: usize,
         embedding_word: usize,
         embedding_bit: usize,
-        input_x: usize,
-        input_y: usize,
-        input_pixel_word: usize,
+        patch_index: usize,
     ) -> Self;
 }
 
 macro_rules! impl_NewMirror3x3FastCache_for_FastExampleMirrored {
     ($input_len:expr, $output_len:expr) => {
-        impl NewMirror3x3FastCache<[[[u32; $input_len]; 3]; 3], [[[[[u32; $input_len]; 3]; 3]; 16]; $output_len], [u32; $output_len]>
-            for FastExampleMirrored<[u32; $output_len]>
+        impl
+            NewMirror3x3FastCache<
+                [[[u32; $input_len]; 3]; 3],
+                [[[[[u32; $input_len]; 3]; 3]; 16]; $output_len],
+                [u32; $output_len],
+            > for FastExampleMirrored<[u32; $output_len]>
         {
             fn new(
                 input: &[[[u32; $input_len]; 3]; 3],
@@ -95,25 +102,21 @@ macro_rules! impl_NewMirror3x3FastCache_for_FastExampleMirrored {
                 class: usize,
                 embedding_word: usize,
                 embedding_bit: usize,
-                input_x: usize,
-                input_y: usize,
-                input_pixel_word: usize,
+                patch_index: usize,
             ) -> FastExampleMirrored<[u32; $output_len]> {
                 let embedding = weights.apply(input);
-                let input_words = if input_x == 0 {
-                    [input[0][input_y][input_pixel_word], input[2][input_y][input_pixel_word]]
-                } else if input_x == 2 {
-                    [input[2][input_y][input_pixel_word], input[0][input_y][input_pixel_word]]
-                } else {
-                    [input[1][input_y][input_pixel_word], input[1][input_y][input_pixel_word]]
-                };
+                let input_words = input.get_mirrored_words(patch_index);
                 FastExampleMirrored {
                     input_word: input_words,
                     input_partial_sums: [
                         weights[embedding_word][embedding_bit].normal_hamming_distance(&input)
-                            - weights[embedding_word][embedding_bit][input_x][input_y][input_pixel_word].hamming_distance(&input_words[0]),
+                            - weights[embedding_word][embedding_bit]
+                                .get_word(patch_index)
+                                .hamming_distance(&input_words[0]),
                         weights[embedding_word][embedding_bit].fliped_hamming_distance(&input)
-                            - weights[embedding_word][embedding_bit][input_x][input_y][input_pixel_word].hamming_distance(&input_words[1]),
+                            - weights[embedding_word][embedding_bit]
+                                .get_word(patch_index)
+                                .hamming_distance(&input_words[1]),
                     ],
                     embedding: embedding,
                     true_class: class as u32,
@@ -156,6 +159,7 @@ impl_NewMirror3x3FastCache_for_FastExampleMirrored!(2, 1);
 
 pub struct FastCacheVKObjEval<ShaderLayout, InputPatch, Weights, Embedding> {
     n_examples: usize,
+    examples: Vec<InputPatch>,
     sum_batch_size: usize,
     weights_patch: InputPatch,
     head: [Embedding; 10],
@@ -165,90 +169,66 @@ pub struct FastCacheVKObjEval<ShaderLayout, InputPatch, Weights, Embedding> {
     device: Arc<Device>,
     queue: Arc<Queue>,
     obj_sums_buffer: Arc<CpuAccessibleBuffer<[u32]>>,
+    cache_buffer: Arc<ImmutableBuffer<[FastExampleMirrored<Embedding>]>>,
     update_pipeline: Arc<ComputePipeline<PipelineLayout<ShaderLayout>>>,
     update_descriptor_set: Arc<
         vulkano::descriptor::descriptor_set::PersistentDescriptorSet<
-            std::sync::Arc<vulkano::pipeline::ComputePipeline<vulkano::descriptor::pipeline_layout::PipelineLayout<ShaderLayout>>>,
+            std::sync::Arc<
+                vulkano::pipeline::ComputePipeline<
+                    vulkano::descriptor::pipeline_layout::PipelineLayout<ShaderLayout>,
+                >,
+            >,
             (
                 (
                     (),
                     vulkano::descriptor::descriptor_set::PersistentDescriptorSetBuf<
-                        std::sync::Arc<vulkano::buffer::ImmutableBuffer<[FastExampleMirrored<Embedding>]>>,
+                        std::sync::Arc<
+                            vulkano::buffer::ImmutableBuffer<[FastExampleMirrored<Embedding>]>,
+                        >,
                     >,
                 ),
-                vulkano::descriptor::descriptor_set::PersistentDescriptorSetBuf<std::sync::Arc<vulkano::buffer::CpuAccessibleBuffer<[u32]>>>,
+                vulkano::descriptor::descriptor_set::PersistentDescriptorSetBuf<
+                    std::sync::Arc<vulkano::buffer::CpuAccessibleBuffer<[u32]>>,
+                >,
             ),
         >,
     >,
     embedding_word_index: usize,
     embedding_bit_index: usize,
-    weights_patch_word: u32,
+    patch_index: usize,
+    //weights_patch_word: u32,
 }
-
-pub trait GetPatch<T> {
-    fn get_patch(&self, index: usize) -> T;
-}
-macro_rules! impl_getpatch_for_weights {
-    ($words:expr) => {
-        impl<T: Copy> GetPatch<T> for [[T; 16]; $words] {
-            fn get_patch(&self, index: usize) -> T {
-                self[index / 16][index % 16]
-            }
-        }
-    };
-}
-impl_getpatch_for_weights!(1);
-impl_getpatch_for_weights!(2);
-impl_getpatch_for_weights!(3);
-impl_getpatch_for_weights!(4);
-
-pub trait GetWord {
-    fn get_word(&self, i: usize) -> u32;
-    const WORD_LEN: usize;
-}
-
-impl GetWord for u32 {
-    fn get_word(&self, i: usize) -> u32 {
-        if i != 0 {
-            panic!("there is is only 1 word in a u32!")
-        }
-        *self
-    }
-    const WORD_LEN: usize = 1;
-}
-
-macro_rules! impl_getword_for_array {
-    ($len:expr) => {
-        impl<T: GetWord> GetWord for [T; $len] {
-            fn get_word(&self, i: usize) -> u32 {
-                self[i / T::WORD_LEN].get_word(i % T::WORD_LEN)
-            }
-            const WORD_LEN: usize = T::WORD_LEN * $len;
-        }
-    };
-}
-impl_getword_for_array!(1);
-impl_getword_for_array!(2);
-impl_getword_for_array!(3);
-impl_getword_for_array!(4);
 
 macro_rules! impl_fastexamplemirrored_over_embedding {
     ($shader_mod_name:ident, $embedding_len:expr) => {
-        impl<InputPatch: Sync + GetWord + BitLen, Weights: Sync + GetPatch<InputPatch>>
-            FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, Weights, [u32; $embedding_len]>
+        impl<
+                InputPatch: Sync + GetWord + GetMirroredWords + BitLen + Copy,
+                Weights: Sync + GetPatch<InputPatch>,
+            >
+            FastCacheVKObjEval<
+                $shader_mod_name::Layout,
+                InputPatch,
+                Weights,
+                [u32; $embedding_len],
+            >
         where
-            FastExampleMirrored<[u32; $embedding_len]>: NewMirror3x3FastCache<InputPatch, Weights, [u32; $embedding_len]>,
+            FastExampleMirrored<[u32; $embedding_len]>:
+                NewMirror3x3FastCache<InputPatch, Weights, [u32; $embedding_len]>,
         {
             fn new_vk_fast_cache(
                 examples: &Vec<(u8, InputPatch)>,
                 weights: &Weights,
                 head: &[[u32; $embedding_len]; 10],
                 embedding_index: usize,
+                patch_index: usize,
                 batch_size: usize,
             ) -> Self {
                 let instance = Instance::new(None, &InstanceExtensions::none(), None).unwrap();
                 let physical = PhysicalDevice::enumerate(&instance).next().unwrap();
-                let queue_family = physical.queue_families().find(|&q| q.supports_compute()).unwrap();
+                let queue_family = physical
+                    .queue_families()
+                    .find(|&q| q.supports_compute())
+                    .unwrap();
 
                 // Now initializing the device.
                 let (device, mut queues) = Device::new(
@@ -267,8 +247,10 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
                 });
 
                 let sums_buffer = {
-                    let data_iter = (0..(N_EXAMPLES as f64 / batch_size as f64).ceil() as u32).map(|_| 0u32);
-                    CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), data_iter).unwrap()
+                    let data_iter =
+                        (0..(N_EXAMPLES as f64 / batch_size as f64).ceil() as u32).map(|_| 0u32);
+                    CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), data_iter)
+                        .unwrap()
                 };
 
                 let data_vec: Vec<_> = examples
@@ -280,13 +262,16 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
                             *class as usize,
                             embedding_index / 16,
                             embedding_index % 16,
-                            0,
-                            0,
-                            0,
+                            patch_index,
                         )
                     })
                     .collect();
-                let (cache_buffer, _) = ImmutableBuffer::from_iter(data_vec.iter().cloned(), BufferUsage::all(), queue.clone()).unwrap();
+                let (cache_buffer, _) = ImmutableBuffer::from_iter(
+                    data_vec.iter().cloned(),
+                    BufferUsage::all(),
+                    queue.clone(),
+                )
+                .unwrap();
 
                 let set = Arc::new(
                     PersistentDescriptorSet::start(pipeline.clone(), 0)
@@ -299,6 +284,7 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
                 );
                 FastCacheVKObjEval {
                     n_examples: examples.len(),
+                    examples: examples.iter().map(|(_, patch)| patch).cloned().collect(),
                     sum_batch_size: batch_size,
                     weights_patch: weights.get_patch(embedding_index),
                     head: *head,
@@ -308,11 +294,13 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
                     device: device,
                     queue: queue,
                     obj_sums_buffer: sums_buffer,
+                    cache_buffer: cache_buffer,
                     update_pipeline: pipeline,
                     update_descriptor_set: set,
                     embedding_word_index: embedding_index / 16,
                     embedding_bit_index: embedding_index % 16,
-                    weights_patch_word: weights.get_patch(embedding_index % 16).get_word(embedding_index / 16),
+                    patch_index: patch_index,
+                    //weights_patch_word: weights.get_patch(embedding_index).get_word(0),
                 }
             }
 
@@ -322,21 +310,25 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
                     embedding_bit_index: self.embedding_bit_index as u32,
                     embedding_word: self.embedding_word_index as u32,
                     threshold: (<InputPatch>::BIT_LEN / 2) as u32,
-                    weights_word: self.weights_patch_word,
+                    weights_word: self.weights_patch.get_word(self.patch_index),
                     batch_size: self.sum_batch_size as u32,
                 };
-                let n_workgroups = ((self.n_examples as f64 / 256f64) / self.sum_batch_size as f64).ceil() as u32;
-                let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(self.device.clone(), self.queue.family())
-                    .unwrap()
-                    .dispatch(
-                        [n_workgroups, 1, 1],
-                        self.update_pipeline.clone(),
-                        self.update_descriptor_set.clone(),
-                        pa_push_constants,
-                    )
-                    .unwrap()
-                    .build()
-                    .unwrap();
+                let n_workgroups =
+                    ((self.n_examples as f64 / 256f64) / self.sum_batch_size as f64).ceil() as u32;
+                let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(
+                    self.device.clone(),
+                    self.queue.family(),
+                )
+                .unwrap()
+                .dispatch(
+                    [n_workgroups, 1, 1],
+                    self.update_pipeline.clone(),
+                    self.update_descriptor_set.clone(),
+                    pa_push_constants,
+                )
+                .unwrap()
+                .build()
+                .unwrap();
 
                 let future = sync::now(self.device.clone())
                     .then_execute(self.queue.clone(), command_buffer)
@@ -350,7 +342,77 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
                 let gpu_sum: u64 = data_buffer_content.par_iter().map(|&x| x as u64).sum();
                 gpu_sum
             }
-            //fn transition_input_word(&mut self, target_input_index: usize) {}
+            fn transition_input_word(&mut self, target_weight_index: usize) {
+                let start = PreciseTime::now();
+                let data_vec: Vec<[u32; 2]> = self
+                    .examples
+                    .par_iter()
+                    .map(|patch| patch.get_mirrored_words(target_weight_index))
+                    .collect();
+                println!(
+                    "trans CPU ms: {}",
+                    start.to(PreciseTime::now()).num_milliseconds()
+                );
+
+                let (new_words_buffer, _) = ImmutableBuffer::from_iter(
+                    data_vec.iter().cloned(),
+                    BufferUsage::all(),
+                    self.queue.clone(),
+                )
+                .unwrap();
+                println!(
+                    "trans init ms: {}",
+                    start.to(PreciseTime::now()).num_milliseconds()
+                );
+
+                let start = PreciseTime::now();
+                let pipeline = Arc::new({
+                    let shader = transition_input_word::Shader::load(self.device.clone()).unwrap();
+                    ComputePipeline::new(self.device.clone(), &shader.main_entry_point(), &())
+                        .unwrap()
+                });
+                let set = Arc::new(
+                    PersistentDescriptorSet::start(pipeline.clone(), 0)
+                        .add_buffer(self.cache_buffer.clone())
+                        .unwrap()
+                        .add_buffer(new_words_buffer.clone())
+                        .unwrap()
+                        .build()
+                        .unwrap(),
+                );
+                let push_constants = transition_input_word::ty::PushConstantData {
+                    new_weights_word: self.weights_patch.get_word(target_weight_index),
+                    old_weights_word: self.weights_patch.get_word(self.patch_index),
+                };
+                let n_workgroups = (self.n_examples as f64 / 1024f64).ceil() as u32;
+                let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(
+                    self.device.clone(),
+                    self.queue.family(),
+                )
+                .unwrap()
+                .dispatch(
+                    [n_workgroups, 1, 1],
+                    pipeline.clone(),
+                    set.clone(),
+                    push_constants,
+                )
+                .unwrap()
+                .build()
+                .unwrap();
+
+                let future = sync::now(self.device.clone())
+                    .then_execute(self.queue.clone(), command_buffer)
+                    .unwrap()
+                    .then_signal_fence_and_flush()
+                    .unwrap();
+                future.wait(None).unwrap();
+                println!(
+                    "gpu trans ms: {}",
+                    start.to(PreciseTime::now()).num_milliseconds()
+                );
+                self.patch_index = target_weight_index;
+                //self.weights_patch_word = self.weights_patch.get_word(target_weight_index);
+            }
         }
     };
 }
@@ -362,35 +424,92 @@ const N_EXAMPLES: usize = 50000 * 900;
 //const N_EXAMPLES: usize = 65536 * 16;
 //const N_EXAMPLES: usize = 104729;
 const BATCH_SIZE: usize = 5 * 5 * 5 * 3 * 3;
-const EMBEDDING_BIT_INDEX: usize = 5;
+const EMBEDDING_BIT_INDEX: usize = 1;
 
 const INPUT_LEN: usize = 2;
-const EMBEDDING_LEN: usize = 2;
+const EMBEDDING_LEN: usize = 1;
 
 fn main() {
     let mut rng = Hc128Rng::seed_from_u64(1);
     let mut full_weights: [[[[[u32; INPUT_LEN]; 3]; 3]; 16]; EMBEDDING_LEN] = rng.gen();
     let full_head: [[u32; EMBEDDING_LEN]; 10] = rng.gen();
-    let examples: Vec<_> = (0..N_EXAMPLES as u32).map(|_| (rng.gen_range(0, 10), rng.gen())).collect();
-
-    let mut fast_cache = FastCacheVKObjEval::<_, _, _, [u32; EMBEDDING_LEN]>::new_vk_fast_cache(&examples, &full_weights, &full_head, EMBEDDING_BIT_INDEX, BATCH_SIZE);
-    let _ = fast_cache.sum_obj();
+    let examples: Vec<_> = (0..N_EXAMPLES as u32)
+        .map(|_| (rng.gen_range(0, 10), rng.gen()))
+        .collect();
 
     let test_eval_creator = TestCPUObjectiveEvalCreator::new();
     let mut test_obj_eval = test_eval_creator.new_obj_eval(&full_weights, &full_head, &examples);
 
-    test_obj_eval.flip_weights_bit(EMBEDDING_BIT_INDEX, 7);
-    fast_cache.weights_patch_word ^= 1 << 7;
+    for embedding_bit in 0..16 {
+        let mut fast_cache =
+            FastCacheVKObjEval::<_, _, _, [u32; EMBEDDING_LEN]>::new_vk_fast_cache(
+                &examples,
+                &full_weights,
+                &full_head,
+                embedding_bit,
+                0,
+                BATCH_SIZE,
+            );
 
-    let start = PreciseTime::now();
-    println!("starting gpu");
-    for i in 0..10 {
-        let fc_gpu_sum = fast_cache.sum_obj();
+        let mut cur_obj = fast_cache.sum_obj();
+        let start = PreciseTime::now();
+        for w in 0..(9 * 2) {
+            fast_cache.transition_input_word(w);
+            for b in 0..32 {
+                let i = (w * 32) + b;
+                fast_cache.weights_patch.flip_bit(i);
+                let new_obj = fast_cache.sum_obj();
+                if new_obj > cur_obj {
+                    cur_obj = new_obj;
+                    dbg!(new_obj as f64 / N_EXAMPLES as f64);
+                    test_obj_eval.flip_weights_bit(embedding_bit, i);
+                } else {
+                    fast_cache.weights_patch.flip_bit(i);
+                }
+            }
+        }
+
+        println!(
+            "embedding bit ms: {}",
+            start.to(PreciseTime::now()).num_milliseconds()
+        );
     }
-    println!("fast gpu mills: {}", start.to(PreciseTime::now()).num_milliseconds());
+    let mut fast_cache =
+        FastCacheVKObjEval::<_, _, _, [u32; EMBEDDING_LEN]>::new_vk_fast_cache(
+            &examples,
+            &full_weights,
+            &full_head,
+            EMBEDDING_BIT_INDEX,
+            0,
+            BATCH_SIZE,
+        );
 
     let fc_gpu_sum = fast_cache.sum_obj();
     let test_obj: u64 = test_obj_eval.obj();
     assert_eq!(fc_gpu_sum, test_obj);
     dbg!(fc_gpu_sum);
+
+    let start = PreciseTime::now();
+    fast_cache.transition_input_word(1);
+    println!(
+        "trans ms: {}",
+        start.to(PreciseTime::now()).num_milliseconds()
+    );
+
+    test_obj_eval.flip_weights_bit(EMBEDDING_BIT_INDEX, 33);
+    fast_cache.weights_patch.flip_bit(33);
+
+    let fc_gpu_sum = fast_cache.sum_obj();
+    let test_obj: u64 = test_obj_eval.obj();
+    assert_eq!(fc_gpu_sum, test_obj);
+
+    let start = PreciseTime::now();
+    println!("starting gpu");
+    for i in 0..32 {
+        let fc_gpu_sum = fast_cache.sum_obj();
+    }
+    println!(
+        "32 fast gpu mills: {}",
+        start.to(PreciseTime::now()).num_milliseconds()
+    );
 }
