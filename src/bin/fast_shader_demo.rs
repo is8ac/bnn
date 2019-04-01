@@ -42,10 +42,17 @@ mod fast_obj_update_e2 {
     }
 }
 
-mod transition_input_word {
+mod transition_input_word_e1 {
     vulkano_shaders::shader! {
         ty: "compute",
-        path: "shaders/fast_mirror_input_word_trans.glsl",
+        path: "shaders/fast_mirror_input_word_trans_e1.glsl",
+    }
+}
+
+mod transition_input_word_e2 {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "shaders/fast_mirror_input_word_trans_e2.glsl",
     }
 }
 
@@ -96,30 +103,6 @@ macro_rules! impl_NewMirror3x3FastCache_for_FastExampleMirrored {
                     true_class: class as u32,
                 }
             }
-            //fn transition_input_word(
-            //    &mut self,
-            //    input: [[[u32; 4]; 3]; 3],
-            //    new_input_pixel_word: usize,
-            //    cur_weight_word: u32,
-            //    new_weight_word: u32,
-            //    input_x: usize,
-            //    input_y: usize,
-            //    new_input_word_index: usize,
-            //) {
-            //    self.input_partial_sums[0] += cur_weight_word.hamming_distance(&self.input_word[0]);
-            //    self.input_partial_sums[1] += cur_weight_word.hamming_distance(&self.input_word[1]);
-
-            //    self.input_word = if input_x == 0 {
-            //        [input[0][input_y][new_input_pixel_word], input[2][input_y][new_input_pixel_word]]
-            //    } else if input_x == 2 {
-            //        [input[2][input_y][new_input_pixel_word], input[0][input_y][new_input_pixel_word]]
-            //    } else {
-            //        [input[1][input_y][new_input_pixel_word], input[1][input_y][new_input_pixel_word]]
-            //    };
-
-            //    self.input_partial_sums[0] -= new_weight_word.hamming_distance(&self.input_word[0]);
-            //    self.input_partial_sums[1] -= new_weight_word.hamming_distance(&self.input_word[1]);
-            //}
         }
     };
 }
@@ -166,7 +149,7 @@ pub struct FastCacheVKObjEval<ShaderLayout, InputPatch, Weights, Embedding> {
 }
 
 macro_rules! impl_fastexamplemirrored_over_embedding {
-    ($shader_mod_name:ident, $embedding_len:expr) => {
+    ($shader_mod_name:ident, $input_trans_shader_mod_name:ident, $embedding_len:expr) => {
         impl<InputPatch: Sync + GetWord + GetMirroredWords + BitLen + Copy, Weights: Sync + GetPatch<InputPatch>>
             FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, Weights, [u32; $embedding_len]>
         where
@@ -247,7 +230,6 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
                     embedding_word_index: embedding_index / 16,
                     embedding_bit_index: embedding_index % 16,
                     patch_index: patch_index,
-                    //weights_patch_word: weights.get_patch(embedding_index).get_word(0),
                 }
             }
 
@@ -255,7 +237,7 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
                 let pa_push_constants = $shader_mod_name::ty::PushConstantData {
                     head: self.head,
                     embedding_bit_index: self.embedding_bit_index as u32,
-                    embedding_word: self.embedding_word_index as u32,
+                    embedding_word_index: self.embedding_word_index as u32,
                     threshold: (<InputPatch>::BIT_LEN / 2) as u32,
                     weights_word: self.weights_patch.get_word(self.patch_index),
                     batch_size: self.sum_batch_size as u32,
@@ -299,7 +281,7 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
 
                 let start = PreciseTime::now();
                 let pipeline = Arc::new({
-                    let shader = transition_input_word::Shader::load(self.device.clone()).unwrap();
+                    let shader = $input_trans_shader_mod_name::Shader::load(self.device.clone()).unwrap();
                     ComputePipeline::new(self.device.clone(), &shader.main_entry_point(), &()).unwrap()
                 });
                 let set = Arc::new(
@@ -311,7 +293,7 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
                         .build()
                         .unwrap(),
                 );
-                let push_constants = transition_input_word::ty::PushConstantData {
+                let push_constants = $input_trans_shader_mod_name::ty::PushConstantData {
                     new_weights_word: self.weights_patch.get_word(target_weight_index),
                     old_weights_word: self.weights_patch.get_word(self.patch_index),
                 };
@@ -337,12 +319,13 @@ macro_rules! impl_fastexamplemirrored_over_embedding {
     };
 }
 
-impl_fastexamplemirrored_over_embedding!(fast_obj_update_e1, 1);
-impl_fastexamplemirrored_over_embedding!(fast_obj_update_e2, 2);
+impl_fastexamplemirrored_over_embedding!(fast_obj_update_e1, transition_input_word_e1, 1);
+impl_fastexamplemirrored_over_embedding!(fast_obj_update_e2, transition_input_word_e2, 2);
 
 const N_EXAMPLES: usize = 50000 * 900;
-//const N_EXAMPLES: usize = 65536 * 16;
+//const N_EXAMPLES: usize = 65536;
 //const N_EXAMPLES: usize = 104729;
+//const BATCH_SIZE: usize = 1;
 const BATCH_SIZE: usize = 5 * 5 * 5 * 3 * 3;
 const EMBEDDING_BIT_INDEX: usize = 1;
 
@@ -367,33 +350,20 @@ fn main() {
         BATCH_SIZE,
     );
 
-    let mut cur_obj = fast_cache.sum_obj();
-    //let start = PreciseTime::now();
-    //for w in 0..(9 * 2) {
-    //    fast_cache.transition_input_word(w);
-    //    for b in 0..32 {
-    //        let i = (w * 32) + b;
-    //        fast_cache.weights_patch.flip_bit(i);
-    //        let new_obj = fast_cache.sum_obj();
-    //        if new_obj > cur_obj {
-    //            cur_obj = new_obj;
-    //            dbg!(new_obj as f64 / N_EXAMPLES as f64);
-    //            test_obj_eval.flip_weights_bit(EMBEDDING_BIT_INDEX, i);
-    //        } else {
-    //            fast_cache.weights_patch.flip_bit(i);
-    //        }
-    //    }
-    //}
-
-    //println!("embedding bit ms: {}", start.to(PreciseTime::now()).num_milliseconds());
-
     let fc_gpu_sum = fast_cache.sum_obj();
     let test_obj: u64 = test_obj_eval.obj();
     assert_eq!(fc_gpu_sum, test_obj);
     dbg!(fc_gpu_sum);
 
+    test_obj_eval.flip_weights_bit(EMBEDDING_BIT_INDEX, 2);
+    fast_cache.weights_patch.flip_bit(2);
+
+    let fc_gpu_sum = fast_cache.sum_obj();
+    let test_obj: u64 = test_obj_eval.obj();
+    assert_eq!(fc_gpu_sum, test_obj);
+
     let start = PreciseTime::now();
-    fast_cache.transition_input_word(1);
+    fast_cache.transition_input_word(0);
     println!("trans ms: {}", start.to(PreciseTime::now()).num_milliseconds());
 
     //test_obj_eval.flip_weights_bit(EMBEDDING_BIT_INDEX, 33);

@@ -28,7 +28,7 @@ objective_sums;
 layout(push_constant) uniform PushConstantData {
   uint[10][2] head;
   uint embedding_bit_index;
-  uint embedding_word;
+  uint embedding_word_index;
   uint threshold;
   uint weights_word;
   uint batch_size;
@@ -43,10 +43,8 @@ void main() {
   uint sum = 0;
   uint index;
   uint true_class;
-  uint batch_id =
-      gl_GlobalInvocationID.x * gl_NumWorkGroups.y + gl_GlobalInvocationID.y;
   for (i = 0; i < pc.batch_size; i += 1) {
-    index = batch_id * pc.batch_size + i;
+    index = gl_GlobalInvocationID.x * pc.batch_size + i;
     true_class = cache_data.cache[index].true_class;
     uint normal = uint(
         (bitCount(pc.weights_word ^ cache_data.cache[index].input_word[0]) +
@@ -57,8 +55,8 @@ void main() {
          cache_data.cache[index].input_partial_sums[1]) > pc.threshold);
 
     uint[2] new_embedding = cache_data.cache[index].embedding;
-    new_embedding[pc.embedding_word] =
-        new_embedding[pc.embedding_word] &
+    new_embedding[pc.embedding_word_index] =
+        new_embedding[pc.embedding_word_index] &
             (onebits ^ (uint(1) << (0 + pc.embedding_bit_index))) &
             (onebits ^ (uint(1) << (16 + pc.embedding_bit_index))) |
         (normal << (0 + pc.embedding_bit_index)) |
@@ -76,5 +74,5 @@ void main() {
     }
     sum += uint(true_act > max_act);
   }
-  objective_sums.data[batch_id] = sum;
+  objective_sums.data[gl_GlobalInvocationID.x] = sum;
 }
