@@ -61,17 +61,6 @@ pub struct FastExampleMirrored<Embedding> {
     true_class: u32,
 }
 
-impl<Embedding: HammingDistance> FastExampleMirrored<Embedding> {
-    fn is_good(&self, head_words: &[Embedding; 10]) -> bool {
-        let max_obj = self.embedding.hamming_distance(&head_words[self.true_class as usize]);
-        let mut is_good = true;
-        for c in 0..10 {
-            is_good = ((c == self.true_class as usize) | (self.embedding.hamming_distance(&head_words[c]) < max_obj)) && is_good;
-        }
-        is_good
-    }
-}
-
 pub trait NewMirror3x3FastCache<InputPatch, Weights, Embedding> {
     fn new(input: &InputPatch, weights: &Weights, class: usize, embedding_word: usize, embedding_bit: usize, patch_index: usize) -> Self;
 }
@@ -135,11 +124,11 @@ macro_rules! impl_NewMirror3x3FastCache_for_FastExampleMirrored {
     };
 }
 //impl_NewMirror3x3FastCache_for_FastExampleMirrored!(4, 2);
-//impl_NewMirror3x3FastCache_for_FastExampleMirrored!(3, 2);
+impl_NewMirror3x3FastCache_for_FastExampleMirrored!(3, 2);
 impl_NewMirror3x3FastCache_for_FastExampleMirrored!(2, 2);
 impl_NewMirror3x3FastCache_for_FastExampleMirrored!(1, 1);
 impl_NewMirror3x3FastCache_for_FastExampleMirrored!(2, 1);
-//impl_NewMirror3x3FastCache_for_FastExampleMirrored!(3, 1);
+impl_NewMirror3x3FastCache_for_FastExampleMirrored!(3, 1);
 //impl_NewMirror3x3FastCache_for_FastExampleMirrored!(4, 1);
 
 pub struct FastCacheVKObjEval<ShaderLayout, InputPatch, Weights, Embedding> {
@@ -358,7 +347,7 @@ const BATCH_SIZE: usize = 5 * 5 * 5 * 3 * 3;
 const EMBEDDING_BIT_INDEX: usize = 1;
 
 const INPUT_LEN: usize = 2;
-const EMBEDDING_LEN: usize = 1;
+const EMBEDDING_LEN: usize = 2;
 
 fn main() {
     let mut rng = Hc128Rng::seed_from_u64(1);
@@ -379,24 +368,24 @@ fn main() {
     );
 
     let mut cur_obj = fast_cache.sum_obj();
-    let start = PreciseTime::now();
-    for w in 0..(9 * 2) {
-        fast_cache.transition_input_word(w);
-        for b in 0..32 {
-            let i = (w * 32) + b;
-            fast_cache.weights_patch.flip_bit(i);
-            let new_obj = fast_cache.sum_obj();
-            if new_obj > cur_obj {
-                cur_obj = new_obj;
-                dbg!(new_obj as f64 / N_EXAMPLES as f64);
-                test_obj_eval.flip_weights_bit(EMBEDDING_BIT_INDEX, i);
-            } else {
-                fast_cache.weights_patch.flip_bit(i);
-            }
-        }
-    }
+    //let start = PreciseTime::now();
+    //for w in 0..(9 * 2) {
+    //    fast_cache.transition_input_word(w);
+    //    for b in 0..32 {
+    //        let i = (w * 32) + b;
+    //        fast_cache.weights_patch.flip_bit(i);
+    //        let new_obj = fast_cache.sum_obj();
+    //        if new_obj > cur_obj {
+    //            cur_obj = new_obj;
+    //            dbg!(new_obj as f64 / N_EXAMPLES as f64);
+    //            test_obj_eval.flip_weights_bit(EMBEDDING_BIT_INDEX, i);
+    //        } else {
+    //            fast_cache.weights_patch.flip_bit(i);
+    //        }
+    //    }
+    //}
 
-    println!("embedding bit ms: {}", start.to(PreciseTime::now()).num_milliseconds());
+    //println!("embedding bit ms: {}", start.to(PreciseTime::now()).num_milliseconds());
 
     let fc_gpu_sum = fast_cache.sum_obj();
     let test_obj: u64 = test_obj_eval.obj();
@@ -407,8 +396,8 @@ fn main() {
     fast_cache.transition_input_word(1);
     println!("trans ms: {}", start.to(PreciseTime::now()).num_milliseconds());
 
-    test_obj_eval.flip_weights_bit(EMBEDDING_BIT_INDEX, 33);
-    fast_cache.weights_patch.flip_bit(33);
+    //test_obj_eval.flip_weights_bit(EMBEDDING_BIT_INDEX, 33);
+    //fast_cache.weights_patch.flip_bit(33);
 
     let fc_gpu_sum = fast_cache.sum_obj();
     let test_obj: u64 = test_obj_eval.obj();

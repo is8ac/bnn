@@ -62,8 +62,6 @@ void main() {
         (normal << (0 + pc.embedding_bit_index)) |
         (fliped << (16 + pc.embedding_bit_index));
 
-    //cache_data.cache[index].embedding_word = new_embedding;
-
     uint max_act = 0;
     uint true_act = 0;
     uint act;
