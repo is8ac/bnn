@@ -18,6 +18,8 @@ Memory usage linear with training set size is fine for CIFAR, but will be an iss
 - [XNOR-Net: ImageNet Classification Using Binary Convolutional Neural Networks](https://pjreddie.com/media/files/papers/xnor.pdf)
 - [Transfer Learning with Binary Neural Networks](https://arxiv.org/abs/1711.10761)
 
+https://openreview.net/pdf?id=ryxfHnCctX
+
 ### Ternary:
 - [Ternary Weight Networks](https://arxiv.org/abs/1605.04711)
 - [Ternary Neural Networks with Fine-Grained Quantization](https://arxiv.org/abs/1705.01462)
@@ -41,7 +43,6 @@ Memory usage linear with training set size is fine for CIFAR, but will be an iss
 
 
 # Layerwise training
-https://openreview.net/pdf?id=ryxfHnCctX
 https://arxiv.org/abs/1901.06656
 https://arxiv.org/abs/1803.09522
 https://arxiv.org/abs/1812.11446

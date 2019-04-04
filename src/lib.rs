@@ -27,17 +27,30 @@ pub mod datasets {
 
         to_unary!(to_10, u32, 10);
         to_unary!(to_11, u32, 11);
+        to_unary!(to_32, u32, 32);
 
-        fn rgb_to_u32(pixels: [u8; 3]) -> u32 {
-            to_11(pixels[0]) as u32
-                | ((to_11(pixels[1]) as u32) << 11)
-                | ((to_10(pixels[2]) as u32) << 22)
+        pub trait ConvertPixel {
+            fn convert(pixel: [u8; 3]) -> Self;
         }
 
-        pub fn load_images_from_base(
+        impl ConvertPixel for [u32; 1] {
+            fn convert(pixel: [u8; 3]) -> [u32; 1] {
+                [to_11(pixel[0]) as u32
+                    | ((to_11(pixel[1]) as u32) << 11)
+                    | ((to_10(pixel[2]) as u32) << 22)]
+            }
+        }
+
+        impl ConvertPixel for [u32; 3] {
+            fn convert(pixel: [u8; 3]) -> [u32; 3] {
+                [to_32(pixel[0]), to_32(pixel[1]), to_32(pixel[2])]
+            }
+        }
+
+        pub fn load_images_from_base<T: Default + Copy + ConvertPixel>(
             base_path: &Path,
             n: usize,
-        ) -> Vec<(usize, [[[u32; 1]; 32]; 32])> {
+        ) -> Vec<(usize, [[T; 32]; 32])> {
             if n > 50000 {
                 panic!("n must be <= 50,000");
             }
@@ -48,12 +61,12 @@ pub mod datasets {
 
                     let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
                     let mut label: [u8; 1] = [0; 1];
-                    let mut images: Vec<(usize, [[[u32; 1]; 32]; 32])> = Vec::new();
+                    let mut images: Vec<(usize, [[T; 32]; 32])> = Vec::new();
                     for _ in 0..10000 {
                         file.read_exact(&mut label).expect("can't read label");
                         file.read_exact(&mut image_bytes)
                             .expect("can't read images");
-                        let mut image = [[[0u32]; 32]; 32];
+                        let mut image = [[T::default(); 32]; 32];
                         for x in 0..32 {
                             for y in 0..32 {
                                 let pixel = [
@@ -61,7 +74,7 @@ pub mod datasets {
                                     image_bytes[(1 * 1024) + (y * 32) + x],
                                     image_bytes[(2 * 1024) + (y * 32) + x],
                                 ];
-                                image[x][y][0] = rgb_to_u32(pixel);
+                                image[x][y] = T::convert(pixel);
                             }
                         }
                         images.push((label[0] as usize, image));
@@ -315,8 +328,7 @@ pub mod layers {
                 //target |= (((self[i][0].hamming_distance(&input[0]) + center + self[i][2].hamming_distance(&input[2])) > threshold) as u32) << i;
                 //target |= (((self[i][0].hamming_distance(&input[2]) + center + self[i][2].hamming_distance(&input[0])) > threshold) as u32) << (16 + i);
                 target |= ((self[i].normal_hamming_distance(input) > threshold) as u32) << i;
-                target |=
-                    ((self[i].fliped_hamming_distance(input) > threshold) as u32) << (16 + i);
+                target |= ((self[i].fliped_hamming_distance(input) > threshold) as u32) << (16 + i);
             }
             target
         }
@@ -326,8 +338,7 @@ pub mod layers {
         fn apply(&self, input: &I) -> u32 {
             let mut target = 0u32;
             for i in 0..32 {
-                target |=
-                    ((self[i].hamming_distance(input) > (I::BIT_LEN as u32 / 2)) as u32) << i;
+                target |= ((self[i].hamming_distance(input) > (I::BIT_LEN as u32 / 2)) as u32) << i;
             }
             target
         }
@@ -1369,126 +1380,35 @@ pub mod objective_eval {
             }
         };
     }
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        32,
-        3,
-        1,
-        1,
-        apply_shader_3x3_1_1,
-        "shaders/conv3x3_1-1.glsl"
-    );
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 3, 1, 1, apply_shader_3x3_1_1, "shaders/conv3x3_1-1.glsl");
     //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(1, 2, apply_shader_1_2, "shaders/conv3x3_1-2.glsl");
     //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(1, 3, apply_shader_1_3, "shaders/conv3x3_1-3.glsl");
 
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        32,
-        3,
-        2,
-        1,
-        apply_shader_3x3_2_1,
-        "shaders/conv3x3_2-1.glsl"
-    );
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        32,
-        3,
-        2,
-        2,
-        apply_shader_3x3_2_2,
-        "shaders/conv3x3_2-2.glsl"
-    );
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 3, 2, 1, apply_shader_3x3_2_1, "shaders/conv3x3_2-1.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 3, 2, 2, apply_shader_3x3_2_2, "shaders/conv3x3_2-2.glsl");
 
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        32,
-        3,
-        4,
-        2,
-        apply_shader_3x3_4_2,
-        "shaders/conv3x3_4-2.glsl"
-    );
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 3, 4, 2, apply_shader_3x3_4_2, "shaders/conv3x3_4-2.glsl");
 
     //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, 1, apply_shader_3_1, "shaders/conv3x3_3-1.glsl");
     //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, 2, apply_shader_3_2, "shaders/conv3x3_3-2.glsl");
     //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, 3, apply_shader_3_3, "shaders/conv3x3_3-3.glsl");
 
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        32,
-        2,
-        2,
-        2,
-        apply_shader_2x2_2_2,
-        "shaders/conv2x2_2-2.glsl"
-    );
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        32,
-        2,
-        1,
-        2,
-        apply_shader_2x2_1_2,
-        "shaders/conv2x2_1-2.glsl"
-    );
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        32,
-        2,
-        2,
-        4,
-        apply_shader_2x2_2_4,
-        "shaders/conv2x2_2-4.glsl"
-    );
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 2, 2, 2, apply_shader_2x2_2_2, "shaders/conv2x2_2-2.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 2, 1, 2, apply_shader_2x2_1_2, "shaders/conv2x2_1-2.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 2, 2, 4, apply_shader_2x2_2_4, "shaders/conv2x2_2-4.glsl");
 
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        16,
-        3,
-        1,
-        1,
-        mirror_apply_shader_3x3_1_1,
-        "shaders/mirror3x3_1-1.glsl"
-    );
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        16,
-        3,
-        2,
-        1,
-        mirror_apply_shader_3x3_2_1,
-        "shaders/mirror3x3_2-1.glsl"
-    );
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        16,
-        3,
-        2,
-        2,
-        mirror_apply_shader_3x3_2_2,
-        "shaders/mirror3x3_2-2.glsl"
-    );
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        16,
-        3,
-        4,
-        2,
-        mirror_apply_shader_3x3_4_2,
-        "shaders/mirror3x3_4-2.glsl"
-    );
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        16,
-        3,
-        2,
-        4,
-        mirror_apply_shader_3x3_2_4,
-        "shaders/mirror3x3_2-4.glsl"
-    );
-    impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(
-        16,
-        3,
-        4,
-        4,
-        mirror_apply_shader_3x3_4_4,
-        "shaders/mirror3x3_4-4.glsl"
-    );
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 1, 1, mirror_apply_shader_3x3_1_1, "shaders/mirror3x3_1-1.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 2, 1, mirror_apply_shader_3x3_2_1, "shaders/mirror3x3_2-1.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 2, 2, mirror_apply_shader_3x3_2_2, "shaders/mirror3x3_2-2.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 4, 2, mirror_apply_shader_3x3_4_2, "shaders/mirror3x3_4-2.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 2, 4, mirror_apply_shader_3x3_2_4, "shaders/mirror3x3_2-4.glsl");
+    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 4, 4, mirror_apply_shader_3x3_4_4, "shaders/mirror3x3_4-4.glsl");
 
     #[cfg(test)]
     mod tests {
         use super::{
-            ObjectiveEval, ObjectiveEvalCreator, TestCPUObjectiveEval,
-            TestCPUObjectiveEvalCreator, VulkanObjectiveEvalCreator,
+            ObjectiveEval, ObjectiveEvalCreator, TestCPUObjectiveEval, TestCPUObjectiveEvalCreator,
+            VulkanObjectiveEvalCreator,
         };
         use rand::prelude::*;
         use rand_hc::Hc128Rng;
