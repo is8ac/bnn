@@ -1,15 +1,12 @@
-#[macro_use]
-extern crate serde_derive;
 extern crate bincode;
 extern crate rand;
 extern crate rayon;
 extern crate serde;
+extern crate serde_derive;
 extern crate time;
 extern crate vulkano;
 extern crate vulkano_shaders;
-use rand::prelude::*;
 use rayon::prelude::*;
-use std::iter;
 
 pub mod datasets {
     pub mod cifar {
@@ -217,7 +214,7 @@ pub trait GetWord {
 
 impl GetWord for u32 {
     #[inline(always)]
-    fn get_word(&self, i: usize) -> u32 {
+    fn get_word(&self, _i: usize) -> u32 {
         *self
     }
 }
@@ -257,6 +254,20 @@ impl<T: GetWord + WordLen> GetMirroredWords for [T; 3] {
     }
 }
 
+impl<T: GetWord + WordLen> GetMirroredWords for [T; 2] {
+    #[inline(always)]
+    fn get_mirrored_words(&self, i: usize) -> [u32; 2] {
+        let input_x = i / T::WORD_LEN;
+        let strip_i = i % T::WORD_LEN;
+        let input_words = if input_x == 0 {
+            [self[0].get_word(strip_i), self[1].get_word(strip_i)]
+        } else {
+            [self[1].get_word(strip_i), self[0].get_word(strip_i)]
+        };
+        input_words
+    }
+}
+
 pub trait HammingDistance {
     fn hamming_distance(&self, other: &Self) -> u32;
 }
@@ -287,46 +298,64 @@ array_hamming_distance!(2);
 array_hamming_distance!(3);
 array_hamming_distance!(4);
 
+pub trait MirrorHammingDistance {
+    fn normal_hamming_distance(&self, input: &Self) -> u32;
+    fn fliped_hamming_distance(&self, input: &Self) -> u32;
+}
+
+impl<T: HammingDistance> MirrorHammingDistance for [T; 3] {
+    fn normal_hamming_distance(&self, input: &[T; 3]) -> u32 {
+        self[0].hamming_distance(&input[0])
+            + self[1].hamming_distance(&input[1])
+            + self[2].hamming_distance(&input[2])
+    }
+    fn fliped_hamming_distance(&self, input: &[T; 3]) -> u32 {
+        self[0].hamming_distance(&input[2])
+            + self[1].hamming_distance(&input[1])
+            + self[2].hamming_distance(&input[0])
+    }
+}
+
+impl<T: HammingDistance> MirrorHammingDistance for [T; 2] {
+    fn normal_hamming_distance(&self, input: &[T; 2]) -> u32 {
+        self[0].hamming_distance(&input[0]) + self[1].hamming_distance(&input[1])
+    }
+    fn fliped_hamming_distance(&self, input: &[T; 2]) -> u32 {
+        self[0].hamming_distance(&input[1]) + self[1].hamming_distance(&input[0])
+    }
+}
+
 #[macro_use]
 pub mod layers {
-    use super::{BitLen, HammingDistance};
+    use super::{BitLen, HammingDistance, MirrorHammingDistance};
     use bincode::{deserialize_from, serialize_into};
     use std::fs::File;
     use std::io::BufWriter;
-    use std::marker::PhantomData;
     use std::path::Path;
-    use time::PreciseTime;
-
-    pub trait MirrorHammingDistance<T> {
-        fn normal_hamming_distance(&self, input: &[T; 3]) -> u32;
-        fn fliped_hamming_distance(&self, input: &[T; 3]) -> u32;
-    }
-
-    impl<T: HammingDistance> MirrorHammingDistance<T> for [T; 3] {
-        fn normal_hamming_distance(&self, input: &[T; 3]) -> u32 {
-            self[0].hamming_distance(&input[0])
-                + self[1].hamming_distance(&input[1])
-                + self[2].hamming_distance(&input[2])
-        }
-        fn fliped_hamming_distance(&self, input: &[T; 3]) -> u32 {
-            self[0].hamming_distance(&input[2])
-                + self[1].hamming_distance(&input[1])
-                + self[2].hamming_distance(&input[0])
-        }
-    }
 
     impl<I: HammingDistance + BitLen> Apply<[I; 3], u32> for [[I; 3]; 16]
     where
-        [I; 3]: MirrorHammingDistance<I>,
+        [I; 3]: MirrorHammingDistance,
     {
         fn apply(&self, input: &[I; 3]) -> u32 {
-            let threshold: u32 = ((I::BIT_LEN * 3) as u32 / 2);
+            let threshold: u32 = (I::BIT_LEN * 3) as u32 / 2;
             let mut target = 0u32;
             for i in 0..16 {
-                //let center = self[i][1].hamming_distance(&input[1]);
+                target |= ((self[i].normal_hamming_distance(input) > threshold) as u32) << i;
+                target |= ((self[i].fliped_hamming_distance(input) > threshold) as u32) << (16 + i);
+            }
+            target
+        }
+    }
 
-                //target |= (((self[i][0].hamming_distance(&input[0]) + center + self[i][2].hamming_distance(&input[2])) > threshold) as u32) << i;
-                //target |= (((self[i][0].hamming_distance(&input[2]) + center + self[i][2].hamming_distance(&input[0])) > threshold) as u32) << (16 + i);
+    impl<I: HammingDistance + BitLen> Apply<[I; 2], u32> for [[I; 2]; 16]
+    where
+        [I; 2]: MirrorHammingDistance,
+    {
+        fn apply(&self, input: &[I; 2]) -> u32 {
+            let threshold: u32 = (I::BIT_LEN * 2) as u32 / 2;
+            let mut target = 0u32;
+            for i in 0..16 {
                 target |= ((self[i].normal_hamming_distance(input) > threshold) as u32) << i;
                 target |= ((self[i].fliped_hamming_distance(input) > threshold) as u32) << (16 + i);
             }
@@ -454,10 +483,10 @@ pub mod layers {
     }
 
     macro_rules! impl_saveload_conv3x3_array {
-        ($weights_len:expr, $input_len:expr, $output_len:expr) => {
-            impl SaveLoad for [[[[[u32; $input_len]; 3]; 3]; $weights_len]; $output_len] {
+        ($input_len:expr, $output_len:expr) => {
+            impl SaveLoad for [[[[[u32; $input_len]; 3]; 3]; 16]; $output_len] {
                 fn write_to_fs(&self, path: &Path) {
-                    let vec_params: Vec<[[[[u32; $input_len]; 3]; 3]; $weights_len]> =
+                    let vec_params: Vec<[[[[u32; $input_len]; 3]; 3]; 16]> =
                         self.iter().cloned().collect();
                     let mut f = BufWriter::new(File::create(path).unwrap());
                     serialize_into(&mut f, &vec_params).unwrap();
@@ -469,45 +498,33 @@ pub mod layers {
                 fn new_from_fs(path: &Path) -> Option<Self> {
                     File::open(&path)
                         .map(|f| deserialize_from(f).unwrap())
-                        .map(
-                            |vec_params: Vec<[[[[u32; $input_len]; 3]; 3]; $weights_len]>| {
-                                if vec_params.len() != $output_len {
-                                    panic!(
-                                        "input is of len {} not {}",
-                                        vec_params.len(),
-                                        $output_len
-                                    );
-                                }
-                                let mut params =
-                                    [<[[[[u32; $input_len]; 3]; 3]; $weights_len]>::default();
-                                        $output_len];
-                                for i in 0..$output_len {
-                                    params[i] = vec_params[i];
-                                }
-                                params
-                            },
-                        )
+                        .map(|vec_params: Vec<[[[[u32; $input_len]; 3]; 3]; 16]>| {
+                            if vec_params.len() != $output_len {
+                                panic!("input is of len {} not {}", vec_params.len(), $output_len);
+                            }
+                            let mut params =
+                                [<[[[[u32; $input_len]; 3]; 3]; 16]>::default(); $output_len];
+                            for i in 0..$output_len {
+                                params[i] = vec_params[i];
+                            }
+                            params
+                        })
                         .ok()
                 }
             }
         };
     }
-    impl_saveload_conv3x3_array!(32, 1, 1);
-    impl_saveload_conv3x3_array!(32, 2, 1);
-    impl_saveload_conv3x3_array!(32, 2, 2);
-    impl_saveload_conv3x3_array!(32, 4, 2);
-
-    impl_saveload_conv3x3_array!(16, 1, 1);
-    impl_saveload_conv3x3_array!(16, 2, 1);
-    impl_saveload_conv3x3_array!(16, 2, 2);
-    impl_saveload_conv3x3_array!(16, 4, 2);
-    impl_saveload_conv3x3_array!(16, 4, 4);
+    impl_saveload_conv3x3_array!(1, 1);
+    impl_saveload_conv3x3_array!(2, 1);
+    impl_saveload_conv3x3_array!(2, 2);
+    impl_saveload_conv3x3_array!(4, 2);
+    impl_saveload_conv3x3_array!(4, 4);
 
     macro_rules! impl_saveload_conv2x2_array {
         ($input_len:expr, $output_len:expr) => {
-            impl SaveLoad for [[[[[u32; $input_len]; 2]; 2]; 32]; $output_len] {
+            impl SaveLoad for [[[[[u32; $input_len]; 2]; 2]; 16]; $output_len] {
                 fn write_to_fs(&self, path: &Path) {
-                    let vec_params: Vec<[[[[u32; $input_len]; 2]; 2]; 32]> =
+                    let vec_params: Vec<[[[[u32; $input_len]; 2]; 2]; 16]> =
                         self.iter().cloned().collect();
                     let mut f = BufWriter::new(File::create(path).unwrap());
                     serialize_into(&mut f, &vec_params).unwrap();
@@ -519,12 +536,12 @@ pub mod layers {
                 fn new_from_fs(path: &Path) -> Option<Self> {
                     File::open(&path)
                         .map(|f| deserialize_from(f).unwrap())
-                        .map(|vec_params: Vec<[[[[u32; $input_len]; 2]; 2]; 32]>| {
+                        .map(|vec_params: Vec<[[[[u32; $input_len]; 2]; 2]; 16]>| {
                             if vec_params.len() != $output_len {
                                 panic!("input is of len {} not {}", vec_params.len(), $output_len);
                             }
                             let mut params =
-                                [<[[[[u32; $input_len]; 2]; 2]; 32]>::default(); $output_len];
+                                [<[[[[u32; $input_len]; 2]; 2]; 16]>::default(); $output_len];
                             for i in 0..$output_len {
                                 params[i] = vec_params[i];
                             }
@@ -560,7 +577,7 @@ pub trait ExtractPatches<Patch> {
     fn patches(&self) -> Vec<Patch>;
 }
 
-macro_rules! extract_patch_3x3_trait {
+macro_rules! impl_extract_patch_trait {
     ($x_size:expr, $y_size:expr) => {
         impl<Pixel: Copy> ExtractPatches<[[Pixel; 3]; 3]> for [[Pixel; $y_size]; $x_size] {
             fn patches(&self) -> Vec<[[Pixel; 3]; 3]> {
@@ -575,12 +592,10 @@ macro_rules! extract_patch_3x3_trait {
         }
         impl<Pixel: Copy> ExtractPatches<[[Pixel; 2]; 2]> for [[Pixel; $y_size]; $x_size] {
             fn patches(&self) -> Vec<[[Pixel; 2]; 2]> {
-                let mut patches = Vec::with_capacity(($y_size / 2) * ($x_size / 2));
-                for x in 0..($x_size / 2) {
-                    let x_base = x * 2;
-                    for y in 0..($y_size / 2) {
-                        let y_base = y * 2;
-                        patches.push(patch_2x2!(self, x_base, y_base));
+                let mut patches = Vec::with_capacity(($y_size - 1) * ($x_size - 1));
+                for x in 0..($x_size - 1) {
+                    for y in 0..($y_size - 1) {
+                        patches.push(patch_2x2!(self, x, y));
                     }
                 }
                 patches
@@ -589,9 +604,9 @@ macro_rules! extract_patch_3x3_trait {
     };
 }
 
-extract_patch_3x3_trait!(32, 32);
-extract_patch_3x3_trait!(16, 16);
-extract_patch_3x3_trait!(8, 8);
+impl_extract_patch_trait!(32, 32);
+impl_extract_patch_trait!(16, 16);
+impl_extract_patch_trait!(8, 8);
 
 pub trait ConcatImages<I> {
     fn concat_images(inputs: I) -> Self;
@@ -894,27 +909,31 @@ pub mod optimize {
 pub mod objective_eval {
     extern crate rand;
     extern crate time;
+
     use super::layers::Apply;
-    use super::{FlipBit, FlipBitIndexed, HammingDistance};
+    use super::{
+        BitLen, FlipBit, FlipBitIndexed, GetMirroredWords, GetPatch, GetWord, HammingDistance,
+        MirrorHammingDistance, WordLen,
+    };
     use rayon::prelude::*;
-    use std::collections::HashSet;
     use std::marker::PhantomData;
     use std::sync::Arc;
+    use std::thread;
+    use std::thread::JoinHandle;
     use vulkano::buffer::BufferUsage;
-    use vulkano::buffer::{CpuAccessibleBuffer, DeviceLocalBuffer, ImmutableBuffer};
+    use vulkano::buffer::{CpuAccessibleBuffer, ImmutableBuffer};
     use vulkano::command_buffer::AutoCommandBufferBuilder;
-    use vulkano::command_buffer::CommandBuffer;
     use vulkano::descriptor::descriptor_set::{
-        PersistentDescriptorSet, PersistentDescriptorSetBuf, StdDescriptorPoolAlloc,
+        PersistentDescriptorSet, PersistentDescriptorSetBuf,
     };
     use vulkano::descriptor::pipeline_layout::PipelineLayout;
     use vulkano::device::DeviceExtensions;
-    use vulkano::device::Features;
     use vulkano::device::{Device, Queue};
+    use vulkano::instance::Instance;
     use vulkano::instance::InstanceExtensions;
     use vulkano::instance::PhysicalDevice;
-    use vulkano::instance::{Instance, QueueFamily};
     use vulkano::pipeline::ComputePipeline;
+    use vulkano::sync;
     use vulkano::sync::GpuFuture;
 
     pub trait IsCorrect<I> {
@@ -1011,78 +1030,205 @@ pub mod objective_eval {
         }
     }
 
-    mod reduce_sum {
+    mod fast_obj_update_e1 {
         vulkano_shaders::shader! {
             ty: "compute",
-            path: "shaders/reduce_sum.glsl",
+            path: "shaders/fast_mirror_update_e1.glsl",
         }
     }
 
-    pub struct VulkanObjectiveEvalCreator {
+    mod fast_obj_update_e2 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_update_e2.glsl",
+        }
+    }
+
+    mod transition_input_word_e1 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_input_word_trans_e1.glsl",
+        }
+    }
+
+    mod transition_input_word_e2 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_input_word_trans_e2.glsl",
+        }
+    }
+
+    mod clean_embedding_bit_e1 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_embedding_bit_clean_e1.glsl",
+        }
+    }
+    mod clean_embedding_bit_e2 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_embedding_bit_clean_e2.glsl",
+        }
+    }
+
+    mod head_obj_update_e1 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_head_update_e1.glsl",
+        }
+    }
+
+    mod head_obj_update_e2 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_head_update_e2.glsl",
+        }
+    }
+
+    mod replace_cache_parts_e1 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_cache_replace_input_e1.glsl",
+        }
+    }
+    mod replace_cache_parts_e2 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_cache_replace_input_e2.glsl",
+        }
+    }
+
+    // Note that when embedding word len get to be ~8, it may be worth switching to cached head partial sum so as to make head obj linear with embedding size.
+    // However while it is small, the memory overhead of the 10 nonconstant partial sums is probably not worth the compute cost savings.
+    // This is for 10 classes.
+    // For 100 classes, the transition point will be far larger and it's probably not worth it.
+    #[derive(Debug, Copy, Clone)]
+    pub struct FastExampleMirroredCache<Embedding> {
+        input_word: [u32; 2], // a pair of 32 bits. This is mirrored, so we need a normal and a flipped input word.
+        input_partial_sums: [u32; 2], // a pair of integers, one for normal one for flipped.
+        embedding: Embedding,
+        true_class: u32,
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    pub struct FastExampleMirroredParts {
+        input_word: [u32; 2],
+        input_partial_sums: [u32; 2],
+    }
+
+    pub trait NewMirror3x3FastCache<Weights, Embedding> {
+        fn new_full(
+            &self,
+            weights: &Weights,
+            class: usize,
+            embedding_index: usize,
+            patch_index: usize,
+        ) -> FastExampleMirroredCache<Embedding>;
+        fn new_parts(&self, weights_patch: &Self, patch_index: usize) -> FastExampleMirroredParts;
+    }
+
+    macro_rules! impl_NewMirror3x3FastCache_for_FastExampleMirrored {
+        ($output_len:expr) => {
+            impl<InputPatch: GetWord + MirrorHammingDistance + GetMirroredWords + Copy>
+                NewMirror3x3FastCache<[[InputPatch; 16]; $output_len], [u32; $output_len]>
+                for InputPatch
+            where
+                [InputPatch; 16]: Apply<InputPatch, u32>,
+            {
+                fn new_full(
+                    &self,
+                    weights: &[[InputPatch; 16]; $output_len],
+                    class: usize,
+                    embedding_index: usize,
+                    patch_index: usize,
+                ) -> FastExampleMirroredCache<[u32; $output_len]> {
+                    let embedding = weights.apply(self);
+                    let weights_patch = weights.get_patch(embedding_index);
+                    let input_words = self.get_mirrored_words(patch_index);
+                    FastExampleMirroredCache {
+                        input_word: input_words,
+                        input_partial_sums: [
+                            weights_patch.normal_hamming_distance(self)
+                                - weights_patch
+                                    .get_word(patch_index)
+                                    .hamming_distance(&input_words[0]),
+                            weights_patch.fliped_hamming_distance(self)
+                                - weights_patch
+                                    .get_word(patch_index)
+                                    .hamming_distance(&input_words[1]),
+                        ],
+                        embedding: embedding,
+                        true_class: class as u32,
+                    }
+                }
+                fn new_parts(
+                    &self,
+                    weights_patch: &InputPatch,
+                    patch_index: usize,
+                ) -> FastExampleMirroredParts {
+                    let input_words = self.get_mirrored_words(patch_index);
+                    FastExampleMirroredParts {
+                        input_word: input_words,
+                        input_partial_sums: [
+                            weights_patch.normal_hamming_distance(&self)
+                                - weights_patch
+                                    .get_word(patch_index)
+                                    .hamming_distance(&input_words[0]),
+                            weights_patch.fliped_hamming_distance(&self)
+                                - weights_patch
+                                    .get_word(patch_index)
+                                    .hamming_distance(&input_words[1]),
+                        ],
+                    }
+                }
+            }
+        };
+    }
+    impl_NewMirror3x3FastCache_for_FastExampleMirrored!(1);
+    impl_NewMirror3x3FastCache_for_FastExampleMirrored!(2);
+
+    pub struct FastCacheVKObjEval<ShaderLayout, InputPatch, Weights, Embedding> {
+        n_examples: usize,
+        examples: Arc<Vec<InputPatch>>,
+        sum_batch_size: usize,
+        weights: Weights,
+        head: [Embedding; 10],
+        input_patch_type: PhantomData<InputPatch>,
+        embedding_type: PhantomData<Embedding>,
+        weights_type: PhantomData<Weights>,
+        device: Arc<Device>,
+        queue: Arc<Queue>,
+        obj_sums_buffer: Arc<CpuAccessibleBuffer<[u32]>>,
+        cache_buffer: Arc<ImmutableBuffer<[FastExampleMirroredCache<Embedding>]>>,
+        update_pipeline: Arc<ComputePipeline<PipelineLayout<ShaderLayout>>>,
+        update_descriptor_set: Arc<
+            PersistentDescriptorSet<
+                Arc<ComputePipeline<PipelineLayout<ShaderLayout>>>,
+                (
+                    (
+                        (),
+                        PersistentDescriptorSetBuf<
+                            Arc<ImmutableBuffer<[FastExampleMirroredCache<Embedding>]>>,
+                        >,
+                    ),
+                    PersistentDescriptorSetBuf<Arc<CpuAccessibleBuffer<[u32]>>>,
+                ),
+            >,
+        >,
+        embedding_index: usize,
+        patch_index: usize,
+        embedding_is_clean: bool,
+        next_input_words_buffer_join_handle: Option<JoinHandle<Arc<ImmutableBuffer<[[u32; 2]]>>>>,
+        next_input_words_buffer_patch_index: usize,
+        next_input_words_buffer_embedding_index: usize,
+    }
+
+    pub struct VulkanFastCacheObjectiveEvalCreator {
         instance: Arc<Instance>,
         reduce_sum_batch_size: usize,
     }
 
-    pub struct VulkanObjectiveEval<ApplyLayout, ReduceSumLayout, InputPatch, Weights, Embedding> {
-        n_examples: usize,
-        input_patch_type: PhantomData<InputPatch>,
-        device: Arc<Device>,
-        queue: Arc<Queue>,
-        weights_buffer: Arc<CpuAccessibleBuffer<Weights>>,
-        head_buffer: Arc<CpuAccessibleBuffer<[Embedding; 10]>>,
-        obj_sums_buffer: Arc<CpuAccessibleBuffer<[u32]>>,
-        apply_compute_pipeline: Arc<ComputePipeline<PipelineLayout<ApplyLayout>>>,
-        apply_descriptor_set: Arc<
-            PersistentDescriptorSet<
-                Arc<ComputePipeline<PipelineLayout<ApplyLayout>>>,
-                (
-                    (
-                        (
-                            (
-                                (
-                                    (
-                                        (),
-                                        PersistentDescriptorSetBuf<
-                                            Arc<CpuAccessibleBuffer<Weights>>,
-                                        >,
-                                    ),
-                                    PersistentDescriptorSetBuf<
-                                        Arc<CpuAccessibleBuffer<[Embedding; 10]>>,
-                                    >,
-                                ),
-                                PersistentDescriptorSetBuf<Arc<ImmutableBuffer<[InputPatch]>>>,
-                            ),
-                            PersistentDescriptorSetBuf<Arc<ImmutableBuffer<[u32]>>>,
-                        ),
-                        PersistentDescriptorSetBuf<Arc<DeviceLocalBuffer<[Embedding]>>>,
-                    ),
-                    PersistentDescriptorSetBuf<Arc<DeviceLocalBuffer<[u32]>>>,
-                ),
-                StdDescriptorPoolAlloc,
-            >,
-        >,
-        reduce_sum_compute_pipeline: Arc<ComputePipeline<PipelineLayout<ReduceSumLayout>>>,
-        reduce_sum_descriptor_set: Arc<
-            PersistentDescriptorSet<
-                Arc<ComputePipeline<PipelineLayout<reduce_sum::Layout>>>,
-                (
-                    (
-                        (),
-                        PersistentDescriptorSetBuf<Arc<DeviceLocalBuffer<[u32]>>>,
-                    ),
-                    PersistentDescriptorSetBuf<Arc<CpuAccessibleBuffer<[u32]>>>,
-                ),
-                StdDescriptorPoolAlloc,
-            >,
-        >,
-        is_initialized: bool,
-        embedding_is_clean: bool,
-        obj_sum_is_clean: bool,
-        unclean_output_bits: HashSet<usize>,
-        reduce_sum_batch_size: usize,
-    }
-
-    impl VulkanObjectiveEvalCreator {
+    impl VulkanFastCacheObjectiveEvalCreator {
         pub fn new(reduce_sum_batch_size: usize) -> Self {
             let instance = Instance::new(None, &InstanceExtensions::none(), None)
                 .expect("failed to create instance");
@@ -1094,321 +1240,387 @@ pub mod objective_eval {
         }
     }
 
-    macro_rules! impl_objectiveevalcreator_for_vulkanobjectiveevalcreator {
-        ($weights_len:expr, $patch_size:expr, $input_len:expr, $output_len:expr, $shader_mod_name:ident, $shader_path:expr) => {
-            mod $shader_mod_name {
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    path: $shader_path,
-                }
-            }
-
-            impl
-                ObjectiveEvalCreator<
-                    [[[u32; $input_len]; $patch_size]; $patch_size],
-                    [[[[[u32; $input_len]; $patch_size]; $patch_size]; $weights_len]; $output_len],
-                    [u32; $output_len],
-                > for VulkanObjectiveEvalCreator
+    macro_rules! impl_fastexamplemirrored_over_embedding {
+        ($shader_mod_name:ident, $input_trans_shader_mod_name:ident, $clean_embedding_bit_mod_name:ident, $head_obj_update_mod_name:ident, $replace_cache_parts_shader_mod_name:ident, $embedding_len:expr) => {
+            impl<InputPatch: Copy + Sync + Send + GetWord + GetMirroredWords + BitLen + Copy + NewMirror3x3FastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>>
+            ObjectiveEvalCreator<InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]> for VulkanFastCacheObjectiveEvalCreator
             {
-                type ObjectiveEvalType = VulkanObjectiveEval<
-                    $shader_mod_name::Layout,
-                    reduce_sum::Layout,
-                    [[[u32; $input_len]; $patch_size]; $patch_size],
-                    [[[[[u32; $input_len]; $patch_size]; $patch_size]; $weights_len]; $output_len],
-                    [u32; $output_len],
-                >;
+                type ObjectiveEvalType = FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>;
                 fn new_obj_eval(
                     &self,
-                    weights: &[[[[[u32; $input_len]; $patch_size]; $patch_size]; $weights_len];
-                         $output_len],
-                    head: &[[u32; $output_len]; 10],
-                    examples: &[(u8, [[[u32; $input_len]; $patch_size]; $patch_size])],
-                ) -> Self::ObjectiveEvalType {
-                    let physical = PhysicalDevice::enumerate(&self.instance)
-                        .next()
-                        .expect("no device available");
+                    weights: &[[InputPatch; 16]; $embedding_len],
+                    head: &[[u32; $embedding_len]; 10],
+                    examples: &[(u8, InputPatch)],
+                ) -> FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]> {
+                    let physical = PhysicalDevice::enumerate(&self.instance).next().unwrap();
+                    let queue_family = physical.queue_families().find(|&q| q.supports_compute()).unwrap();
 
-                    let queue_family: QueueFamily = physical
-                        .queue_families()
-                        .find(|&q| q.supports_compute())
-                        .expect("couldn't find a compute queue family");
-
+                    // Now initializing the device.
                     let (device, mut queues) = Device::new(
                         physical,
-                        &Features::none(),
+                        physical.supported_features(),
                         &DeviceExtensions::none(),
                         [(queue_family, 0.5)].iter().cloned(),
                     )
-                    .expect("failed to create device");
+                    .unwrap();
 
                     let queue = queues.next().unwrap();
 
-                    let prm_buffer = CpuAccessibleBuffer::from_data(
-                        device.clone(),
-                        BufferUsage::all(),
-                        *weights,
-                    )
-                    .expect("failed to create buffer");
+                    let pipeline = Arc::new({
+                        let shader = $shader_mod_name::Shader::load(device.clone()).unwrap();
+                        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+                    });
 
-                    let head_buffer =
-                        CpuAccessibleBuffer::from_data(device.clone(), BufferUsage::all(), *head)
-                            .expect("failed to create buffer");
+                    let sums_buffer = {
+                        let data_iter = (0..(examples.len() as f64 / self.reduce_sum_batch_size as f64).ceil() as u32).map(|_| 0u32);
+                        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), data_iter).unwrap()
+                    };
 
-                    let (input_buffer, _) = ImmutableBuffer::from_iter(
-                        examples.iter().map(|(_, input)| input).cloned(),
-                        BufferUsage::all(),
-                        queue.clone(),
-                    )
-                    .expect("failed to create buffer");
+                    let cache_buffer = {
+                        let cache_vec: Vec<_> = examples
+                            .par_iter()
+                            .map(|(class, patch)| patch.new_full(weights, *class as usize, 0, 0))
+                            .collect();
+                        let (cache_buffer, _) = ImmutableBuffer::from_iter(cache_vec.iter().cloned(), BufferUsage::all(), queue.clone()).unwrap();
+                        cache_buffer
+                    };
 
-                    let (labels_buffer, _) = ImmutableBuffer::from_iter(
-                        examples.iter().map(|(label, _)| *label as u32),
-                        BufferUsage::all(),
-                        queue.clone(),
-                    )
-                    .expect("failed to create buffer");
-
-                    let embeddings_buffer: Arc<DeviceLocalBuffer<[[u32; $output_len]]>> =
-                        DeviceLocalBuffer::array(
-                            device.clone(),
-                            examples.len(),
-                            BufferUsage::all(),
-                            [queue_family].iter().cloned(),
-                        )
-                        .expect("failed to create DeviceLocalBuffer");
-
-                    let objs_buffer: Arc<DeviceLocalBuffer<[u32]>> = DeviceLocalBuffer::array(
-                        device.clone(),
-                        examples.len(),
-                        BufferUsage::all(),
-                        [queue_family].iter().cloned(),
-                    )
-                    .expect("failed to create DeviceLocalBuffer");
-
-                    let obj_sums_iter = (0..(examples.len() as f64
-                        / self.reduce_sum_batch_size as f64)
-                        .ceil() as usize)
-                        .map(|_| 0u32);
-                    let obj_sums_buffer = CpuAccessibleBuffer::from_iter(
-                        device.clone(),
-                        BufferUsage::all(),
-                        obj_sums_iter,
-                    )
-                    .expect("failed to create buffer");
-
-                    let pa_shader = $shader_mod_name::Shader::load(device.clone())
-                        .expect("failed to create shader module");
-                    let pa_compute_pipeline = Arc::new(
-                        ComputePipeline::new(device.clone(), &pa_shader.main_entry_point(), &())
-                            .expect("failed to create compute pipeline"),
-                    );
-
-                    let pa_set = Arc::new(
-                        PersistentDescriptorSet::start(pa_compute_pipeline.clone(), 0)
-                            .add_buffer(prm_buffer.clone())
+                    let set = Arc::new(
+                        PersistentDescriptorSet::start(pipeline.clone(), 0)
+                            .add_buffer(cache_buffer.clone())
                             .unwrap()
-                            .add_buffer(head_buffer.clone())
-                            .unwrap()
-                            .add_buffer(input_buffer.clone())
-                            .unwrap()
-                            .add_buffer(labels_buffer.clone())
-                            .unwrap()
-                            .add_buffer(embeddings_buffer.clone())
-                            .unwrap()
-                            .add_buffer(objs_buffer.clone())
+                            .add_buffer(sums_buffer.clone())
                             .unwrap()
                             .build()
                             .unwrap(),
                     );
-
-                    let rs_shader = reduce_sum::Shader::load(device.clone())
-                        .expect("failed to create shader module");
-                    let rs_compute_pipeline = Arc::new(
-                        ComputePipeline::new(device.clone(), &rs_shader.main_entry_point(), &())
-                            .expect("failed to create compute pipeline"),
-                    );
-
-                    let rs_set = Arc::new(
-                        PersistentDescriptorSet::start(rs_compute_pipeline.clone(), 0)
-                            .add_buffer(objs_buffer.clone())
-                            .unwrap()
-                            .add_buffer(obj_sums_buffer.clone())
-                            .unwrap()
-                            .build()
-                            .unwrap(),
-                    );
-
-                    Self::ObjectiveEvalType {
+                    FastCacheVKObjEval {
                         n_examples: examples.len(),
+                        examples: Arc::new(examples.iter().map(|(_, patch)| patch).cloned().collect()),
+                        sum_batch_size: self.reduce_sum_batch_size,
+                        weights: *weights,
+                        head: *head,
+                        embedding_type: PhantomData,
                         input_patch_type: PhantomData,
-                        device: device.clone(),
+                        weights_type: PhantomData,
+                        device: device,
                         queue: queue,
-                        weights_buffer: prm_buffer,
-                        head_buffer: head_buffer,
-                        obj_sums_buffer: obj_sums_buffer,
-                        apply_compute_pipeline: pa_compute_pipeline,
-                        apply_descriptor_set: pa_set,
-                        reduce_sum_compute_pipeline: rs_compute_pipeline,
-                        reduce_sum_descriptor_set: rs_set,
-                        is_initialized: false,
-                        embedding_is_clean: false,
-                        obj_sum_is_clean: false,
-                        unclean_output_bits: HashSet::new(),
-                        reduce_sum_batch_size: self.reduce_sum_batch_size,
+                        obj_sums_buffer: sums_buffer,
+                        cache_buffer: cache_buffer,
+                        update_pipeline: pipeline,
+                        update_descriptor_set: set,
+                        embedding_index: 0,
+                        patch_index: 0,
+                        embedding_is_clean: true,
+                        next_input_words_buffer_join_handle: None,
+                        next_input_words_buffer_patch_index: 0,
+                        next_input_words_buffer_embedding_index: 0,
                     }
                 }
             }
-
-            impl
-                VulkanObjectiveEval<
-                    $shader_mod_name::Layout,
-                    reduce_sum::Layout,
-                    [[[u32; $input_len]; $patch_size]; $patch_size],
-                    [[[[[u32; $input_len]; $patch_size]; $patch_size]; $weights_len]; $output_len],
-                    [u32; $output_len],
-                >
+            impl<InputPatch: 'static + Sync + Send + GetWord + GetMirroredWords + BitLen + Copy + NewMirror3x3FastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>>
+                FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>
             {
-                fn patch_apply(&mut self, output_index: usize, apply_level: u32) {
+                fn sum_obj(&self) -> u64 {
                     let pa_push_constants = $shader_mod_name::ty::PushConstantData {
-                        embedding_word_index: output_index as u32 / $weights_len,
-                        embedding_bit_index: output_index as u32 % $weights_len,
-                        full_apply: apply_level,
+                        head: self.head,
+                        embedding_bit_index: self.embedding_index as u32 % 16,
+                        embedding_word_index: self.embedding_index as u32 / 16,
+                        threshold: (<InputPatch>::BIT_LEN / 2) as u32,
+                        weights_word: self.weights.get_patch(self.embedding_index).get_word(self.patch_index),
+                        batch_size: self.sum_batch_size as u32,
                     };
-                    let pa_command_buffer =
-                        AutoCommandBufferBuilder::new(self.device.clone(), self.queue.family())
-                            .unwrap()
-                            .dispatch(
-                                [(self.n_examples as f64 / 64f64).ceil() as u32, 1, 1],
-                                self.apply_compute_pipeline.clone(),
-                                self.apply_descriptor_set.clone(),
-                                pa_push_constants,
-                            )
-                            .unwrap()
-                            .build()
-                            .unwrap();
-
-                    let finished = pa_command_buffer.execute(self.queue.clone()).unwrap();
-                    finished
-                        .then_signal_fence_and_flush()
+                    let n_workgroups = ((self.n_examples as f64 / 256f64) / self.sum_batch_size as f64).ceil() as u32;
+                    let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(self.device.clone(), self.queue.family())
                         .unwrap()
-                        .cleanup_finished();
-                    //finished.then_signal_fence_and_flush().unwrap().wait(None).unwrap();
-                }
-                fn reduce_sum_obj(&mut self) -> u64 {
-                    let rs_push_constants = reduce_sum::ty::PushConstantData {
-                        batch_size: self.reduce_sum_batch_size as u32,
-                    };
-
-                    let rs_command_buffer =
-                        AutoCommandBufferBuilder::new(self.device.clone(), self.queue.family())
-                            .unwrap()
-                            .dispatch(
-                                [
-                                    ((self.n_examples as f64 / 64f64)
-                                        / self.reduce_sum_batch_size as f64)
-                                        .ceil() as u32,
-                                    1,
-                                    1,
-                                ],
-                                self.reduce_sum_compute_pipeline.clone(),
-                                self.reduce_sum_descriptor_set.clone(),
-                                rs_push_constants,
-                            )
-                            .unwrap()
-                            .build()
-                            .unwrap();
-
-                    let finished = rs_command_buffer.execute(self.queue.clone()).unwrap();
-
-                    finished
-                        .then_signal_fence_and_flush()
+                        .dispatch(
+                            [n_workgroups, 1, 1],
+                            self.update_pipeline.clone(),
+                            self.update_descriptor_set.clone(),
+                            pa_push_constants,
+                        )
                         .unwrap()
-                        .wait(None)
+                        .build()
                         .unwrap();
-                    self.obj_sum_is_clean = true;
-                    let content = self.obj_sums_buffer.read().unwrap();
-                    content.par_iter().map(|x| *x as u64).sum()
+
+                    let future = sync::now(self.device.clone())
+                        .then_execute(self.queue.clone(), command_buffer)
+                        .unwrap()
+                        .then_signal_fence_and_flush()
+                        .unwrap();
+                    future.wait(None).unwrap();
+
+                    //dbg!(self.patch_index);
+                    //let start = PreciseTime::now();
+                    let data_buffer_content = self.obj_sums_buffer.read().unwrap();
+                    let gpu_sum: u64 = data_buffer_content.par_iter().map(|&x| x as u64).sum();
+                    //println!("sum ms: {}", start.to(PreciseTime::now()).num_milliseconds());
+                    gpu_sum
+                }
+                fn transition_input_word(&mut self, target_weight_index: usize) {
+                    //let start = PreciseTime::now();
+                    if (self.next_input_words_buffer_patch_index != target_weight_index) | (self.next_input_words_buffer_embedding_index != self.embedding_index) {
+                        println!("an input word buffer creator thread was started, but it was for the wrong input word", );
+                        if let Some(handle) = self.next_input_words_buffer_join_handle.take() {
+                            handle.join().expect("can't join thread");
+                        }
+                        println!("it is now dead", );
+                        self.next_input_words_buffer_join_handle = None;
+                    }
+                    if self.next_input_words_buffer_join_handle.is_none() {
+                        println!("no correct input words buffer had been created so creating now...", );
+                        self.start_prepare_input_words_buffer(target_weight_index);
+                    }
+                    let new_words_buffer = self.next_input_words_buffer_join_handle.take().unwrap().join().expect("can't join thread");
+                    //println!("get pre prepared input words ms: {}", start.to(PreciseTime::now()).num_milliseconds());
+
+                    let pipeline = Arc::new({
+                        let shader = $input_trans_shader_mod_name::Shader::load(self.device.clone()).unwrap();
+                        ComputePipeline::new(self.device.clone(), &shader.main_entry_point(), &()).unwrap()
+                    });
+                    let set = Arc::new(
+                        PersistentDescriptorSet::start(pipeline.clone(), 0)
+                            .add_buffer(self.cache_buffer.clone())
+                            .unwrap()
+                            .add_buffer(new_words_buffer.clone())
+                            .unwrap()
+                            .build()
+                            .unwrap(),
+                    );
+                    let push_constants = $input_trans_shader_mod_name::ty::PushConstantData {
+                        new_weights_word: self.weights.get_patch(self.embedding_index).get_word(target_weight_index),
+                        old_weights_word: self.weights.get_patch(self.embedding_index).get_word(self.patch_index),
+                    };
+                    let n_workgroups = (self.n_examples as f64 / 1024f64).ceil() as u32;
+                    let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(self.device.clone(), self.queue.family())
+                        .unwrap()
+                        .dispatch([n_workgroups, 1, 1], pipeline.clone(), set.clone(), push_constants)
+                        .unwrap()
+                        .build()
+                        .unwrap();
+
+                    let future = sync::now(self.device.clone())
+                        .then_execute(self.queue.clone(), command_buffer)
+                        .unwrap()
+                        .then_signal_fence_and_flush()
+                        .unwrap();
+                    future.wait(None).unwrap();
+                    self.patch_index = target_weight_index;
+                    //println!("full trans time: {}", start.to(PreciseTime::now()).num_milliseconds());
+                }
+
+                fn start_prepare_input_words_buffer(&mut self, target_weight_index: usize) {
+                    if let Some(handle) = self.next_input_words_buffer_join_handle.take() {
+                        println!("unneeded thread was created, joining before creating a new one", );
+                        handle.join().expect("can't join thread");
+                    }
+                    let examples = self.examples.clone();
+                    let queue = self.queue.clone();
+                    let child = thread::spawn(move || {
+                        //let start = PreciseTime::now();
+                        let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
+                        let data_vec = pool.install(||{
+                            let data_vec: Vec<[u32; 2]> = examples
+                                .par_iter()
+                                .map(|patch| patch.get_mirrored_words(target_weight_index))
+                                .collect();
+                            data_vec
+                        });
+
+                        let (new_words_buffer, _) = ImmutableBuffer::from_iter(data_vec.iter().cloned(), BufferUsage::all(), queue).unwrap();
+                        //println!("new words prep time: {}", start.to(PreciseTime::now()).num_milliseconds());
+                        new_words_buffer
+                    });
+                    self.next_input_words_buffer_join_handle = Some(child);
+                    self.next_input_words_buffer_patch_index = target_weight_index;
+                    self.next_input_words_buffer_embedding_index = self.embedding_index;
+                }
+
+                fn clean_embedding_bit(&mut self) {
+                    //let start = PreciseTime::now();
+                    let pipeline = Arc::new({
+                        let shader = $clean_embedding_bit_mod_name::Shader::load(self.device.clone()).unwrap();
+                        ComputePipeline::new(self.device.clone(), &shader.main_entry_point(), &()).unwrap()
+                    });
+                    let set = Arc::new(
+                        PersistentDescriptorSet::start(pipeline.clone(), 0)
+                            .add_buffer(self.cache_buffer.clone())
+                            .unwrap()
+                            .build()
+                            .unwrap(),
+                    );
+                    let push_constants = $clean_embedding_bit_mod_name::ty::PushConstantData {
+                        embedding_bit_index: self.embedding_index as u32 % 16,
+                        embedding_word_index: self.embedding_index as u32 / 16,
+                        threshold: (<InputPatch>::BIT_LEN / 2) as u32,
+                        weights_word: self.weights.get_patch(self.embedding_index).get_word(self.patch_index),
+                    };
+                    let n_workgroups = (self.n_examples as f64 / 1024f64).ceil() as u32;
+                    let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(self.device.clone(), self.queue.family())
+                        .unwrap()
+                        .dispatch([n_workgroups, 1, 1], pipeline.clone(), set.clone(), push_constants)
+                        .unwrap()
+                        .build()
+                        .unwrap();
+
+                    let future = sync::now(self.device.clone())
+                        .then_execute(self.queue.clone(), command_buffer)
+                        .unwrap()
+                        .then_signal_fence_and_flush()
+                        .unwrap();
+                    future.wait(None).unwrap();
+                    self.embedding_is_clean = true;
+                    //println!("embedding bit clean ms: {}", start.to(PreciseTime::now()).num_milliseconds());
+                }
+                fn replace_cache_parts(&mut self, target_embedding_index: usize) {
+                    if !self.embedding_is_clean {
+                        self.clean_embedding_bit();
+                    }
+                    let new_weights_patch = self.weights.get_patch(target_embedding_index);
+                    let new_cache_parts_buffer = {
+                        let cache_vec: Vec<_> = self.examples
+                            .par_iter()
+                            .map(|patch| patch.new_parts(&new_weights_patch, 0))
+                            .collect();
+                        let (cache_buffer, _) = ImmutableBuffer::from_iter(cache_vec.iter().cloned(), BufferUsage::all(), self.queue.clone()).unwrap();
+                        cache_buffer
+                    };
+
+
+                    //let start = PreciseTime::now();
+                    let pipeline = Arc::new({
+                        let shader = $replace_cache_parts_shader_mod_name::Shader::load(self.device.clone()).unwrap();
+                        ComputePipeline::new(self.device.clone(), &shader.main_entry_point(), &()).unwrap()
+                    });
+                    let set = Arc::new(
+                        PersistentDescriptorSet::start(pipeline.clone(), 0)
+                            .add_buffer(self.cache_buffer.clone())
+                            .unwrap()
+                            .add_buffer(new_cache_parts_buffer.clone())
+                            .unwrap()
+                            .build()
+                            .unwrap(),
+                    );
+                    let n_workgroups = (self.n_examples as f64 / 1024f64).ceil() as u32;
+                    let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(self.device.clone(), self.queue.family())
+                        .unwrap()
+                        .dispatch([n_workgroups, 1, 1], pipeline.clone(), set.clone(), ())
+                        .unwrap()
+                        .build()
+                        .unwrap();
+
+                    let future = sync::now(self.device.clone())
+                        .then_execute(self.queue.clone(), command_buffer)
+                        .unwrap()
+                        .then_signal_fence_and_flush()
+                        .unwrap();
+                    future.wait(None).unwrap();
+                    self.embedding_index = target_embedding_index;
+                    self.patch_index = 0;
+                    dbg!(self.embedding_index);
+                    dbg!(self.patch_index);
+                }
+                fn sum_head_obj(&mut self) -> u64 {
+                    if !self.embedding_is_clean {
+                        self.clean_embedding_bit();
+                    }
+                    let pipeline = Arc::new({
+                        let shader = $head_obj_update_mod_name::Shader::load(self.device.clone()).unwrap();
+                        ComputePipeline::new(self.device.clone(), &shader.main_entry_point(), &()).unwrap()
+                    });
+                    let set = Arc::new(
+                        PersistentDescriptorSet::start(pipeline.clone(), 0)
+                            .add_buffer(self.cache_buffer.clone())
+                            .unwrap()
+                            .add_buffer(self.obj_sums_buffer.clone())
+                            .unwrap()
+                            .build()
+                            .unwrap(),
+                    );
+                    let push_constants = $head_obj_update_mod_name::ty::PushConstantData {
+                        head: self.head,
+                        batch_size: self.sum_batch_size as u32,
+                    };
+                    let n_workgroups = ((self.n_examples as f64 / 256f64) / self.sum_batch_size as f64).ceil() as u32;
+                    let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(self.device.clone(), self.queue.family())
+                        .unwrap()
+                        .dispatch([n_workgroups, 1, 1], pipeline.clone(), set.clone(), push_constants)
+                        .unwrap()
+                        .build()
+                        .unwrap();
+
+                    let future = sync::now(self.device.clone())
+                        .then_execute(self.queue.clone(), command_buffer)
+                        .unwrap()
+                        .then_signal_fence_and_flush()
+                        .unwrap();
+                    future.wait(None).unwrap();
+
+                    let data_buffer_content = self.obj_sums_buffer.read().unwrap();
+                    let gpu_sum: u64 = data_buffer_content.par_iter().map(|&x| x as u64).sum();
+                    gpu_sum
                 }
             }
-
-            impl
-                ObjectiveEval<
-                    [[[u32; $input_len]; $patch_size]; $patch_size],
-                    [[[[[u32; $input_len]; $patch_size]; $patch_size]; $weights_len]; $output_len],
-                    [u32; $output_len],
-                >
-                for VulkanObjectiveEval<
-                    $shader_mod_name::Layout,
-                    reduce_sum::Layout,
-                    [[[u32; $input_len]; $patch_size]; $patch_size],
-                    [[[[[u32; $input_len]; $patch_size]; $patch_size]; $weights_len]; $output_len],
-                    [u32; $output_len],
-                >
+            impl<InputPatch: 'static + BitLen + GetMirroredWords + GetWord + Copy + Sync + Send + NewMirror3x3FastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]> + WordLen>
+                ObjectiveEval<InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>
+                for FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>
+            where
+                [[InputPatch; 16]; $embedding_len]: FlipBitIndexed,
             {
                 fn flip_weights_bit(&mut self, o: usize, i: usize) {
-                    let mut weights = self.weights_buffer.write().unwrap();
-                    weights.flip_bit_indexed(o, i);
-                    self.unclean_output_bits.insert(o);
+                    if o != self.embedding_index {
+                        println!("transitioning to embedding bit {:?}", o);
+                        self.replace_cache_parts(o);
+                    }
+                    let new_patch_index = i / 32;
+                    if new_patch_index != self.patch_index {
+                        self.transition_input_word(new_patch_index);
+                        if (new_patch_index + 1) < InputPatch::WORD_LEN {
+                            self.start_prepare_input_words_buffer(new_patch_index + 1);
+                        }
+                    }
+                    self.weights.flip_bit_indexed(o, i);
                     self.embedding_is_clean = false;
-                    self.obj_sum_is_clean = false;
                 }
                 fn flip_head_bit(&mut self, o: usize, i: usize) {
-                    let mut head = self.head_buffer.write().unwrap();
-                    head[o].flip_bit(i);
-                    self.obj_sum_is_clean = false;
+                    self.head[o].flip_bit(i);
+                    if !self.embedding_is_clean {
+                        self.clean_embedding_bit();
+                    }
                 }
                 fn obj(&mut self) -> u64 {
-                    if !self.is_initialized {
-                        // if this the first time and the embedding is empty, do a full apply.
-                        self.patch_apply(0, 1);
-                    } else if !self.embedding_is_clean {
-                        let indices: Vec<usize> =
-                            self.unclean_output_bits.iter().cloned().collect();
-                        for o in &indices {
-                            self.patch_apply(*o, 0);
-                        }
-                    } else if self.embedding_is_clean {
-                        self.patch_apply(0, 2);
+                    if self.embedding_is_clean {
+                        self.sum_head_obj()
                     } else {
-
+                        self.sum_obj()
                     }
-                    self.unclean_output_bits.clear();
-                    self.is_initialized = true;
-                    self.embedding_is_clean = true;
-                    self.reduce_sum_obj()
                 }
             }
         };
     }
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 3, 1, 1, apply_shader_3x3_1_1, "shaders/conv3x3_1-1.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(1, 2, apply_shader_1_2, "shaders/conv3x3_1-2.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(1, 3, apply_shader_1_3, "shaders/conv3x3_1-3.glsl");
 
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 3, 2, 1, apply_shader_3x3_2_1, "shaders/conv3x3_2-1.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 3, 2, 2, apply_shader_3x3_2_2, "shaders/conv3x3_2-2.glsl");
-
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 3, 4, 2, apply_shader_3x3_4_2, "shaders/conv3x3_4-2.glsl");
-
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, 1, apply_shader_3_1, "shaders/conv3x3_3-1.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, 2, apply_shader_3_2, "shaders/conv3x3_3-2.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(3, 3, apply_shader_3_3, "shaders/conv3x3_3-3.glsl");
-
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 2, 2, 2, apply_shader_2x2_2_2, "shaders/conv2x2_2-2.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 2, 1, 2, apply_shader_2x2_1_2, "shaders/conv2x2_1-2.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(32, 2, 2, 4, apply_shader_2x2_2_4, "shaders/conv2x2_2-4.glsl");
-
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 1, 1, mirror_apply_shader_3x3_1_1, "shaders/mirror3x3_1-1.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 2, 1, mirror_apply_shader_3x3_2_1, "shaders/mirror3x3_2-1.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 2, 2, mirror_apply_shader_3x3_2_2, "shaders/mirror3x3_2-2.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 4, 2, mirror_apply_shader_3x3_4_2, "shaders/mirror3x3_4-2.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 2, 4, mirror_apply_shader_3x3_2_4, "shaders/mirror3x3_2-4.glsl");
-    //impl_objectiveevalcreator_for_vulkanobjectiveevalcreator!(16, 3, 4, 4, mirror_apply_shader_3x3_4_4, "shaders/mirror3x3_4-4.glsl");
+    impl_fastexamplemirrored_over_embedding!(
+        fast_obj_update_e1,
+        transition_input_word_e1,
+        clean_embedding_bit_e1,
+        head_obj_update_e1,
+        replace_cache_parts_e1,
+        1
+    );
+    impl_fastexamplemirrored_over_embedding!(
+        fast_obj_update_e2,
+        transition_input_word_e2,
+        clean_embedding_bit_e2,
+        head_obj_update_e2,
+        replace_cache_parts_e2,
+        2
+    );
 
     #[cfg(test)]
     mod tests {
         use super::{
             ObjectiveEval, ObjectiveEvalCreator, TestCPUObjectiveEval, TestCPUObjectiveEvalCreator,
-            VulkanObjectiveEvalCreator,
+            VulkanFastCacheObjectiveEvalCreator,
         };
         use rand::prelude::*;
         use rand_hc::Hc128Rng;
@@ -1424,7 +1636,7 @@ pub mod objective_eval {
                     .map(|_| (rng.gen_range(0, 10), rng.gen()))
                     .collect();
 
-                let vk_eval_creator = VulkanObjectiveEvalCreator::new(98);
+                let vk_eval_creator = VulkanFastCacheObjectiveEvalCreator::new(98);
                 let mut vk_obj_eval = vk_eval_creator.new_obj_eval(&weights, &head, &examples);
                 let test_eval_creator = TestCPUObjectiveEvalCreator::new();
                 let mut test_obj_eval = test_eval_creator.new_obj_eval(&weights, &head, &examples);
@@ -1572,28 +1784,17 @@ pub mod objective_eval {
         }
 
         #[test]
-        fn vk_array_32_3x3_1_1() {
-            vk_test!(32, 3, 1, 1);
+        fn vk_array_16_2x2_2_1() {
+            vk_test!(16, 2, 2, 1);
         }
         #[test]
-        fn vk_array_32_3x3_2_1() {
-            vk_test!(32, 3, 2, 1);
-        }
-
-        #[test]
-        fn vk_array_32_3x3_2_2() {
-            vk_test!(32, 3, 2, 2);
-        }
-
-        #[test]
-        fn vk_array_32_2x2_2_2() {
-            vk_test!(32, 2, 2, 2);
+        fn vk_array_16_2x2_1_2() {
+            vk_test!(16, 2, 1, 2);
         }
         #[test]
-        fn vk_array_32_2x2_2_4() {
-            vk_test!(32, 2, 2, 4);
+        fn vk_array_16_2x2_1_1() {
+            vk_test!(16, 2, 1, 1);
         }
-
         #[test]
         fn vk_array_16_3x3_1_1() {
             vk_test!(16, 3, 1, 1);
@@ -1603,8 +1804,16 @@ pub mod objective_eval {
             vk_test!(16, 3, 2, 1);
         }
         #[test]
+        fn vk_array_16_3x3_3_1() {
+            vk_test!(16, 3, 3, 1);
+        }
+        #[test]
         fn vk_array_16_3x3_2_2() {
             vk_test!(16, 3, 2, 2);
+        }
+        #[test]
+        fn vk_array_16_3x3_3_2() {
+            vk_test!(16, 3, 3, 2);
         }
     }
 }
