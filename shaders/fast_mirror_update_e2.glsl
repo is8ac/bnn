@@ -17,16 +17,11 @@ cache_data;
 layout(set = 0, binding = 1) writeonly buffer Objective { uint data[]; }
 objective_sums;
 
-// layout(set = 0, binding = 2) buffer Params {
-//  uint embedding_bit_index;
-//  uint threshold;
-//  uint weights_word;
-//  uint[10] head_words;
-//}
-// pc;
+layout(set = 0, binding = 2) readonly buffer ObjHead { uint[10][2] data; }
+obj_head;
 
 layout(push_constant) uniform PushConstantData {
-  uint[10][2] head;
+  //uint[10][2] head;
   uint embedding_bit_index;
   uint embedding_word_index;
   uint threshold;
@@ -70,7 +65,7 @@ void main() {
     for (c = 0; c < 10; c++) {
       act = 0;
       for (e = 0; e < 2; e += 1) {
-        act += bitCount(new_embedding[e] ^ pc.head[c][e]);
+        act += bitCount(new_embedding[e] ^ obj_head.data[c][e]);
       }
       max_act = max(max_act, ((c != true_class ? act : 0)));
       true_act += (c == true_class) ? act : 0;
