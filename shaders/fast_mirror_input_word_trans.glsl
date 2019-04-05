@@ -3,7 +3,7 @@
 struct CacheExampleMirrored {
   uint[2] input_word;
   uint[2] input_partial_sums;
-  uint[2] embedding_word;
+  uint[${EMBEDDING_LEN}] embedding_word;
   uint true_class;
 } fast_cache;
 

@@ -3,7 +3,7 @@
 struct CacheExampleMirrored {
   uint[2] input_word;
   uint[2] input_partial_sums;
-  uint[2] embedding;
+  uint[4] embedding;
   uint true_class;
 } fast_cache;
 
@@ -18,7 +18,7 @@ layout(set = 0, binding = 1) writeonly buffer Objective { uint data[]; }
 objective_sums;
 
 layout(push_constant) uniform PushConstantData {
-  uint[10][2] head;
+  uint[10][4] head;
   uint batch_size;
 }
 pc;
@@ -34,7 +34,7 @@ void main() {
     index = gl_GlobalInvocationID.x * pc.batch_size + i;
     true_class = cache_data.cache[index].true_class;
 
-    uint[2] new_embedding = cache_data.cache[index].embedding;
+    uint[4] new_embedding = cache_data.cache[index].embedding;
 
     uint max_act = 0;
     uint true_act = 0;
@@ -42,7 +42,7 @@ void main() {
 
     for (c = 0; c < 10; c++) {
       act = 0;
-      for (e = 0; e < 2; e += 1) {
+      for (e = 0; e < 4; e += 1) {
         act += bitCount(new_embedding[e] ^ pc.head[c][e]);
       }
       max_act = max(max_act, ((c != true_class ? act : 0)));

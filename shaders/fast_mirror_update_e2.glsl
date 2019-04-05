@@ -40,6 +40,7 @@ void main() {
 
   uint c;
   uint i;
+  uint e;
   uint sum = 0;
   uint index;
   uint true_class;
@@ -67,8 +68,10 @@ void main() {
     uint act;
 
     for (c = 0; c < 10; c++) {
-      act = bitCount(new_embedding[0] ^ pc.head[c][0]) +
-            bitCount(new_embedding[1] ^ pc.head[c][1]);
+      act = 0;
+      for (e = 0; e < 2; e += 1) {
+        act += bitCount(new_embedding[e] ^ pc.head[c][e]);
+      }
       max_act = max(max_act, ((c != true_class ? act : 0)));
       true_act += (c == true_class) ? act : 0;
     }

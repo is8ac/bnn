@@ -1036,13 +1036,19 @@ pub mod objective_eval {
             path: "shaders/fast_mirror_update_e1.glsl",
         }
     }
-
     mod fast_obj_update_e2 {
         vulkano_shaders::shader! {
             ty: "compute",
             path: "shaders/fast_mirror_update_e2.glsl",
         }
     }
+    mod fast_obj_update_e3 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_update_e3.glsl",
+        }
+    }
+
 
     mod transition_input_word_e1 {
         vulkano_shaders::shader! {
@@ -1050,13 +1056,19 @@ pub mod objective_eval {
             path: "shaders/fast_mirror_input_word_trans_e1.glsl",
         }
     }
-
     mod transition_input_word_e2 {
         vulkano_shaders::shader! {
             ty: "compute",
             path: "shaders/fast_mirror_input_word_trans_e2.glsl",
         }
     }
+    mod transition_input_word_e3 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_input_word_trans_e3.glsl",
+        }
+    }
+
 
     mod clean_embedding_bit_e1 {
         vulkano_shaders::shader! {
@@ -1070,6 +1082,13 @@ pub mod objective_eval {
             path: "shaders/fast_mirror_embedding_bit_clean_e2.glsl",
         }
     }
+    mod clean_embedding_bit_e3 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_embedding_bit_clean_e3.glsl",
+        }
+    }
+
 
     mod head_obj_update_e1 {
         vulkano_shaders::shader! {
@@ -1077,11 +1096,16 @@ pub mod objective_eval {
             path: "shaders/fast_mirror_head_update_e1.glsl",
         }
     }
-
     mod head_obj_update_e2 {
         vulkano_shaders::shader! {
             ty: "compute",
             path: "shaders/fast_mirror_head_update_e2.glsl",
+        }
+    }
+    mod head_obj_update_e3 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_head_update_e3.glsl",
         }
     }
 
@@ -1095,6 +1119,12 @@ pub mod objective_eval {
         vulkano_shaders::shader! {
             ty: "compute",
             path: "shaders/fast_mirror_cache_replace_input_e2.glsl",
+        }
+    }
+    mod replace_cache_parts_e3 {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            path: "shaders/fast_mirror_cache_replace_input_e3.glsl",
         }
     }
 
@@ -1116,7 +1146,7 @@ pub mod objective_eval {
         input_partial_sums: [u32; 2],
     }
 
-    pub trait NewMirror3x3FastCache<Weights, Embedding> {
+    pub trait NewMirrorFastCache<Weights, Embedding> {
         fn new_full(
             &self,
             weights: &Weights,
@@ -1127,10 +1157,10 @@ pub mod objective_eval {
         fn new_parts(&self, weights_patch: &Self, patch_index: usize) -> FastExampleMirroredParts;
     }
 
-    macro_rules! impl_NewMirror3x3FastCache_for_FastExampleMirrored {
+    macro_rules! impl_NewMirrorFastCache_for_FastExampleMirrored {
         ($output_len:expr) => {
             impl<InputPatch: GetWord + MirrorHammingDistance + GetMirroredWords + Copy>
-                NewMirror3x3FastCache<[[InputPatch; 16]; $output_len], [u32; $output_len]>
+                NewMirrorFastCache<[[InputPatch; 16]; $output_len], [u32; $output_len]>
                 for InputPatch
             where
                 [InputPatch; 16]: Apply<InputPatch, u32>,
@@ -1184,8 +1214,9 @@ pub mod objective_eval {
             }
         };
     }
-    impl_NewMirror3x3FastCache_for_FastExampleMirrored!(1);
-    impl_NewMirror3x3FastCache_for_FastExampleMirrored!(2);
+    impl_NewMirrorFastCache_for_FastExampleMirrored!(1);
+    impl_NewMirrorFastCache_for_FastExampleMirrored!(2);
+    impl_NewMirrorFastCache_for_FastExampleMirrored!(3);
 
     pub struct FastCacheVKObjEval<ShaderLayout, InputPatch, Weights, Embedding> {
         n_examples: usize,
@@ -1242,7 +1273,7 @@ pub mod objective_eval {
 
     macro_rules! impl_fastexamplemirrored_over_embedding {
         ($shader_mod_name:ident, $input_trans_shader_mod_name:ident, $clean_embedding_bit_mod_name:ident, $head_obj_update_mod_name:ident, $replace_cache_parts_shader_mod_name:ident, $embedding_len:expr) => {
-            impl<InputPatch: Copy + Sync + Send + GetWord + GetMirroredWords + BitLen + Copy + NewMirror3x3FastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>>
+            impl<InputPatch: Copy + Sync + Send + GetWord + GetMirroredWords + BitLen + Copy + NewMirrorFastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>>
             ObjectiveEvalCreator<InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]> for VulkanFastCacheObjectiveEvalCreator
             {
                 type ObjectiveEvalType = FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>;
@@ -1318,7 +1349,7 @@ pub mod objective_eval {
                     }
                 }
             }
-            impl<InputPatch: 'static + Sync + Send + GetWord + GetMirroredWords + BitLen + Copy + NewMirror3x3FastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>>
+            impl<InputPatch: 'static + Sync + Send + GetWord + GetMirroredWords + BitLen + Copy + NewMirrorFastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>>
                 FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>
             {
                 fn sum_obj(&self) -> u64 {
@@ -1561,7 +1592,7 @@ pub mod objective_eval {
                     gpu_sum
                 }
             }
-            impl<InputPatch: 'static + BitLen + GetMirroredWords + GetWord + Copy + Sync + Send + NewMirror3x3FastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]> + WordLen>
+            impl<InputPatch: 'static + BitLen + GetMirroredWords + GetWord + Copy + Sync + Send + NewMirrorFastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]> + WordLen>
                 ObjectiveEval<InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>
                 for FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>
             where
@@ -1614,6 +1645,14 @@ pub mod objective_eval {
         head_obj_update_e2,
         replace_cache_parts_e2,
         2
+    );
+    impl_fastexamplemirrored_over_embedding!(
+        fast_obj_update_e3,
+        transition_input_word_e3,
+        clean_embedding_bit_e3,
+        head_obj_update_e3,
+        replace_cache_parts_e3,
+        3
     );
 
     #[cfg(test)]
@@ -1794,6 +1833,10 @@ pub mod objective_eval {
         #[test]
         fn vk_array_16_2x2_1_1() {
             vk_test!(16, 2, 1, 1);
+        }
+        #[test]
+        fn vk_array_16_2x2_1_3() {
+            vk_test!(16, 2, 1, 3);
         }
         #[test]
         fn vk_array_16_3x3_1_1() {
