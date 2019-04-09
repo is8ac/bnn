@@ -105,6 +105,7 @@ array_bit_len!(1);
 array_bit_len!(2);
 array_bit_len!(3);
 array_bit_len!(4);
+array_bit_len!(8);
 
 pub trait FlipBit {
     fn flip_bit(&mut self, b: usize);
@@ -130,6 +131,7 @@ array_flip_bit!(1);
 array_flip_bit!(2);
 array_flip_bit!(3);
 array_flip_bit!(4);
+array_flip_bit!(8);
 
 pub trait FlipBitIndexed {
     fn flip_bit_indexed(&mut self, o: usize, b: usize);
@@ -170,6 +172,7 @@ impl_flipbitindexed_for_array!(1);
 impl_flipbitindexed_for_array!(2);
 impl_flipbitindexed_for_array!(3);
 impl_flipbitindexed_for_array!(4);
+impl_flipbitindexed_for_array!(8);
 
 pub trait GetPatch<T> {
     fn get_patch(&self, index: usize) -> T;
@@ -187,6 +190,7 @@ impl_getpatch_for_weights!(1);
 impl_getpatch_for_weights!(2);
 impl_getpatch_for_weights!(3);
 impl_getpatch_for_weights!(4);
+impl_getpatch_for_weights!(8);
 
 pub trait WordLen {
     const WORD_LEN: usize;
@@ -207,6 +211,7 @@ impl_wordlen_for_array!(1);
 impl_wordlen_for_array!(2);
 impl_wordlen_for_array!(3);
 impl_wordlen_for_array!(4);
+impl_wordlen_for_array!(8);
 
 pub trait GetWord {
     fn get_word(&self, i: usize) -> u32;
@@ -233,6 +238,7 @@ impl_getword_for_array!(1);
 impl_getword_for_array!(2);
 impl_getword_for_array!(3);
 impl_getword_for_array!(4);
+impl_getword_for_array!(8);
 
 pub trait GetMirroredWords {
     fn get_mirrored_words(&self, i: usize) -> [u32; 2];
@@ -297,6 +303,7 @@ array_hamming_distance!(1);
 array_hamming_distance!(2);
 array_hamming_distance!(3);
 array_hamming_distance!(4);
+array_hamming_distance!(8);
 
 pub trait MirrorHammingDistance {
     fn normal_hamming_distance(&self, input: &Self) -> u32;
@@ -516,9 +523,11 @@ pub mod layers {
     }
     impl_saveload_conv3x3_array!(1, 1);
     impl_saveload_conv3x3_array!(2, 1);
+    impl_saveload_conv3x3_array!(3, 1);
     impl_saveload_conv3x3_array!(2, 2);
     impl_saveload_conv3x3_array!(4, 2);
     impl_saveload_conv3x3_array!(4, 4);
+    impl_saveload_conv3x3_array!(8, 4);
 
     macro_rules! impl_saveload_conv2x2_array {
         ($input_len:expr, $output_len:expr) => {
@@ -557,6 +566,7 @@ pub mod layers {
     impl_saveload_conv2x2_array!(2, 1);
     impl_saveload_conv2x2_array!(2, 2);
     impl_saveload_conv2x2_array!(2, 4);
+    impl_saveload_conv2x2_array!(4, 4);
 }
 
 pub trait Image2D<Pixel> {}
@@ -607,6 +617,7 @@ macro_rules! impl_extract_patch_trait {
 impl_extract_patch_trait!(32, 32);
 impl_extract_patch_trait!(16, 16);
 impl_extract_patch_trait!(8, 8);
+impl_extract_patch_trait!(4, 4);
 
 pub trait ConcatImages<I> {
     fn concat_images(inputs: I) -> Self;
@@ -636,9 +647,10 @@ macro_rules! impl_concat_image {
     };
 }
 
-impl_concat_image!(2, 2, 16, 16);
 impl_concat_image!(1, 2, 32, 32);
+impl_concat_image!(2, 2, 16, 16);
 impl_concat_image!(1, 2, 16, 16);
+impl_concat_image!(4, 2, 8, 8);
 
 pub fn vec_concat_2_examples<'a, I: 'a + Sync, C: ConcatImages<[&'a I; 2]> + Sync + Send>(
     a: &'a Vec<(usize, I)>,
@@ -710,21 +722,24 @@ pub mod optimize {
                 let mut iter = 0;
                 for i in 0..<Patch>::BIT_LEN {
                     if iter % head_update_freq == 0 {
-                        for o in 0..10 {
-                            gpu_obj_eval.flip_head_bit(o, e);
-                            let new_obj = gpu_obj_eval.obj();
-                            if new_obj >= cur_obj {
-                                cur_obj = new_obj;
-                                println!(
-                                    "head: {} {}: {} {}",
-                                    e,
-                                    o,
-                                    new_obj,
-                                    new_obj as f64 / patches.len() as f64
-                                );
-                                head[o].flip_bit(e);
-                            } else {
-                                gpu_obj_eval.flip_head_bit(o, e);
+                        println!("starting head loop",);
+                        for he in 0..Weights::INDEX_LEN {
+                            for o in 0..10 {
+                                gpu_obj_eval.flip_head_bit(o, he);
+                                let new_obj = gpu_obj_eval.obj();
+                                if new_obj >= cur_obj {
+                                    cur_obj = new_obj;
+                                    println!(
+                                        "head: {} {}: {} {}",
+                                        he,
+                                        o,
+                                        new_obj,
+                                        new_obj as f64 / patches.len() as f64
+                                    );
+                                    head[o].flip_bit(he);
+                                } else {
+                                    gpu_obj_eval.flip_head_bit(o, he);
+                                }
                             }
                         }
                         iter += 1;
@@ -795,7 +810,7 @@ pub mod optimize {
             depth: usize,
             head_update_freq: usize,
             log_file_path: &Path,
-            do_final_pass: bool,
+            final_pass_count: usize,
         ) -> Vec<(usize, OutputImage)>;
     }
 
@@ -825,7 +840,7 @@ pub mod optimize {
             depth: usize,
             head_update_freq: usize,
             log_file_path: &Path,
-            do_final_pass: bool,
+            final_pass_count: usize,
         ) -> Vec<(usize, OutputImage)> {
             let weights = Self::new_from_fs(fs_path).unwrap_or_else(|| {
                 println!("{} not found, training", &fs_path.to_str().unwrap());
@@ -853,7 +868,7 @@ pub mod optimize {
                     depth,
                     head_update_freq,
                 );
-                if do_final_pass {
+                for p in 0..final_pass_count {
                     avg_obj =
                         <Patch>::train_pass(eval_creator, &mut weights, &mut head, &patches, 100);
                 }
@@ -1288,17 +1303,17 @@ pub mod objective_eval {
 
     pub struct VulkanFastCacheObjectiveEvalCreator {
         instance: Arc<Instance>,
-        reduce_sum_batch_size: usize,
+        //reduce_sum_batch_size: usize,
     }
 
     impl VulkanFastCacheObjectiveEvalCreator {
-        pub fn new(reduce_sum_batch_size: usize) -> Self {
+        pub fn new() -> Self {
             let instance = Instance::new(None, &InstanceExtensions::none(), None)
                 .expect("failed to create instance");
 
             Self {
                 instance: instance,
-                reduce_sum_batch_size: reduce_sum_batch_size,
+                //reduce_sum_batch_size: reduce_sum_batch_size,
             }
         }
     }
@@ -1315,6 +1330,9 @@ pub mod objective_eval {
                     head: &[[u32; $embedding_len]; 10],
                     examples: &[(u8, InputPatch)],
                 ) -> FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]> {
+                    let reduce_sum_batch_size = (examples.len() / (56 * 256)).max(1);
+                    //let reduce_sum_batch_size = (examples.len() / (56 * 256)).min(1000).max(1);
+                    dbg!(reduce_sum_batch_size);
                     let physical = PhysicalDevice::enumerate(&self.instance).next().unwrap();
                     let queue_family = physical.queue_families().find(|&q| q.supports_compute()).unwrap();
 
@@ -1335,7 +1353,7 @@ pub mod objective_eval {
                     });
 
                     let sums_buffer = {
-                        let data_iter = (0..(examples.len() as f64 / self.reduce_sum_batch_size as f64).ceil() as u32).map(|_| 0u32);
+                        let data_iter = (0..(examples.len() as f64 / reduce_sum_batch_size as f64).ceil() as u32).map(|_| 0u32);
                         CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), data_iter).unwrap()
                     };
 
@@ -1365,7 +1383,7 @@ pub mod objective_eval {
                     FastCacheVKObjEval {
                         n_examples: examples.len(),
                         examples: Arc::new(examples.iter().map(|(_, patch)| patch).cloned().collect()),
-                        sum_batch_size: self.reduce_sum_batch_size,
+                        sum_batch_size: reduce_sum_batch_size,
                         weights: *weights,
                         head: *head,
                         embedding_type: PhantomData,
@@ -1387,7 +1405,7 @@ pub mod objective_eval {
                     }
                 }
             }
-            impl<InputPatch: 'static + Sync + Send + GetWord + GetMirroredWords + BitLen + Copy + NewMirrorFastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>>
+            impl<InputPatch: 'static + WordLen + Sync + Send + GetWord + GetMirroredWords + BitLen + Copy + NewMirrorFastCache<[[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>>
                 FastCacheVKObjEval<$shader_mod_name::Layout, InputPatch, [[InputPatch; 16]; $embedding_len], [u32; $embedding_len]>
             {
                 fn sum_obj(&mut self) -> u64 {
@@ -1403,7 +1421,8 @@ pub mod objective_eval {
                         weights_word: self.weights.get_patch(self.embedding_index).get_word(self.patch_index),
                         batch_size: self.sum_batch_size as u32,
                     };
-                    let n_workgroups = ((self.n_examples as f64 / 256f64) / self.sum_batch_size as f64).ceil() as u32;
+                    //let n_workgroups = ((self.n_examples as f64 / 256f64) / self.sum_batch_size as f64).ceil() as u32;
+                    let n_workgroups = ((self.n_examples / 256) / self.sum_batch_size) as u32;
                     let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(self.device.clone(), self.queue.family())
                         .unwrap()
                         .dispatch(
@@ -1432,7 +1451,7 @@ pub mod objective_eval {
                 }
                 fn transition_input_word(&mut self, target_weight_index: usize) {
                     //let start = PreciseTime::now();
-                    if (self.next_input_words_buffer_patch_index != target_weight_index) | (self.next_input_words_buffer_embedding_index != self.embedding_index) {
+                    if self.next_input_words_buffer_join_handle.is_some() & ((self.next_input_words_buffer_patch_index != target_weight_index) | (self.next_input_words_buffer_embedding_index != self.embedding_index)) {
                         println!("an input word buffer creator thread was started, but it was for the wrong input word", );
                         if let Some(handle) = self.next_input_words_buffer_join_handle.take() {
                             handle.join().expect("can't join thread");
@@ -1445,6 +1464,7 @@ pub mod objective_eval {
                         self.start_prepare_input_words_buffer(target_weight_index);
                     }
                     let new_words_buffer = self.next_input_words_buffer_join_handle.take().unwrap().join().expect("can't join thread");
+                    self.next_input_words_buffer_join_handle = None;
                     //println!("get pre prepared input words ms: {}", start.to(PreciseTime::now()).num_milliseconds());
 
                     let pipeline = Arc::new({
@@ -1480,6 +1500,9 @@ pub mod objective_eval {
                     future.wait(None).unwrap();
                     self.patch_index = target_weight_index;
                     //println!("full trans time: {}", start.to(PreciseTime::now()).num_milliseconds());
+                    if (target_weight_index + 1) < InputPatch::WORD_LEN {
+                        self.start_prepare_input_words_buffer(target_weight_index + 1);
+                    }
                 }
 
                 fn start_prepare_input_words_buffer(&mut self, target_weight_index: usize) {
@@ -1590,8 +1613,8 @@ pub mod objective_eval {
                     future.wait(None).unwrap();
                     self.embedding_index = target_embedding_index;
                     self.patch_index = 0;
-                    dbg!(self.embedding_index);
-                    dbg!(self.patch_index);
+                    //dbg!(self.embedding_index);
+                    //dbg!(self.patch_index);
                 }
                 fn sum_head_obj(&mut self) -> u64 {
                     if !self.embedding_is_clean {
@@ -1650,9 +1673,6 @@ pub mod objective_eval {
                     let new_patch_index = i / 32;
                     if new_patch_index != self.patch_index {
                         self.transition_input_word(new_patch_index);
-                        if (new_patch_index + 1) < InputPatch::WORD_LEN {
-                            self.start_prepare_input_words_buffer(new_patch_index + 1);
-                        }
                     }
                     self.weights.flip_bit_indexed(o, i);
                     self.embedding_is_clean = false;
@@ -1727,11 +1747,12 @@ pub mod objective_eval {
                     $output_len] = rng.gen();
                 let head: [[u32; $output_len]; 10] = rng.gen();
                 let examples: Vec<(u8, [[[u32; $input_len]; $patch_size]; $patch_size])> = (0
-                    ..104729)
+                                                                    //..10000 * 9)
+                                                                    ..1733 * 9 * 5 * 5)
                     .map(|_| (rng.gen_range(0, 10), rng.gen()))
                     .collect();
 
-                let vk_eval_creator = VulkanFastCacheObjectiveEvalCreator::new(400);
+                let vk_eval_creator = VulkanFastCacheObjectiveEvalCreator::new(5 * 5 * 3 * 3);
                 let mut vk_obj_eval = vk_eval_creator.new_obj_eval(&weights, &head, &examples);
                 let test_eval_creator = TestCPUObjectiveEvalCreator::new();
                 let mut test_obj_eval = test_eval_creator.new_obj_eval(&weights, &head, &examples);
@@ -1740,73 +1761,73 @@ pub mod objective_eval {
                 let test_obj: u64 = test_obj_eval.obj();
                 assert_eq!(vk_obj, test_obj);
 
-                //let mut rng = Hc128Rng::seed_from_u64(42);
-                //let weights: [[[[[u32; $input_len]; $patch_size]; $patch_size]; $weights_len];
-                //    $output_len] = rng.gen();
-                //let head: [[u32; $output_len]; 10] = rng.gen();
-                //let examples: Vec<(u8, [[[u32; $input_len]; $patch_size]; $patch_size])> = (0
-                //    ..104729 * 7)
-                //    .map(|_| (rng.gen_range(0, 10), rng.gen()))
-                //    .collect();
-                //let mut vk_obj_eval = vk_eval_creator.new_obj_eval(&weights, &head, &examples);
-                //let mut test_obj_eval = test_eval_creator.new_obj_eval(&weights, &head, &examples);
+                let mut rng = Hc128Rng::seed_from_u64(42);
+                let weights: [[[[[u32; $input_len]; $patch_size]; $patch_size]; $weights_len];
+                    $output_len] = rng.gen();
+                let head: [[u32; $output_len]; 10] = rng.gen();
+                let examples: Vec<(u8, [[[u32; $input_len]; $patch_size]; $patch_size])> = (0
+                    ..10000 * 9)
+                    .map(|_| (rng.gen_range(0, 10), rng.gen()))
+                    .collect();
+                let mut vk_obj_eval = vk_eval_creator.new_obj_eval(&weights, &head, &examples);
+                let mut test_obj_eval = test_eval_creator.new_obj_eval(&weights, &head, &examples);
 
-                //for &(o, i) in &[
-                //    (5, 0),
-                //    (0, 0),
-                //    (0, 3),
-                //    (0, 0),
-                //    (3, 5),
-                //    (7, 3),
-                //    (1, 5),
-                //    (
-                //        ($weights_len * $output_len) - 1,
-                //        ($patch_size * $patch_size) * 32 * $input_len - 1,
-                //    ),
-                //] {
-                //    vk_obj_eval.flip_weights_bit(o, i);
-                //    test_obj_eval.flip_weights_bit(o, i);
+                for &(o, i) in &[
+                    (5, 0),
+                    (0, 0),
+                    (0, 3),
+                    (0, 0),
+                    (3, 5),
+                    (7, 3),
+                    (1, 5),
+                    (
+                        ($weights_len * $output_len) - 1,
+                        ($patch_size * $patch_size) * 32 * $input_len - 1,
+                    ),
+                ] {
+                    vk_obj_eval.flip_weights_bit(o, i);
+                    test_obj_eval.flip_weights_bit(o, i);
 
-                //    let vk_obj: u64 = vk_obj_eval.obj();
-                //    let test_obj: u64 = test_obj_eval.obj();
-                //    assert_eq!(vk_obj, test_obj);
-                //}
+                    let vk_obj: u64 = vk_obj_eval.obj();
+                    let test_obj: u64 = test_obj_eval.obj();
+                    assert_eq!(vk_obj, test_obj);
+                }
 
-                //for updates in &[
-                //    vec![(0, 0), (0, 0), (0, 0)],
-                //    vec![(0, 0), (2, 0), (2, 3)],
-                //    vec![(5, 0), (5, 1), (5, 2)],
-                //    vec![(3, 1), (3, 2), (4, 3)],
-                //    vec![(0, 0)],
-                //    vec![],
-                //] {
-                //    for &(i, o) in updates {
-                //        vk_obj_eval.flip_weights_bit(o, i);
-                //        test_obj_eval.flip_weights_bit(o, i);
-                //    }
+                for updates in &[
+                    vec![(0, 0), (0, 0), (0, 0)],
+                    vec![(0, 0), (2, 0), (2, 3)],
+                    vec![(5, 0), (5, 1), (5, 2)],
+                    vec![(3, 1), (3, 2), (4, 3)],
+                    vec![(0, 0)],
+                    vec![],
+                ] {
+                    for &(i, o) in updates {
+                        vk_obj_eval.flip_weights_bit(o, i);
+                        test_obj_eval.flip_weights_bit(o, i);
+                    }
 
-                //    let vk_obj: u64 = vk_obj_eval.obj();
-                //    let test_obj: u64 = test_obj_eval.obj();
-                //    assert_eq!(vk_obj, test_obj);
-                //}
-                //for updates in &[
-                //    vec![(0, 0), (0, 0), (0, 0)],
-                //    vec![(0, 0), (2, 0), (2, 3)],
-                //    vec![(5, 0), (5, 1), (5, 2)],
-                //    vec![(3, 1), (3, 2), (4, 3)],
-                //    vec![(0, 0)],
-                //    vec![],
-                //    vec![(0,1), (0,2), (0,3)],
-                //] {
-                //    for &(i, o) in updates {
-                //        vk_obj_eval.flip_head_bit(o, i);
-                //        test_obj_eval.flip_head_bit(o, i);
-                //    }
+                    let vk_obj: u64 = vk_obj_eval.obj();
+                    let test_obj: u64 = test_obj_eval.obj();
+                    assert_eq!(vk_obj, test_obj);
+                }
+                for updates in &[
+                    vec![(0, 0), (0, 0), (0, 0)],
+                    vec![(0, 0), (2, 0), (2, 3)],
+                    vec![(5, 0), (5, 1), (5, 2)],
+                    vec![(3, 1), (3, 2), (4, 3)],
+                    vec![(0, 0)],
+                    vec![],
+                    vec![(0, 1), (0, 2), (0, 3)],
+                ] {
+                    for &(i, o) in updates {
+                        vk_obj_eval.flip_head_bit(o, i);
+                        test_obj_eval.flip_head_bit(o, i);
+                    }
 
-                //    let vk_obj: u64 = vk_obj_eval.obj();
-                //    let test_obj: u64 = test_obj_eval.obj();
-                //    assert_eq!(vk_obj, test_obj);
-                //}
+                    let vk_obj: u64 = vk_obj_eval.obj();
+                    let test_obj: u64 = test_obj_eval.obj();
+                    assert_eq!(vk_obj, test_obj);
+                }
             };
         }
 
