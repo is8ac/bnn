@@ -7,21 +7,22 @@ struct CacheExampleMirrored {
   uint true_class;
 } fast_cache;
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 8, local_size_y = 32, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer Data {
   CacheExampleMirrored cache[];
 }
 cache_data;
 
-layout(set = 0, binding = 1) writeonly buffer Objective { uint data[]; }
+layout(set = 0, binding = 1) writeonly buffer Objective { uint[32] data[]; }
 objective_sums;
 
-layout(set = 0, binding = 2) readonly buffer ObjHead { uint[10][3] data; }
+layout(set = 0, binding = 2) readonly buffer ObjHead {
+  uint[10][3] data;
+}
 obj_head;
 
 layout(push_constant) uniform PushConstantData {
-  //uint[10][3] head;
   uint embedding_bit_index;
   uint embedding_word_index;
   uint threshold;
@@ -39,15 +40,16 @@ void main() {
   uint sum = 0;
   uint index;
   uint true_class;
+  uint weight_word = pc.weights_word ^ (uint(1) << gl_GlobalInvocationID.y);
   for (i = 0; i < pc.batch_size; i += 1) {
     index = gl_GlobalInvocationID.x * pc.batch_size + i;
     true_class = cache_data.cache[index].true_class;
     uint normal = uint(
-        (bitCount(pc.weights_word ^ cache_data.cache[index].input_word[0]) +
+        (bitCount(weight_word ^ cache_data.cache[index].input_word[0]) +
          cache_data.cache[index].input_partial_sums[0]) > pc.threshold);
 
     uint fliped = uint(
-        (bitCount(pc.weights_word ^ cache_data.cache[index].input_word[1]) +
+        (bitCount(weight_word ^ cache_data.cache[index].input_word[1]) +
          cache_data.cache[index].input_partial_sums[1]) > pc.threshold);
 
     uint[3] new_embedding = cache_data.cache[index].embedding;
@@ -72,5 +74,5 @@ void main() {
     }
     sum += uint(true_act > max_act);
   }
-  objective_sums.data[gl_GlobalInvocationID.x] = sum;
+  objective_sums.data[gl_GlobalInvocationID.x][gl_GlobalInvocationID.y] = sum;
 }
