@@ -531,6 +531,7 @@ pub mod layers {
     impl_saveload_conv2x2_array!(1, 2);
     impl_saveload_conv2x2_array!(2, 1);
     impl_saveload_conv2x2_array!(2, 2);
+    impl_saveload_conv2x2_array!(3, 2);
     impl_saveload_conv2x2_array!(2, 4);
     impl_saveload_conv2x2_array!(4, 4);
 }
