@@ -98,6 +98,9 @@ array_bit_len!(1);
 array_bit_len!(2);
 array_bit_len!(3);
 array_bit_len!(4);
+array_bit_len!(5);
+array_bit_len!(6);
+array_bit_len!(7);
 array_bit_len!(8);
 
 pub trait FlipBit {
@@ -124,6 +127,9 @@ array_flip_bit!(1);
 array_flip_bit!(2);
 array_flip_bit!(3);
 array_flip_bit!(4);
+array_flip_bit!(5);
+array_flip_bit!(6);
+array_flip_bit!(7);
 array_flip_bit!(8);
 
 pub trait FlipBitIndexed {
@@ -165,6 +171,9 @@ impl_flipbitindexed_for_array!(1);
 impl_flipbitindexed_for_array!(2);
 impl_flipbitindexed_for_array!(3);
 impl_flipbitindexed_for_array!(4);
+impl_flipbitindexed_for_array!(5);
+impl_flipbitindexed_for_array!(6);
+impl_flipbitindexed_for_array!(7);
 impl_flipbitindexed_for_array!(8);
 
 pub trait GetPatch<T> {
@@ -183,6 +192,9 @@ impl_getpatch_for_weights!(1);
 impl_getpatch_for_weights!(2);
 impl_getpatch_for_weights!(3);
 impl_getpatch_for_weights!(4);
+impl_getpatch_for_weights!(5);
+impl_getpatch_for_weights!(6);
+impl_getpatch_for_weights!(7);
 impl_getpatch_for_weights!(8);
 
 pub trait WordLen {
@@ -204,6 +216,9 @@ impl_wordlen_for_array!(1);
 impl_wordlen_for_array!(2);
 impl_wordlen_for_array!(3);
 impl_wordlen_for_array!(4);
+impl_wordlen_for_array!(5);
+impl_wordlen_for_array!(6);
+impl_wordlen_for_array!(7);
 impl_wordlen_for_array!(8);
 
 pub trait GetWord {
@@ -231,6 +246,9 @@ impl_getword_for_array!(1);
 impl_getword_for_array!(2);
 impl_getword_for_array!(3);
 impl_getword_for_array!(4);
+impl_getword_for_array!(5);
+impl_getword_for_array!(6);
+impl_getword_for_array!(7);
 impl_getword_for_array!(8);
 
 pub trait GetMirroredWords {
@@ -242,14 +260,12 @@ impl<T: GetWord + WordLen> GetMirroredWords for [T; 3] {
     fn get_mirrored_words(&self, i: usize) -> [u32; 2] {
         let input_x = i / T::WORD_LEN;
         let strip_i = i % T::WORD_LEN;
-        let input_words = if input_x == 0 {
-            [self[0].get_word(strip_i), self[2].get_word(strip_i)]
-        } else if input_x == 2 {
-            [self[2].get_word(strip_i), self[0].get_word(strip_i)]
-        } else {
-            [self[1].get_word(strip_i), self[1].get_word(strip_i)]
-        };
-        input_words
+        match input_x {
+            0 => [self[0].get_word(strip_i), self[2].get_word(strip_i)],
+            1 => [self[1].get_word(strip_i), self[1].get_word(strip_i)],
+            2 => [self[2].get_word(strip_i), self[0].get_word(strip_i)],
+            _ => panic!(input_x),
+        }
     }
 }
 
@@ -258,12 +274,27 @@ impl<T: GetWord + WordLen> GetMirroredWords for [T; 2] {
     fn get_mirrored_words(&self, i: usize) -> [u32; 2] {
         let input_x = i / T::WORD_LEN;
         let strip_i = i % T::WORD_LEN;
-        let input_words = if input_x == 0 {
-            [self[0].get_word(strip_i), self[1].get_word(strip_i)]
-        } else {
-            [self[1].get_word(strip_i), self[0].get_word(strip_i)]
-        };
-        input_words
+        match input_x {
+            0 => [self[0].get_word(strip_i), self[1].get_word(strip_i)],
+            1 => [self[1].get_word(strip_i), self[0].get_word(strip_i)],
+            _ => panic!(input_x),
+        }
+    }
+}
+
+impl<T: GetWord + WordLen> GetMirroredWords for [T; 5] {
+    #[inline(always)]
+    fn get_mirrored_words(&self, i: usize) -> [u32; 2] {
+        let input_x = i / T::WORD_LEN;
+        let strip_i = i % T::WORD_LEN;
+        match input_x {
+            0 => [self[0].get_word(strip_i), self[4].get_word(strip_i)],
+            1 => [self[1].get_word(strip_i), self[3].get_word(strip_i)],
+            2 => [self[2].get_word(strip_i), self[2].get_word(strip_i)],
+            3 => [self[3].get_word(strip_i), self[1].get_word(strip_i)],
+            4 => [self[4].get_word(strip_i), self[0].get_word(strip_i)],
+            _ => panic!(input_x),
+        }
     }
 }
 
@@ -296,6 +327,9 @@ array_hamming_distance!(1);
 array_hamming_distance!(2);
 array_hamming_distance!(3);
 array_hamming_distance!(4);
+array_hamming_distance!(5);
+array_hamming_distance!(6);
+array_hamming_distance!(7);
 array_hamming_distance!(8);
 
 pub trait MirrorHammingDistance {
@@ -318,6 +352,23 @@ impl<T: HammingDistance> MirrorHammingDistance for [T; 2] {
     }
     fn fliped_hamming_distance(&self, input: &[T; 2]) -> u32 {
         self[0].hamming_distance(&input[1]) + self[1].hamming_distance(&input[0])
+    }
+}
+
+impl<T: HammingDistance> MirrorHammingDistance for [T; 5] {
+    fn normal_hamming_distance(&self, input: &[T; 5]) -> u32 {
+        self[0].hamming_distance(&input[0])
+            + self[1].hamming_distance(&input[1])
+            + self[2].hamming_distance(&input[2])
+            + self[3].hamming_distance(&input[3])
+            + self[4].hamming_distance(&input[4])
+    }
+    fn fliped_hamming_distance(&self, input: &[T; 5]) -> u32 {
+        self[0].hamming_distance(&input[4])
+            + self[1].hamming_distance(&input[3])
+            + self[2].hamming_distance(&input[2])
+            + self[3].hamming_distance(&input[1])
+            + self[4].hamming_distance(&input[0])
     }
 }
 
@@ -350,6 +401,21 @@ pub mod layers {
     {
         fn apply(&self, input: &[I; 2]) -> u32 {
             let threshold: u32 = (I::BIT_LEN * 2) as u32 / 2;
+            let mut target = 0u32;
+            for i in 0..16 {
+                target |= ((self[i].normal_hamming_distance(input) > threshold) as u32) << i;
+                target |= ((self[i].fliped_hamming_distance(input) > threshold) as u32) << (16 + i);
+            }
+            target
+        }
+    }
+
+    impl<I: HammingDistance + BitLen> Apply<[I; 5], u32> for [[I; 5]; 16]
+    where
+        [I; 5]: MirrorHammingDistance,
+    {
+        fn apply(&self, input: &[I; 5]) -> u32 {
+            let threshold: u32 = (I::BIT_LEN * 5) as u32 / 2;
             let mut target = 0u32;
             for i in 0..16 {
                 target |= ((self[i].normal_hamming_distance(input) > threshold) as u32) << i;
@@ -405,6 +471,48 @@ pub mod layers {
             ]
         };
     }
+    macro_rules! patch_5x5 {
+        ($input:expr, $x:expr, $y:expr) => {
+            [
+                [
+                    $input[$x + 0][$y + 0],
+                    $input[$x + 0][$y + 1],
+                    $input[$x + 0][$y + 2],
+                    $input[$x + 0][$y + 3],
+                    $input[$x + 0][$y + 4],
+                ],
+                [
+                    $input[$x + 1][$y + 0],
+                    $input[$x + 1][$y + 1],
+                    $input[$x + 1][$y + 2],
+                    $input[$x + 1][$y + 3],
+                    $input[$x + 1][$y + 4],
+                ],
+                [
+                    $input[$x + 2][$y + 0],
+                    $input[$x + 2][$y + 1],
+                    $input[$x + 2][$y + 2],
+                    $input[$x + 2][$y + 3],
+                    $input[$x + 2][$y + 4],
+                ],
+                [
+                    $input[$x + 3][$y + 0],
+                    $input[$x + 3][$y + 1],
+                    $input[$x + 3][$y + 2],
+                    $input[$x + 3][$y + 3],
+                    $input[$x + 3][$y + 4],
+                ],
+                [
+                    $input[$x + 4][$y + 0],
+                    $input[$x + 4][$y + 1],
+                    $input[$x + 4][$y + 2],
+                    $input[$x + 4][$y + 3],
+                    $input[$x + 4][$y + 4],
+                ],
+            ]
+        };
+    }
+
     pub trait Apply<I, O> {
         fn apply(&self, input: &I) -> O;
     }
@@ -432,10 +540,12 @@ pub mod layers {
     patch_conv_2x2_apply_trait!(8, 8);
 
     macro_rules! conv3x3_apply_trait {
-        ($x_size:expr, $y_size:expr) => {
-            impl<I: Copy, O: Copy + Default, W: Apply<[[I; 3]; 3], O>> Apply<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]> for W {
-                fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size]; $x_size] {
-                    let mut target = [[O::default(); $y_size]; $x_size];
+        ($x_size:expr, $y_size:expr, $output_len:expr) => {
+            impl<I: Copy + BitLen + HammingDistance> Apply<[[I; $y_size]; $x_size], [[[u32; $output_len]; $y_size]; $x_size]>
+                for [[[[I; 3]; 3]; 16]; $output_len]
+            {
+                fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[[u32; $output_len]; $y_size]; $x_size] {
+                    let mut target = [[[0u32; $output_len]; $y_size]; $x_size];
                     for x in 0..$x_size - 2 {
                         for y in 0..$y_size - 2 {
                             target[x + 1][y + 1] = self.apply(&patch_3x3!(input, x, y));
@@ -447,9 +557,55 @@ pub mod layers {
         };
     }
 
-    conv3x3_apply_trait!(32, 32);
-    conv3x3_apply_trait!(16, 16);
-    conv3x3_apply_trait!(8, 8);
+    conv3x3_apply_trait!(32, 32, 1);
+    conv3x3_apply_trait!(16, 16, 1);
+    conv3x3_apply_trait!(8, 8, 1);
+
+    conv3x3_apply_trait!(32, 32, 2);
+    conv3x3_apply_trait!(16, 16, 2);
+    conv3x3_apply_trait!(8, 8, 2);
+
+    conv3x3_apply_trait!(32, 32, 3);
+    conv3x3_apply_trait!(16, 16, 3);
+    conv3x3_apply_trait!(8, 8, 3);
+
+    conv3x3_apply_trait!(32, 32, 4);
+    conv3x3_apply_trait!(16, 16, 4);
+    conv3x3_apply_trait!(8, 8, 4);
+
+    macro_rules! conv5x5_apply_trait {
+        ($x_size:expr, $y_size:expr, $output_len:expr) => {
+            impl<I: Copy + BitLen + HammingDistance> Apply<[[I; $y_size]; $x_size], [[[u32; $output_len]; $y_size]; $x_size]>
+                for [[[[I; 5]; 5]; 16]; $output_len]
+            {
+                fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[[u32; $output_len]; $y_size]; $x_size] {
+                    let mut target = [[[0u32; $output_len]; $y_size]; $x_size];
+                    for x in 0..$x_size - 4 {
+                        for y in 0..$y_size - 4 {
+                            target[x + 2][y + 2] = self.apply(&patch_5x5!(input, x, y));
+                        }
+                    }
+                    target
+                }
+            }
+        };
+    }
+
+    conv5x5_apply_trait!(32, 32, 1);
+    conv5x5_apply_trait!(16, 16, 1);
+    conv5x5_apply_trait!(8, 8, 1);
+
+    conv5x5_apply_trait!(32, 32, 2);
+    conv5x5_apply_trait!(16, 16, 2);
+    conv5x5_apply_trait!(8, 8, 2);
+
+    conv5x5_apply_trait!(32, 32, 3);
+    conv5x5_apply_trait!(16, 16, 3);
+    conv5x5_apply_trait!(8, 8, 3);
+
+    conv5x5_apply_trait!(32, 32, 4);
+    conv5x5_apply_trait!(16, 16, 4);
+    conv5x5_apply_trait!(8, 8, 4);
 
     pub trait SaveLoad
     where
@@ -459,81 +615,23 @@ pub mod layers {
         fn new_from_fs(path: &Path) -> Option<Self>;
     }
 
-    macro_rules! impl_saveload_conv3x3_array {
-        ($input_len:expr, $output_len:expr) => {
-            impl SaveLoad for [[[[[u32; $input_len]; 3]; 3]; 16]; $output_len] {
-                fn write_to_fs(&self, path: &Path) {
-                    let vec_params: Vec<[[[[u32; $input_len]; 3]; 3]; 16]> = self.iter().cloned().collect();
-                    let mut f = BufWriter::new(File::create(path).unwrap());
-                    serialize_into(&mut f, &vec_params).unwrap();
-                }
-                // This will return:
-                // - Some if the file exists and is good
-                // - None of the file does not exist
-                // and will panic if the file is exists but is bad.
-                fn new_from_fs(path: &Path) -> Option<Self> {
-                    File::open(&path)
-                        .map(|f| deserialize_from(f).unwrap())
-                        .map(|vec_params: Vec<[[[[u32; $input_len]; 3]; 3]; 16]>| {
-                            if vec_params.len() != $output_len {
-                                panic!("input is of len {} not {}", vec_params.len(), $output_len);
-                            }
-                            let mut params = [<[[[[u32; $input_len]; 3]; 3]; 16]>::default(); $output_len];
-                            for i in 0..$output_len {
-                                params[i] = vec_params[i];
-                            }
-                            params
-                        })
-                        .ok()
-                }
-            }
-        };
+    impl<T: serde::Serialize> SaveLoad for T
+    where
+        for<'de> T: serde::Deserialize<'de>,
+    {
+        fn write_to_fs(&self, path: &Path) {
+            //let vec_params: Vec<[[[[u32; $input_len]; 3]; 3]; 16]> = self.iter().cloned().collect();
+            let mut f = BufWriter::new(File::create(path).unwrap());
+            serialize_into(&mut f, self).unwrap();
+        }
+        // This will return:
+        // - Some if the file exists and is good
+        // - None of the file does not exist
+        // and will panic if the file is exists but is bad.
+        fn new_from_fs(path: &Path) -> Option<Self> {
+            File::open(&path).map(|f| deserialize_from(f).unwrap()).ok()
+        }
     }
-    impl_saveload_conv3x3_array!(1, 1);
-    impl_saveload_conv3x3_array!(2, 1);
-    impl_saveload_conv3x3_array!(3, 1);
-    impl_saveload_conv3x3_array!(2, 2);
-    impl_saveload_conv3x3_array!(4, 2);
-    impl_saveload_conv3x3_array!(4, 4);
-    impl_saveload_conv3x3_array!(8, 4);
-
-    macro_rules! impl_saveload_conv2x2_array {
-        ($input_len:expr, $output_len:expr) => {
-            impl SaveLoad for [[[[[u32; $input_len]; 2]; 2]; 16]; $output_len] {
-                fn write_to_fs(&self, path: &Path) {
-                    let vec_params: Vec<[[[[u32; $input_len]; 2]; 2]; 16]> = self.iter().cloned().collect();
-                    let mut f = BufWriter::new(File::create(path).unwrap());
-                    serialize_into(&mut f, &vec_params).unwrap();
-                }
-                // This will return:
-                // - Some if the file exists and is good
-                // - None of the file does not exist
-                // and will panic if the file is exists but is bad.
-                fn new_from_fs(path: &Path) -> Option<Self> {
-                    File::open(&path)
-                        .map(|f| deserialize_from(f).unwrap())
-                        .map(|vec_params: Vec<[[[[u32; $input_len]; 2]; 2]; 16]>| {
-                            if vec_params.len() != $output_len {
-                                panic!("input is of len {} not {}", vec_params.len(), $output_len);
-                            }
-                            let mut params = [<[[[[u32; $input_len]; 2]; 2]; 16]>::default(); $output_len];
-                            for i in 0..$output_len {
-                                params[i] = vec_params[i];
-                            }
-                            params
-                        })
-                        .ok()
-                }
-            }
-        };
-    }
-    impl_saveload_conv2x2_array!(1, 1);
-    impl_saveload_conv2x2_array!(1, 2);
-    impl_saveload_conv2x2_array!(2, 1);
-    impl_saveload_conv2x2_array!(2, 2);
-    impl_saveload_conv2x2_array!(3, 2);
-    impl_saveload_conv2x2_array!(2, 4);
-    impl_saveload_conv2x2_array!(4, 4);
 }
 
 pub trait Image2D<Pixel> {}
@@ -547,8 +645,8 @@ macro_rules! impl_image2d {
 impl_image2d!(32, 32);
 impl_image2d!(16, 16);
 impl_image2d!(8, 8);
-impl_image2d!(3, 3);
-impl_image2d!(2, 2);
+//impl_image2d!(3, 3);
+//impl_image2d!(2, 2);
 
 pub trait ExtractPatches<Patch> {
     fn patches(&self) -> Vec<Patch>;
@@ -578,6 +676,17 @@ macro_rules! impl_extract_patch_trait {
                 patches
             }
         }
+        impl<Pixel: Copy> ExtractPatches<[[Pixel; 5]; 5]> for [[Pixel; $y_size]; $x_size] {
+            fn patches(&self) -> Vec<[[Pixel; 5]; 5]> {
+                let mut patches = Vec::with_capacity(($y_size - 4) * ($x_size - 4));
+                for x in 0..$x_size - 4 {
+                    for y in 0..$y_size - 4 {
+                        patches.push(patch_5x5!(self, x, y));
+                    }
+                }
+                patches
+            }
+        }
     };
 }
 
@@ -586,21 +695,25 @@ impl_extract_patch_trait!(16, 16);
 impl_extract_patch_trait!(8, 8);
 impl_extract_patch_trait!(4, 4);
 
-pub trait ConcatImages<I> {
-    fn concat_images(inputs: I) -> Self;
+pub trait ConcatImages<A, B> {
+    fn concat_images(input_a: &A, input_b: &B) -> Self;
 }
 
 macro_rules! impl_concat_image {
-    ($len:expr, $depth:expr, $x_size:expr, $y_size:expr) => {
-        impl<P: Default + Copy> ConcatImages<[&[[[P; $len]; $y_size]; $x_size]; $depth]> for [[[P; $depth * $len]; $y_size]; $x_size] {
-            fn concat_images(input: [&[[[P; $len]; $y_size]; $x_size]; $depth]) -> [[[P; $depth * $len]; $y_size]; $x_size] {
-                let mut target = <[[[P; $depth * $len]; $y_size]; $x_size]>::default();
+    ($a_len:expr, $b_len:expr, $x_size:expr, $y_size:expr) => {
+        impl ConcatImages<[[[u32; $a_len]; $y_size]; $x_size], [[[u32; $b_len]; $y_size]; $x_size]> for [[[u32; $a_len + $b_len]; $y_size]; $x_size] {
+            fn concat_images(
+                input_a: &[[[u32; $a_len]; $y_size]; $x_size],
+                input_b: &[[[u32; $b_len]; $y_size]; $x_size],
+            ) -> [[[u32; $a_len + $b_len]; $y_size]; $x_size] {
+                let mut target = <[[[u32; $a_len + $b_len]; $y_size]; $x_size]>::default();
                 for x in 0..$x_size {
                     for y in 0..$y_size {
-                        for i in 0..$depth {
-                            for l in 0..$len {
-                                target[x][y][(i * $len) + l] = input[i][x][y][l];
-                            }
+                        for i in 0..$a_len {
+                            target[x][y][i] = input_a[x][y][i];
+                        }
+                        for i in 0..$b_len {
+                            target[x][y][$a_len + i] = input_b[x][y][i];
                         }
                     }
                 }
@@ -610,21 +723,20 @@ macro_rules! impl_concat_image {
     };
 }
 
-impl_concat_image!(1, 2, 32, 32);
-impl_concat_image!(2, 2, 16, 16);
-impl_concat_image!(1, 2, 16, 16);
-impl_concat_image!(4, 2, 8, 8);
+impl_concat_image!(1, 1, 32, 32);
+impl_concat_image!(2, 1, 32, 32);
+impl_concat_image!(3, 1, 32, 32);
+impl_concat_image!(4, 1, 32, 32);
+impl_concat_image!(5, 1, 32, 32);
+impl_concat_image!(6, 1, 32, 32);
 
-pub fn vec_concat_2_examples<'a, I: 'a + Sync, C: ConcatImages<[&'a I; 2]> + Sync + Send>(
-    a: &'a Vec<(usize, I)>,
-    b: &'a Vec<(usize, I)>,
-) -> Vec<(usize, C)> {
+pub fn vec_concat_2_examples<A: Sync, B: Sync, T: ConcatImages<A, B> + Sync + Send>(a: &Vec<(usize, A)>, b: &Vec<(usize, B)>) -> Vec<(usize, T)> {
     assert_eq!(a.len(), b.len());
     a.par_iter()
         .zip(b.par_iter())
         .map(|((a_class, a_image), (b_class, b_image))| {
             assert_eq!(a_class, b_class);
-            (*a_class, C::concat_images([a_image, b_image]))
+            (*a_class, T::concat_images(a_image, b_image))
         })
         .collect()
 }
@@ -648,7 +760,8 @@ pub mod optimize {
             head: &mut [Embedding; 10],
             patches: &[(u8, InputPatch)],
             head_update_freq: usize,
-        ) -> f64;
+            seed_obj: u64,
+        ) -> (u64, u64);
         fn recurs_train(
             eval_creator: &EvalCreator,
             weights: &mut Weights,
@@ -674,15 +787,17 @@ pub mod optimize {
             head: &mut [Embedding; 10],
             patches: &[(u8, Patch)],
             head_update_freq: usize,
-        ) -> f64 {
+            seed_obj: u64,
+        ) -> (u64, u64) {
             dbg!(patches.len());
 
             let mut obj_eval = eval_creator.new_obj_eval(&weights, &head, &patches);
 
             let start = PreciseTime::now();
-            let mut cur_obj = 0;
+            let mut cur_obj = seed_obj;
             let mut iter = 0;
-            // for each bit in the weights, (for mirrored, this is 1/2 the number of bits in the embedding)
+            let mut updates = 0u64;
+            // for each output bit in the weights, (for mirrored, this is 1/2 the number of bits in the embedding)
             for e in 0..<Weights>::INDEX_LEN {
                 // for each word in the patch,
                 for w in 0..<Patch>::WORD_LEN {
@@ -695,7 +810,7 @@ pub mod optimize {
                                 //dbg!(new_objs);
                                 let (bit_index, &max_new_obj) = new_objs.iter().enumerate().max_by_key(|(_, obj)| *obj).unwrap();
                                 //println!("head index: {} {} {} {} {}", embedding_word, c, bit_index, cur_obj, max_new_obj);
-                                if max_new_obj >= cur_obj {
+                                if max_new_obj > cur_obj {
                                     cur_obj = max_new_obj;
                                     println!(
                                         "head: {} {}: {} {}",
@@ -719,6 +834,7 @@ pub mod optimize {
                         //println!("{} {}", cur_obj, max_new_obj);
                         //dbg!((cur_obj, max_new_obj));
                         if max_new_obj > cur_obj {
+                            updates += 1;
                             cur_obj = max_new_obj;
                             iter += 1;
                             obj_eval.flip_weights_bit(e, (w * 32) + bit_index);
@@ -731,7 +847,7 @@ pub mod optimize {
                 }
             }
             println!("{} {}", patches.len(), start.to(PreciseTime::now()));
-            cur_obj as f64 / patches.len() as f64
+            (updates, cur_obj)
         }
         // TODO: implement non 0.5 minibatch division.
         fn recurs_train(
@@ -743,11 +859,12 @@ pub mod optimize {
             head_update_freq: usize,
         ) -> f64 {
             if depth == 0 {
-                Self::train_pass(eval_creator, weights, head, &patches[0..patches.len() / 2], 3);
+                Self::train_pass(eval_creator, weights, head, &patches[0..patches.len() / 2], 5, 0);
             } else {
                 Self::recurs_train(eval_creator, weights, head, &patches[0..patches.len() / 2], depth - 1, head_update_freq);
             }
-            Self::train_pass(eval_creator, weights, head, &patches[patches.len() / 2..], head_update_freq)
+            let (updates, obj) = Self::train_pass(eval_creator, weights, head, &patches[patches.len() / 2..], head_update_freq, 0);
+            obj as f64 / (patches.len()/2) as f64
         }
     }
     pub trait TrainLayer<EvalCreator, Pixel, Patch, Embedding, InputImage, OutputImage> {
@@ -765,7 +882,7 @@ pub mod optimize {
 
     impl<
             Pixel,
-            Patch: Image2D<Pixel>,
+            Patch,
             Weights: SaveLoad + Sync,
             Embedding,
             EvalCreator: ObjectiveEvalCreator<Patch, Weights, Embedding>,
@@ -809,40 +926,35 @@ pub mod optimize {
                 let start = PreciseTime::now();
 
                 let mut avg_obj = <Patch>::recurs_train(eval_creator, &mut weights, &mut head, &patches, depth, head_update_freq);
-                for _ in 0..final_pass_count {
-                    avg_obj = <Patch>::train_pass(eval_creator, &mut weights, &mut head, &patches, 100);
+                let mut updates = 0;
+                let mut cur_obj = 0;
+                for p in 0..final_pass_count {
+                    println!("beginning full pass {:?}", p);
+                    let (layer_updates, layer_obj) = <Patch>::train_pass(eval_creator, &mut weights, &mut head, &patches, 100, cur_obj);
+                    cur_obj = layer_obj;
+                    updates = layer_updates;
                 }
                 println!("obj: {}, time: {}", avg_obj, start.to(PreciseTime::now()));
-                write_to_log_event(
-                    log_file_path,
-                    fs_path,
-                    start.to(PreciseTime::now()),
-                    head_update_freq,
-                    avg_obj,
+                let mut file = OpenOptions::new().write(true).append(true).open(log_file_path).unwrap();
+                writeln!(
+                    file,
+                    "{} depth: {}:{}, obj: {}, final_pass_updates: {}, head_update_freq: {}, n_patches: {}, {}",
+                    fs_path.to_str().unwrap(),
                     depth,
+                    final_pass_count,
+                    avg_obj,
+                    updates,
+                    head_update_freq,
                     patches.len(),
-                );
+                    start.to(PreciseTime::now()),
+                )
+                .unwrap();
                 weights.write_to_fs(&fs_path);
                 weights
             });
 
             images.par_iter().map(|(class, image)| (*class, weights.apply(image))).collect()
         }
-    }
-
-    fn write_to_log_event(file_path: &Path, layer_name: &Path, duration: time::Duration, head_update_freq: usize, obj: f64, depth: usize, n: usize) {
-        let mut file = OpenOptions::new().write(true).append(true).open(file_path).unwrap();
-        writeln!(
-            file,
-            "{} depth: {}, obj: {}, head_update_freq: {}, n_patches: {}, {}",
-            layer_name.to_str().unwrap(),
-            depth,
-            obj,
-            head_update_freq,
-            n,
-            duration,
-        )
-        .unwrap();
     }
 }
 
