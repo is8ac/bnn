@@ -12,81 +12,98 @@ use bitnn::layers::{Apply, SaveLoad};
 use bitnn::objective_eval::VulkanFastCacheObjectiveEvalCreator;
 use bitnn::optimize::TrainLayer;
 use bitnn::vec_concat_2_examples;
+use bitnn::vec_concat_3_examples;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use std::fs;
 use std::path::Path;
 use time::PreciseTime;
 
-const HEAD_UPDATE_FREQ: usize = 20;
-// pass0: 605
-// pass1: 358
-// pass2: 369
-// pass3: 227
-// pass4: 383
-// pass5: 365
-// pass6: 240
-// pass7: 280
-// pass8: 360
-// pass9: 253
-// pass10: 167
-// pass11: 140
-// pass12: 59
-// pass13: 39
+const HEAD_UPDATE_FREQ: usize = 60;
 
 fn main() {
     let log_file_path = Path::new("vk_train_log.txt");
-    let base_path = Path::new("params/vk_5x5_dynpass_64");
+    let base_path = Path::new("params/vk_3skip_b");
     fs::create_dir_all(base_path).unwrap();
     let mut rng = Hc128Rng::seed_from_u64(42);
     let cifar_base_path = Path::new("/home/isaac/big/cache/datasets/cifar-10-batches-bin");
 
     let chan3_images: Vec<(usize, [[[u32; 3]; 32]; 32])> = cifar::load_images_from_base(cifar_base_path, 50_000);
-
+    let mut l0_images: Vec<(usize, [[[u32; 1]; 32]; 32])> = cifar::load_images_from_base(cifar_base_path, 50_000);
     let eval_creator = VulkanFastCacheObjectiveEvalCreator::new();
-    let mut l0_images = <[[[[[u32; 3]; 5]; 5]; 16]; 2]>::train_from_images(
+
+    let start = PreciseTime::now();
+    let mut l1_images: Vec<(usize, [[[u32; 1]; 32]; 32])> = <[[[[[u32; 3]; 3]; 3]; 16]; 1]>::train_from_images(
         &mut rng,
         &eval_creator,
         &chan3_images,
-        &base_path.join(format!("b1_l{}_c5_3-2", 0)),
+        &base_path.join("b1_l0_c3_3-1"),
         11,
         HEAD_UPDATE_FREQ,
         &log_file_path,
-        15u64,
+        2,
+    );
+    let c0_1_images: Vec<(usize, [[[u32; 2]; 32]; 32])> = vec_concat_2_examples(&l0_images, &l1_images);
+
+    let mut l2_images: Vec<(usize, [[[u32; 1]; 32]; 32])> = <[[[[[u32; 2]; 3]; 3]; 16]; 1]>::train_from_images(
+        &mut rng,
+        &eval_creator,
+        &c0_1_images,
+        &base_path.join("b1_l1_c3_2-1"),
+        11,
+        HEAD_UPDATE_FREQ,
+        &log_file_path,
+        2,
     );
 
-    let start = PreciseTime::now();
-
-    for l in 1..30 {
-        l0_images = <[[[[[u32; 2]; 5]; 5]; 16]; 2]>::train_from_images(
+    for l in 2..20 {
+        let c0_1_2_images: Vec<(usize, [[[u32; 3]; 32]; 32])> = vec_concat_3_examples(&l0_images, &l1_images, &l2_images);
+        l0_images = l1_images;
+        l1_images = l2_images;
+        l2_images = <[[[[[u32; 3]; 3]; 3]; 16]; 1]>::train_from_images(
             &mut rng,
             &eval_creator,
-            &l0_images,
-            &base_path.join(format!("b1_l{}_c5_2-2", l)),
+            &c0_1_2_images,
+            &base_path.join(format!("b1_l{}_c3_3-1", l)),
             11,
             HEAD_UPDATE_FREQ,
             &log_file_path,
-            15u64,
+            1,
         );
     }
 
-    //let mut l0_images: Vec<(usize, [[[u32; 4]; 16]; 16])> = <[[[[[u32; 2]; 2]; 2]; 16]; 4]>::train_from_images(
+    //let c0_1_images: Vec<(usize, [[[u32; 2]; 32]; 32])> = vec_concat_2_examples(&l0_images, &l1_images);
+
+    //let mut l0_images: Vec<(usize, [[[u32; 2]; 16]; 16])> = <[[[[[u32; 3]; 2]; 2]; 16]; 2]>::train_from_images(
     //    &mut rng,
     //    &eval_creator,
-    //    &l0_images,
-    //    &base_path.join(format!("b2_l{}_2x2_2-4", 0)),
+    //    &chan3_images,
+    //    &base_path.join(format!("b2_l{}_2x2_3-2", 0)),
     //    9,
     //    HEAD_UPDATE_FREQ,
     //    &log_file_path,
     //    2,
     //);
 
-    //for l in 1..30 {
-    //    l0_images = <[[[[[u32; 4]; 3]; 3]; 16]; 4]>::train_from_images(
+    //let mut l1_images: Vec<(usize, [[[u32; 2]; 16]; 16])> = <[[[[[u32; 2]; 2]; 2]; 16]; 2]>::train_from_images(
+    //    &mut rng,
+    //    &eval_creator,
+    //    &c0_1_images,
+    //    &base_path.join(format!("b2_l{}_2x2_2-2", 1)),
+    //    9,
+    //    HEAD_UPDATE_FREQ,
+    //    &log_file_path,
+    //    2,
+    //);
+
+    //for l in 2..20 {
+    //    let c0_1_images: Vec<(usize, [[[u32; 4]; 16]; 16])> = vec_concat_2_examples(&l0_images, &l1_images);
+    //    l0_images = l1_images;
+    //    l1_images = <[[[[[u32; 4]; 3]; 3]; 16]; 2]>::train_from_images(
     //        &mut rng,
     //        &eval_creator,
-    //        &l0_images,
-    //        &base_path.join(format!("b2_l{}_3x3_4-4", l)),
+    //        &c0_1_images,
+    //        &base_path.join(format!("b2_l{}_3x3_4-2", l)),
     //        9,
     //        HEAD_UPDATE_FREQ,
     //        &log_file_path,

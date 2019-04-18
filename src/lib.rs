@@ -102,6 +102,7 @@ array_bit_len!(5);
 array_bit_len!(6);
 array_bit_len!(7);
 array_bit_len!(8);
+array_bit_len!(16);
 
 pub trait FlipBit {
     fn flip_bit(&mut self, b: usize);
@@ -864,7 +865,7 @@ pub mod optimize {
                 Self::recurs_train(eval_creator, weights, head, &patches[0..patches.len() / 2], depth - 1, head_update_freq);
             }
             let (updates, obj) = Self::train_pass(eval_creator, weights, head, &patches[patches.len() / 2..], head_update_freq, 0);
-            obj as f64 / (patches.len()/2) as f64
+            obj as f64 / (patches.len() / 2) as f64
         }
     }
     pub trait TrainLayer<EvalCreator, Pixel, Patch, Embedding, InputImage, OutputImage> {
@@ -876,14 +877,14 @@ pub mod optimize {
             depth: usize,
             head_update_freq: usize,
             log_file_path: &Path,
-            final_pass_count: usize,
+            updates_thresh: u64,
         ) -> Vec<(usize, OutputImage)>;
     }
 
     impl<
             Pixel,
             Patch,
-            Weights: SaveLoad + Sync,
+            Weights: SaveLoad + Sync + BitLen,
             Embedding,
             EvalCreator: ObjectiveEvalCreator<Patch, Weights, Embedding>,
             InputImage: Sync + ExtractPatches<Patch> + Image2D<Pixel>,
@@ -905,7 +906,7 @@ pub mod optimize {
             depth: usize,
             head_update_freq: usize,
             log_file_path: &Path,
-            final_pass_count: usize,
+            updates_thresh: u64,
         ) -> Vec<(usize, OutputImage)> {
             let weights = Self::new_from_fs(fs_path).unwrap_or_else(|| {
                 println!("{} not found, training", &fs_path.to_str().unwrap());
@@ -926,24 +927,29 @@ pub mod optimize {
                 let start = PreciseTime::now();
 
                 let mut avg_obj = <Patch>::recurs_train(eval_creator, &mut weights, &mut head, &patches, depth, head_update_freq);
-                let mut updates = 0;
+                let mut updates = updates_thresh;
                 let mut cur_obj = 0;
-                for p in 0..final_pass_count {
-                    println!("beginning full pass {:?}", p);
-                    let (layer_updates, layer_obj) = <Patch>::train_pass(eval_creator, &mut weights, &mut head, &patches, 100, cur_obj);
+                let mut final_pass_count = 0;
+                while updates >= updates_thresh {
+                    println!("beginning full pass {:?}", final_pass_count);
+                    let (layer_updates, layer_obj) = <Patch>::train_pass(eval_creator, &mut weights, &mut head, &patches, head_update_freq, cur_obj);
+                    println!("updates: {}/{}", layer_updates, Weights::BIT_LEN);
                     cur_obj = layer_obj;
                     updates = layer_updates;
+                    final_pass_count += 1;
+                    avg_obj = cur_obj as f64 / patches.len() as f64;
                 }
                 println!("obj: {}, time: {}", avg_obj, start.to(PreciseTime::now()));
                 let mut file = OpenOptions::new().write(true).append(true).open(log_file_path).unwrap();
                 writeln!(
                     file,
-                    "{} depth: {}:{}, obj: {}, final_pass_updates: {}, head_update_freq: {}, n_patches: {}, {}",
+                    "{} depth: {}:{}, obj: {}, final_pass_updates: {}/{}, head_update_freq: {}, n_patches: {}, {}",
                     fs_path.to_str().unwrap(),
                     depth,
                     final_pass_count,
                     avg_obj,
                     updates,
+                    Weights::BIT_LEN,
                     head_update_freq,
                     patches.len(),
                     start.to(PreciseTime::now()),
