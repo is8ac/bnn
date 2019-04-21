@@ -9,6 +9,48 @@ extern crate vulkano_shaders;
 use rayon::prelude::*;
 
 pub mod datasets {
+    pub mod mnist {
+        use std::fs::File;
+        use std::io::prelude::*;
+        use std::path::Path;
+        pub fn load_labels(path: &Path, size: usize) -> Vec<usize> {
+            let path = Path::new(path);
+            let mut file = File::open(&path).expect("can't open images");
+            let mut header: [u8; 8] = [0; 8];
+            file.read_exact(&mut header).expect("can't read header");
+
+            let mut byte: [u8; 1] = [0; 1];
+            let mut labels: Vec<usize> = Vec::new();
+            for _ in 0..size {
+                file.read_exact(&mut byte).expect("can't read label");
+                labels.push(byte[0] as usize);
+            }
+            return labels;
+        }
+        pub fn load_images_bitpacked(path: &Path, size: usize) -> Vec<[u64; 13]> {
+            let path = Path::new(path);
+            let mut file = File::open(&path).expect("can't open images");
+            let mut header: [u8; 16] = [0; 16];
+            file.read_exact(&mut header).expect("can't read header");
+
+            let mut images_bytes: [u8; 784] = [0; 784];
+
+            let mut images: Vec<[u64; 13]> = Vec::new();
+            for _ in 0..size {
+                file.read_exact(&mut images_bytes)
+                    .expect("can't read images");
+                let mut image_words: [u64; 13] = [0; 13];
+                for p in 0..784 {
+                    let word_index = p / 64;
+                    image_words[word_index] =
+                        image_words[word_index] | (((images_bytes[p] > 128) as u64) << p % 64);
+                }
+                images.push(image_words);
+            }
+            return images;
+        }
+    }
+
     pub mod cifar {
         use std::fs::File;
         use std::io::prelude::*;
@@ -86,6 +128,11 @@ impl BitLen for u32 {
     const BIT_LEN: usize = 32;
 }
 
+impl BitLen for u64 {
+    const BIT_LEN: usize = 64;
+}
+
+
 macro_rules! array_bit_len {
     ($len:expr) => {
         impl<T: BitLen> BitLen for [T; $len] {
@@ -102,6 +149,7 @@ array_bit_len!(5);
 array_bit_len!(6);
 array_bit_len!(7);
 array_bit_len!(8);
+array_bit_len!(13);
 array_bit_len!(16);
 
 pub trait FlipBit {
@@ -132,6 +180,7 @@ array_flip_bit!(5);
 array_flip_bit!(6);
 array_flip_bit!(7);
 array_flip_bit!(8);
+array_flip_bit!(13);
 
 pub trait FlipBitIndexed {
     fn flip_bit_indexed(&mut self, o: usize, b: usize);
@@ -310,6 +359,14 @@ impl HammingDistance for u32 {
     }
 }
 
+impl HammingDistance for u64 {
+    #[inline(always)]
+    fn hamming_distance(&self, other: &u64) -> u32 {
+        (self ^ other).count_ones()
+    }
+}
+
+
 macro_rules! array_hamming_distance {
     ($len:expr) => {
         impl<T: HammingDistance> HammingDistance for [T; $len] {
@@ -332,6 +389,7 @@ array_hamming_distance!(5);
 array_hamming_distance!(6);
 array_hamming_distance!(7);
 array_hamming_distance!(8);
+array_hamming_distance!(13);
 
 pub trait MirrorHammingDistance {
     fn normal_hamming_distance(&self, input: &Self) -> u32;
