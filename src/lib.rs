@@ -157,6 +157,10 @@ impl_getbit_for_array!(1);
 impl_getbit_for_array!(2);
 impl_getbit_for_array!(3);
 impl_getbit_for_array!(4);
+impl_getbit_for_array!(5);
+impl_getbit_for_array!(6);
+impl_getbit_for_array!(7);
+impl_getbit_for_array!(8);
 impl_getbit_for_array!(13);
 
 pub trait BitLen: Sized {
@@ -212,7 +216,13 @@ macro_rules! impl_setbit_for_array {
 }
 
 impl_setbit_for_array!(1);
+impl_setbit_for_array!(2);
+impl_setbit_for_array!(3);
 impl_setbit_for_array!(4);
+impl_setbit_for_array!(5);
+impl_setbit_for_array!(6);
+impl_setbit_for_array!(7);
+impl_setbit_for_array!(8);
 
 pub trait FlipBit {
     fn flip_bit(&mut self, b: usize);
@@ -587,6 +597,10 @@ pub mod layers {
     impl_apply_for_array_output!(2);
     impl_apply_for_array_output!(3);
     impl_apply_for_array_output!(4);
+    impl_apply_for_array_output!(5);
+    impl_apply_for_array_output!(6);
+    impl_apply_for_array_output!(7);
+    impl_apply_for_array_output!(8);
 
     macro_rules! patch_2x2 {
         ($input:expr, $x:expr, $y:expr) => {

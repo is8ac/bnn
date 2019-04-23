@@ -6,6 +6,7 @@ extern crate time;
 
 use bitnn::datasets::mnist;
 use bitnn::layers::Apply;
+use bitnn::layers::SaveLoad;
 use bitnn::{BitLen, FlipBit, FlipBitIndexed, GetBit, GetPatch, HammingDistance, SetBit};
 use rand::Rng;
 use rand::SeedableRng;
@@ -14,11 +15,12 @@ use rayon::prelude::*;
 use std::marker::PhantomData;
 use std::path::Path;
 use time::PreciseTime;
+use std::fs;
 
-struct CacheItem<Weights, Embedding> {
+struct CacheItem<Input, Weights, Embedding> {
     weights_type: PhantomData<Weights>,
-    input: [u64; 13],
-    class: u8,
+    input: Input,
+    class: usize,
     embedding: Embedding,
     output: [u32; 10],
     bit_losses: [f64; 2],
@@ -55,19 +57,22 @@ fn loss_from_embedding<Embedding: HammingDistance + BitLen>(
     loss_from_scaled_output(&scaled, true_class)
 }
 
-impl<Embedding: HammingDistance + BitLen + GetBit + SetBit + Default + Copy, Weights: Apply<[u64; 13], Embedding>>
-    CacheItem<Weights, Embedding>
+impl<
+        Input: HammingDistance + BitLen + GetBit + Sync + Copy,
+        Embedding: HammingDistance + BitLen + GetBit + SetBit + Default + Copy,
+        Weights: Apply<Input, Embedding>,
+    > CacheItem<Input, Weights, Embedding>
 {
     fn compute_embedding(&mut self, weights: &Weights) {
         self.embedding = weights.apply(&self.input);
     }
-    fn update_embedding_bit(&mut self, weights_patch: &[u64; 13], embedding_bit_index: usize) {
+    fn update_embedding_bit(&mut self, weights_patch: &Input, embedding_bit_index: usize) {
         self.embedding.set_bit(
             embedding_bit_index,
-            weights_patch.hamming_distance(&self.input) > (<[u64; 13]>::BIT_LEN / 2) as u32,
+            weights_patch.hamming_distance(&self.input) > (<Input>::BIT_LEN / 2) as u32,
         );
     }
-    fn compute_embedding_act(&mut self, weights_patch: &[u64; 13]) {
+    fn compute_embedding_act(&mut self, weights_patch: &Input) {
         self.cur_embedding_act = weights_patch.hamming_distance(&self.input);
     }
     fn compute_output(&mut self, head: &[Embedding; 10]) {
@@ -134,7 +139,7 @@ impl<Embedding: HammingDistance + BitLen + GetBit + SetBit + Default + Copy, Wei
         } else {
             self.cur_embedding_act + 1
         };
-        self.bit_losses[(new_act > (<[u64; 13]>::BIT_LEN / 2) as u32) as usize]
+        self.bit_losses[(new_act > (<Input>::BIT_LEN / 2) as u32) as usize]
     }
     fn true_loss(&self, weights: &Weights, head: &[Embedding; 10]) -> f64 {
         let embedding = weights.apply(&self.input);
@@ -149,7 +154,7 @@ impl<Embedding: HammingDistance + BitLen + GetBit + SetBit + Default + Copy, Wei
             .0
             == self.class as usize
     }
-    fn new(input: &[u64; 13], class: u8) -> Self {
+    fn new(input: &Input, class: usize) -> Self {
         CacheItem {
             weights_type: PhantomData,
             input: *input,
@@ -162,8 +167,8 @@ impl<Embedding: HammingDistance + BitLen + GetBit + SetBit + Default + Copy, Wei
     }
 }
 
-pub struct CacheBatch<Weights, Embedding> {
-    items: Vec<CacheItem<Weights, Embedding>>,
+pub struct CacheBatch<Input, Weights, Embedding> {
+    items: Vec<CacheItem<Input, Weights, Embedding>>,
     weights: Weights,
     head: [Embedding; 10],
     embedding_bit_index: usize,
@@ -173,32 +178,28 @@ pub struct CacheBatch<Weights, Embedding> {
 }
 
 impl<
-        Weights: GetPatch<[u64; 13]> + Send + FlipBitIndexed + Sync + Copy + Apply<[u64; 13], Embedding>,
+        Input: HammingDistance + Sync + Send + BitLen + GetBit + Copy,
+        Weights: GetPatch<Input> + Send + FlipBitIndexed + Sync + Copy + Apply<Input, Embedding>,
         Embedding: Send + Sync + Copy + FlipBit + HammingDistance + GetBit + BitLen + SetBit + Default,
-    > CacheBatch<Weights, Embedding>
+    > CacheBatch<Input, Weights, Embedding>
 {
-    fn new(
-        weights: &Weights,
-        head: &[Embedding; 10],
-        examples: &Vec<([u64; 13], u8)>,
-        embedding_bit_index: usize,
-    ) -> Self {
-        let weights_patch = weights.get_patch(embedding_bit_index);
+    fn new(weights: &Weights, head: &[Embedding; 10], examples: &[(Input, usize)]) -> Self {
+        let weights_patch = weights.get_patch(0);
         CacheBatch {
             items: examples
                 .par_iter()
                 .map(|(input, class)| {
-                    let mut cache = CacheItem::new(input, *class as u8);
+                    let mut cache = CacheItem::new(input, *class as usize);
                     cache.compute_embedding(weights);
                     cache.compute_output(head);
-                    cache.compute_bit_losses(head, embedding_bit_index);
+                    cache.compute_bit_losses(head, 0);
                     cache.compute_embedding_act(&weights_patch);
                     cache
                 })
                 .collect(),
             weights: *weights,
             head: *head,
-            embedding_bit_index: embedding_bit_index,
+            embedding_bit_index: 0,
             class_index: 0,
             embedding_is_clean: true,
             output_is_clean: true,
@@ -307,9 +308,136 @@ impl<
     }
 }
 
-const N_EXAMPLES: usize = 50_000;
+pub trait OptimizePass<Input, Weights, Head> {
+    fn optimize(weights: &mut Weights, head: &mut Head, examples: &[(Input, usize)]) -> f64;
+}
+
+impl<
+        Input: BitLen + Send + Sync + GetBit + HammingDistance + Copy,
+        Weights: Copy + Send + Sync + FlipBitIndexed + GetPatch<Input> + Apply<Input, Embedding>,
+        Embedding: Copy + Send + Sync + GetBit + FlipBit + BitLen + Default + SetBit + HammingDistance,
+    > OptimizePass<Input, Weights, [Embedding; 10]> for CacheBatch<Input, Weights, Embedding>
+{
+    fn optimize(
+        weights: &mut Weights,
+        head: &mut [Embedding; 10],
+        examples: &[(Input, usize)],
+    ) -> f64 {
+        let mut cache_batch = CacheBatch::new(weights, head, examples);
+        let start = PreciseTime::now();
+        let mut cur_loss = cache_batch.bit_loss(0);
+        for e in 0..<Embedding>::BIT_LEN {
+            for c in 0..10 {
+                let new_loss = cache_batch.head_bit_loss(e, c);
+                if new_loss < cur_loss {
+                    cache_batch.flip_head_bit(c, e);
+                    head[c].flip_bit(e);
+                    cur_loss = new_loss;
+                    //println!("head {} {} {}", c, e, new_loss);
+                }
+            }
+            cache_batch.transition_embedding_bit(e);
+            for b in 0..<Input>::BIT_LEN {
+                let new_loss = cache_batch.bit_loss(b);
+                if new_loss < cur_loss {
+                    cur_loss = new_loss;
+                    cache_batch.flip_weights_bit(b);
+                    weights.flip_bit_indexed(e, b);
+                    //println!("{} {}: {:?}", e, b, new_loss);
+                }
+            }
+        }
+        cache_batch.acc()
+    }
+}
+
+pub trait RecursiveTrainFC<Input, Weights, Embedding, Optimizer> {
+    fn train<RNG: rand::Rng>(
+        rng: &mut RNG,
+        examples: &Vec<(Input, usize)>,
+        weights_path: &Path,
+        depth: usize,
+        n_full_pass: usize,
+    ) -> Vec<(Embedding, usize)>;
+    fn recurse_train(
+        weights: &mut Weights,
+        head: &mut [Embedding; 10],
+        examples: &[(Input, usize)],
+        depth: usize,
+    ) -> f64;
+}
+
+impl<
+        Input: Sync + Send,
+        Weights: SaveLoad + Apply<Input, Embedding> + Sync + Send,
+        Embedding: Sync + Send,
+        Optimizer: OptimizePass<Input, Weights, [Embedding; 10]>,
+    > RecursiveTrainFC<Input, Weights, Embedding, Optimizer> for Weights
+where
+    rand::distributions::Standard: rand::distributions::Distribution<Weights>,
+    rand::distributions::Standard: rand::distributions::Distribution<Embedding>,
+{
+    fn train<RNG: rand::Rng>(
+        rng: &mut RNG,
+        examples: &Vec<(Input, usize)>,
+        weights_path: &Path,
+        depth: usize,
+        n_full_pass: usize,
+    ) -> Vec<(Embedding, usize)> {
+        let weights = Self::new_from_fs(weights_path).unwrap_or_else(|| {
+            println!("{} not found, training", &weights_path.to_str().unwrap());
+
+            let mut weights: Weights = rng.gen();
+            let mut head: [Embedding; 10] = rng.gen();
+            let mut acc =
+                <Weights as RecursiveTrainFC<Input, Weights, Embedding, Optimizer>>::recurse_train(
+                    &mut weights,
+                    &mut head,
+                    &examples,
+                    depth,
+                );
+
+            for p in 0..n_full_pass {
+                acc = Optimizer::optimize(&mut weights, &mut head, examples);
+                println!("acc: {}%", acc * 100f64);
+            }
+            weights.write_to_fs(&weights_path);
+            weights
+        });
+
+        examples
+            .par_iter()
+            .map(|(input, class)| (weights.apply(input), *class))
+            .collect()
+    }
+    fn recurse_train(
+        weights: &mut Weights,
+        head: &mut [Embedding; 10],
+        examples: &[(Input, usize)],
+        depth: usize,
+    ) -> f64 {
+        if depth == 0 {
+            Optimizer::optimize(weights, head, &examples[0..examples.len() / 2]);
+        } else {
+            <Weights as RecursiveTrainFC<Input, Weights, Embedding, Optimizer>>::recurse_train(
+                weights,
+                head,
+                &examples[0..examples.len() / 2],
+                depth - 1,
+            );
+        }
+        let acc = Optimizer::optimize(weights, head, &examples[(examples.len() / 2)..]);
+        println!("depth: {} {}", depth, acc * 100f64);
+        acc
+    }
+}
+
+const N_EXAMPLES: usize = 60_000;
 
 fn main() {
+    let base_path = Path::new("params/float_test_4");
+    fs::create_dir_all(base_path).unwrap();
+
     let mut rng = Hc128Rng::seed_from_u64(8);
     let images = mnist::load_images_bitpacked(
         Path::new("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"),
@@ -319,51 +447,86 @@ fn main() {
         Path::new("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"),
         N_EXAMPLES,
     );
-    let examples: Vec<([u64; 13], u8)> = images
+    let examples: Vec<([u64; 13], usize)> = images
         .iter()
         .cloned()
-        .zip(classes.iter().map(|x| *x as u8))
+        .zip(classes.iter().map(|x| *x as usize))
         .collect();
 
-    let weights: [[[u64; 13]; 32]; 4] = rng.gen();
-    let head: [[u32; 4]; 10] = rng.gen();
+    let start = PreciseTime::now();
+    let embeddings: Vec<([u32; 8], usize)> = <[[[u64; 13]; 32]; 8] as RecursiveTrainFC<
+        _,
+        _,
+        _,
+        CacheBatch<_, _, _>,
+    >>::train(
+        &mut rng,
+        &examples,
+        &base_path.join("l0"),
+        11,
+        6,
+    );
 
-    let mut cache_batch = CacheBatch::new(&weights, &head, &examples, 0);
+    println!("time: {}", start.to(PreciseTime::now()));
 
     let start = PreciseTime::now();
-    let mut cur_loss = cache_batch.bit_loss(0);
-    for p in 0..3 {
-        for e in 0..<[u32; 4]>::BIT_LEN {
-            //for c in 0..10 {
-            //    for he in 0..<[u32; 4]>::BIT_LEN {
-            //        let new_loss = cache_batch.head_bit_loss(he, c);
-            //        if new_loss < cur_loss {
-            //            cache_batch.flip_head_bit(c, he);
-            //            cur_loss = new_loss;
-            //            println!("head {} {} {}", c, he, new_loss);
-            //        }
-            //    }
-            //}
-            cache_batch.transition_embedding_bit(e);
-            for b in 0..<[u64; 13]>::BIT_LEN {
-                let new_loss = cache_batch.bit_loss(b);
-                //dbg!(new_loss);
-                if new_loss < cur_loss {
-                    cur_loss = new_loss;
-                    cache_batch.flip_weights_bit(b);
-                    println!("{} {}: {:?}", e, b, new_loss);
-                }
-            }
-        }
-        let avg_acc = cache_batch.acc();
-        println!("acc at {}: {}%", p, avg_acc * 100f64);
-    }
-    let avg_acc = cache_batch.acc();
-    println!("acc:  {}%", avg_acc * 100f64);
+    let embeddings = <[[[u32; 8]; 32]; 4] as RecursiveTrainFC<
+        _,
+        _,
+        _,
+        CacheBatch<_, _, _>,
+    >>::train(
+        &mut rng,
+        &embeddings,
+        &base_path.join("l1"),
+        11,
+        6,
+    );
+
     println!("time: {}", start.to(PreciseTime::now()));
+    let start = PreciseTime::now();
+    let embeddings = <[[[u32; 4]; 32]; 4] as RecursiveTrainFC<
+        _,
+        _,
+        _,
+        CacheBatch<_, _, _>,
+    >>::train(
+        &mut rng,
+        &embeddings,
+        &base_path.join("l2"),
+        11,
+        6,
+    );
+    println!("time: {}", start.to(PreciseTime::now()));
+    let start = PreciseTime::now();
+    let embeddings = <[[[u32; 4]; 32]; 4] as RecursiveTrainFC<
+        _,
+        _,
+        _,
+        CacheBatch<_, _, _>,
+    >>::train(
+        &mut rng,
+        &embeddings,
+        &base_path.join("l2"),
+        11,
+        6,
+    );
+    println!("time: {}", start.to(PreciseTime::now()));
+
     //let avg_loss = cache_batch.bit_loss(1);
     //println!("loss: {}", avg_loss);
     // 83.194%
     // full head: 83.294% PT496S
     //   no head: 81.27% PT66S
+
+    // no head, 8 embedding
+    // acc:  81.692%
+    // time: PT158.867849050S
+
+    // part_head
+    // acc:  83%
+    // time: PT166.743565312S
+    // depth: 11 84.7
+    // acc: 85.27333333333334%
+    // time: PT279.716677584S
 }
