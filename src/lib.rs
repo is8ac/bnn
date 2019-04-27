@@ -47,6 +47,25 @@ pub mod datasets {
             }
             return images;
         }
+        pub fn load_images_u8_unary(path: &Path, size: usize) -> Vec<[[u8; 28]; 28]> {
+            let mut file = File::open(&path).expect("can't open images");
+            let mut header: [u8; 16] = [0; 16];
+            file.read_exact(&mut header).expect("can't read header");
+
+            let mut images_bytes: [u8; 784] = [0; 784];
+
+            let mut images: Vec<[[u8; 28]; 28]> = Vec::new();
+            for _ in 0..size {
+                file.read_exact(&mut images_bytes)
+                    .expect("can't read images");
+                let mut image = [[0u8; 28]; 28];
+                for p in 0..784 {
+                    image[p / 28][p % 28] = images_bytes[p];
+                }
+                images.push(image);
+            }
+            return images;
+        }
     }
 
     pub mod cifar {
@@ -57,7 +76,7 @@ pub mod datasets {
         macro_rules! to_unary {
             ($name:ident, $type:ty, $len:expr) => {
                 fn $name(input: u8) -> $type {
-                    !((!0) << (input / (255 / $len)))
+                    !((!0) << (input / (256 / $len) as u8))
                 }
             };
         }
@@ -69,7 +88,11 @@ pub mod datasets {
         pub trait ConvertPixel {
             fn convert(pixel: [u8; 3]) -> Self;
         }
-
+        impl ConvertPixel for [u8; 3] {
+            fn convert(pixel: [u8; 3]) -> [u8; 3] {
+                pixel
+            }
+        }
         impl ConvertPixel for [u32; 1] {
             fn convert(pixel: [u8; 3]) -> [u32; 1] {
                 [to_11(pixel[0]) as u32
@@ -87,7 +110,7 @@ pub mod datasets {
         pub fn load_images_from_base<T: Default + Copy + ConvertPixel>(
             base_path: &Path,
             n: usize,
-        ) -> Vec<(usize, [[T; 32]; 32])> {
+        ) -> Vec<([[T; 32]; 32], usize)> {
             if n > 50000 {
                 panic!("n must be <= 50,000");
             }
@@ -98,7 +121,7 @@ pub mod datasets {
 
                     let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
                     let mut label: [u8; 1] = [0; 1];
-                    let mut images: Vec<(usize, [[T; 32]; 32])> = Vec::new();
+                    let mut images: Vec<([[T; 32]; 32], usize)> = Vec::new();
                     for _ in 0..10000 {
                         file.read_exact(&mut label).expect("can't read label");
                         file.read_exact(&mut image_bytes)
@@ -114,7 +137,7 @@ pub mod datasets {
                                 image[x][y] = T::convert(pixel);
                             }
                         }
-                        images.push((label[0] as usize, image));
+                        images.push((image, label[0] as usize));
                     }
                     images
                 })
@@ -127,6 +150,12 @@ pub mod datasets {
 
 pub trait GetBit {
     fn bit(&self, i: usize) -> bool;
+}
+impl GetBit for u8 {
+    #[inline(always)]
+    fn bit(&self, i: usize) -> bool {
+        ((self >> i) & 1u8) == 1u8
+    }
 }
 
 impl GetBit for u64 {
@@ -146,6 +175,7 @@ impl GetBit for u32 {
 macro_rules! impl_getbit_for_array {
     ($len:expr) => {
         impl<T: GetBit + BitLen> GetBit for [T; $len] {
+            #[inline(always)]
             fn bit(&self, i: usize) -> bool {
                 self[i / T::BIT_LEN].bit(i % T::BIT_LEN)
             }
@@ -163,8 +193,21 @@ impl_getbit_for_array!(7);
 impl_getbit_for_array!(8);
 impl_getbit_for_array!(13);
 
+impl<A: GetBit + BitLen, B: GetBit + BitLen> GetBit for (A, B) {
+    fn bit(&self, i: usize) -> bool {
+        if i < A::BIT_LEN {
+            self.0.bit(i)
+        } else {
+            self.1.bit(i - A::BIT_LEN)
+        }
+    }
+}
+
 pub trait BitLen: Sized {
     const BIT_LEN: usize;
+}
+impl BitLen for u8 {
+    const BIT_LEN: usize = 8;
 }
 
 impl BitLen for u32 {
@@ -193,6 +236,10 @@ array_bit_len!(7);
 array_bit_len!(8);
 array_bit_len!(13);
 array_bit_len!(16);
+
+impl<A: BitLen, B: BitLen> BitLen for (A, B) {
+    const BIT_LEN: usize = A::BIT_LEN + B::BIT_LEN;
+}
 
 pub trait SetBit {
     fn set_bit(&mut self, index: usize, value: bool);
@@ -224,8 +271,23 @@ impl_setbit_for_array!(6);
 impl_setbit_for_array!(7);
 impl_setbit_for_array!(8);
 
+impl<A: SetBit + BitLen, B: SetBit + BitLen> SetBit for (A, B) {
+    fn set_bit(&mut self, i: usize, value: bool) {
+        if i < A::BIT_LEN {
+            self.0.set_bit(i, value);
+        } else {
+            self.1.set_bit(i - A::BIT_LEN, value);
+        }
+    }
+}
+
 pub trait FlipBit {
     fn flip_bit(&mut self, b: usize);
+}
+impl FlipBit for u8 {
+    fn flip_bit(&mut self, index: usize) {
+        *self ^= 1 << index
+    }
 }
 
 impl FlipBit for u32 {
@@ -258,6 +320,16 @@ array_flip_bit!(6);
 array_flip_bit!(7);
 array_flip_bit!(8);
 array_flip_bit!(13);
+
+impl<A: FlipBit + BitLen, B: FlipBit + BitLen> FlipBit for (A, B) {
+    fn flip_bit(&mut self, i: usize) {
+        if i < A::BIT_LEN {
+            self.0.flip_bit(i);
+        } else {
+            self.1.flip_bit(i - A::BIT_LEN);
+        }
+    }
+}
 
 pub trait FlipBitIndexed {
     fn flip_bit_indexed(&mut self, o: usize, b: usize);
@@ -431,8 +503,73 @@ impl<T: GetWord + WordLen> GetMirroredWords for [T; 5] {
     }
 }
 
+pub trait SolidBits {
+    fn solid_bits(sign: bool) -> Self;
+}
+impl SolidBits for u32 {
+    fn solid_bits(sign: bool) -> u32 {
+        if sign {
+            !0
+        } else {
+            0
+        }
+    }
+}
+
+macro_rules! impl_solidbits_for_3x3 {
+    ($len:expr) => {
+        impl<T: Copy + SolidBits> SolidBits for [T; $len] {
+            fn solid_bits(sign: bool) -> Self {
+                [T::solid_bits(sign); $len]
+            }
+        }
+    };
+}
+
+impl_solidbits_for_3x3!(1);
+impl_solidbits_for_3x3!(2);
+impl_solidbits_for_3x3!(3);
+impl_solidbits_for_3x3!(4);
+
+pub trait BinaryFilter {
+    fn binary_filter() -> Self;
+}
+
+macro_rules! impl_binaryfilter_for_array {
+    ($len:expr) => {
+        impl<T: SolidBits + Default + Copy> BinaryFilter for [[[[T; 3]; 3]; 32]; $len] {
+            fn binary_filter() -> Self {
+                let mut weights = [[[[T::default(); 3]; 3]; 32]; $len];
+                for w in 0..$len {
+                    for b in 0..32 {
+                        let c = w * 32 + b;
+                        for x in 0..3 {
+                            for y in 0..3 {
+                                weights[w][b][x][y] = T::solid_bits((c as u32).bit(x * 3 + y));
+                            }
+                        }
+                    }
+                }
+                weights
+            }
+        }
+    };
+}
+impl_binaryfilter_for_array!(1);
+impl_binaryfilter_for_array!(2);
+impl_binaryfilter_for_array!(3);
+impl_binaryfilter_for_array!(4);
+impl_binaryfilter_for_array!(8);
+impl_binaryfilter_for_array!(16);
+
 pub trait HammingDistance {
     fn hamming_distance(&self, other: &Self) -> u32;
+}
+impl HammingDistance for u8 {
+    #[inline(always)]
+    fn hamming_distance(&self, other: &u8) -> u32 {
+        (self ^ other).count_ones()
+    }
 }
 
 impl HammingDistance for u32 {
@@ -472,6 +609,12 @@ array_hamming_distance!(6);
 array_hamming_distance!(7);
 array_hamming_distance!(8);
 array_hamming_distance!(13);
+
+impl<A: HammingDistance, B: HammingDistance> HammingDistance for (A, B) {
+    fn hamming_distance(&self, other: &(A, B)) -> u32 {
+        self.0.hamming_distance(&other.0) + self.1.hamming_distance(&other.1)
+    }
+}
 
 //pub trait MirrorHammingDistance {
 //    fn normal_hamming_distance(&self, input: &Self) -> u32;
@@ -519,7 +662,7 @@ array_hamming_distance!(13);
 
 #[macro_use]
 pub mod layers {
-    use super::{BitLen, HammingDistance};
+    use super::{BitLen, HammingDistance, GetBit};
     use bincode::{deserialize_from, serialize_into};
     use std::fs::File;
     use std::io::BufWriter;
@@ -569,6 +712,23 @@ pub mod layers {
     //        target
     //    }
     //}
+
+    // This is an integer u8! But the u32 is just 32 bits.
+    impl Apply<[[u8; 3]; 3], u32> for [[u32; 3]; 3] {
+        fn apply(&self, input: &[[u8; 3]; 3]) -> u32 {
+            let mut target = 0u32;
+            for i in 0..32 {
+                let mut sum_act = 0i32;
+                for x in 0..3 {
+                    for y in 0..3 {
+                        sum_act += if self[x][y].bit(i) {input[x][y] as i32} else {-(input[x][y] as i32)}
+                    }
+                }
+                target |= ((sum_act > 0) as u32) << i;
+            }
+            target
+        }
+    }
 
     impl<I: HammingDistance + BitLen> Apply<I, u32> for [I; 32] {
         fn apply(&self, input: &I) -> u32 {
@@ -701,21 +861,20 @@ pub mod layers {
         };
     }
 
+    patch_conv_2x2_apply_trait!(28, 28);
     patch_conv_2x2_apply_trait!(32, 32);
     patch_conv_2x2_apply_trait!(16, 16);
+    patch_conv_2x2_apply_trait!(14, 14);
     patch_conv_2x2_apply_trait!(8, 8);
+    patch_conv_2x2_apply_trait!(7, 7);
 
     macro_rules! conv3x3_apply_trait {
-        ($x_size:expr, $y_size:expr, $output_len:expr) => {
-            impl<I: Copy + BitLen + HammingDistance>
-                Apply<[[I; $y_size]; $x_size], [[[u32; $output_len]; $y_size]; $x_size]>
-                for [[[[I; 3]; 3]; 16]; $output_len]
+        ($x_size:expr, $y_size:expr) => {
+            impl<I: Copy, W: Apply<[[I; 3]; 3], O>, O: Default + Copy>
+                Apply<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]> for W
             {
-                fn apply(
-                    &self,
-                    input: &[[I; $y_size]; $x_size],
-                ) -> [[[u32; $output_len]; $y_size]; $x_size] {
-                    let mut target = [[[0u32; $output_len]; $y_size]; $x_size];
+                fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size]; $x_size] {
+                    let mut target = [[O::default(); $y_size]; $x_size];
                     for x in 0..$x_size - 2 {
                         for y in 0..$y_size - 2 {
                             target[x + 1][y + 1] = self.apply(&patch_3x3!(input, x, y));
@@ -726,37 +885,24 @@ pub mod layers {
             }
         };
     }
+    conv3x3_apply_trait!(32, 32);
+    conv3x3_apply_trait!(28, 28);
+    conv3x3_apply_trait!(16, 16);
+    conv3x3_apply_trait!(8, 8);
 
-    //conv3x3_apply_trait!(32, 32, 1);
-    //conv3x3_apply_trait!(16, 16, 1);
-    //conv3x3_apply_trait!(8, 8, 1);
-
-    //conv3x3_apply_trait!(32, 32, 2);
-    //conv3x3_apply_trait!(16, 16, 2);
-    //conv3x3_apply_trait!(8, 8, 2);
-
-    //conv3x3_apply_trait!(32, 32, 3);
-    //conv3x3_apply_trait!(16, 16, 3);
-    //conv3x3_apply_trait!(8, 8, 3);
-
-    //conv3x3_apply_trait!(32, 32, 4);
-    //conv3x3_apply_trait!(16, 16, 4);
-    //conv3x3_apply_trait!(8, 8, 4);
-
-    macro_rules! conv5x5_apply_trait {
-        ($x_size:expr, $y_size:expr, $output_len:expr) => {
-            impl<I: Copy + BitLen + HammingDistance>
-                Apply<[[I; $y_size]; $x_size], [[[u32; $output_len]; $y_size]; $x_size]>
-                for [[[[I; 5]; 5]; 16]; $output_len]
+    macro_rules! conv3x3_apply_trait_no_pad {
+        ($x_size:expr, $y_size:expr) => {
+            impl<I: Copy, W: Apply<[[I; 3]; 3], O>, O: Default + Copy>
+                Apply<[[I; $y_size]; $x_size], [[O; $y_size - 2]; $x_size - 2]> for W
             {
                 fn apply(
                     &self,
                     input: &[[I; $y_size]; $x_size],
-                ) -> [[[u32; $output_len]; $y_size]; $x_size] {
-                    let mut target = [[[0u32; $output_len]; $y_size]; $x_size];
-                    for x in 0..$x_size - 4 {
-                        for y in 0..$y_size - 4 {
-                            target[x + 2][y + 2] = self.apply(&patch_5x5!(input, x, y));
+                ) -> [[O; $y_size - 2]; $x_size - 2] {
+                    let mut target = [[O::default(); $y_size - 2]; $x_size - 2];
+                    for x in 0..$x_size - 2 {
+                        for y in 0..$y_size - 2 {
+                            target[x][y] = self.apply(&patch_3x3!(input, x, y));
                         }
                     }
                     target
@@ -764,6 +910,44 @@ pub mod layers {
             }
         };
     }
+
+    conv3x3_apply_trait_no_pad!(32, 32);
+    conv3x3_apply_trait_no_pad!(30, 30);
+    conv3x3_apply_trait_no_pad!(28, 28);
+    conv3x3_apply_trait_no_pad!(26, 26);
+    conv3x3_apply_trait_no_pad!(24, 24);
+    conv3x3_apply_trait_no_pad!(22, 22);
+    conv3x3_apply_trait_no_pad!(20, 20);
+    conv3x3_apply_trait_no_pad!(18, 18);
+    conv3x3_apply_trait_no_pad!(16, 16);
+    conv3x3_apply_trait_no_pad!(14, 14);
+    conv3x3_apply_trait_no_pad!(12, 12);
+    conv3x3_apply_trait_no_pad!(10, 10);
+    conv3x3_apply_trait_no_pad!(8, 8);
+    conv3x3_apply_trait_no_pad!(6, 5);
+    conv3x3_apply_trait_no_pad!(4, 4);
+
+    //macro_rules! conv5x5_apply_trait {
+    //    ($x_size:expr, $y_size:expr, $output_len:expr) => {
+    //        impl<I: Copy + BitLen + HammingDistance>
+    //            Apply<[[I; $y_size]; $x_size], [[[u32; $output_len]; $y_size]; $x_size]>
+    //            for [[[[I; 5]; 5]; 16]; $output_len]
+    //        {
+    //            fn apply(
+    //                &self,
+    //                input: &[[I; $y_size]; $x_size],
+    //            ) -> [[[u32; $output_len]; $y_size]; $x_size] {
+    //                let mut target = [[[0u32; $output_len]; $y_size]; $x_size];
+    //                for x in 0..$x_size - 4 {
+    //                    for y in 0..$y_size - 4 {
+    //                        target[x + 2][y + 2] = self.apply(&patch_5x5!(input, x, y));
+    //                    }
+    //                }
+    //                target
+    //            }
+    //        }
+    //    };
+    //}
 
     //conv5x5_apply_trait!(32, 32, 1);
     //conv5x5_apply_trait!(16, 16, 1);
@@ -806,6 +990,34 @@ pub mod layers {
             File::open(&path).map(|f| deserialize_from(f).unwrap()).ok()
         }
     }
+
+    pub trait InvertibleDownsample<OutputImage> {
+        fn i_rev_pool(&self) -> OutputImage;
+    }
+
+    macro_rules! impl_invertible_downsample_for_image {
+        ($x_size:expr, $y_size:expr) => {
+            impl<Pixel: Default + Copy>
+                InvertibleDownsample<[[[[Pixel; 2]; 2]; $y_size / 2]; $x_size / 2]>
+                for [[Pixel; $y_size]; $x_size]
+            {
+                fn i_rev_pool(&self) -> [[[[Pixel; 2]; 2]; $y_size / 2]; $x_size / 2] {
+                    let mut target = [[[[Pixel::default(); 2]; 2]; $y_size / 2]; $x_size / 2];
+                    for x in 0..($x_size / 2) {
+                        let x_base = x * 2;
+                        for y in 0..($y_size / 2) {
+                            let y_base = y * 2;
+                            target[x][y] = patch_2x2!(self, x_base, y_base);
+                        }
+                    }
+                    target
+                }
+            }
+        };
+    }
+    impl_invertible_downsample_for_image!(32, 32);
+    impl_invertible_downsample_for_image!(16, 16);
+    impl_invertible_downsample_for_image!(8, 8);
 }
 
 pub trait Image2D<Pixel> {}
@@ -865,8 +1077,20 @@ macro_rules! impl_extract_patch_trait {
 }
 
 impl_extract_patch_trait!(32, 32);
+impl_extract_patch_trait!(30, 30);
+impl_extract_patch_trait!(28, 28);
+impl_extract_patch_trait!(26, 26);
+impl_extract_patch_trait!(24, 24);
+impl_extract_patch_trait!(22, 22);
+impl_extract_patch_trait!(20, 20);
+impl_extract_patch_trait!(18, 18);
 impl_extract_patch_trait!(16, 16);
+impl_extract_patch_trait!(14, 14);
+impl_extract_patch_trait!(12, 12);
+impl_extract_patch_trait!(10, 10);
 impl_extract_patch_trait!(8, 8);
+impl_extract_patch_trait!(7, 7);
+impl_extract_patch_trait!(6, 6);
 impl_extract_patch_trait!(4, 4);
 
 pub trait ConcatImages<A, B> {
@@ -874,23 +1098,19 @@ pub trait ConcatImages<A, B> {
 }
 
 macro_rules! impl_concat_image {
-    ($a_len:expr, $b_len:expr, $x_size:expr, $y_size:expr) => {
-        impl ConcatImages<[[[u32; $a_len]; $y_size]; $x_size], [[[u32; $b_len]; $y_size]; $x_size]>
-            for [[[u32; $a_len + $b_len]; $y_size]; $x_size]
+    ($x_size:expr, $y_size:expr) => {
+        impl<A: Copy + Default, B: Copy + Default>
+            ConcatImages<[[A; $y_size]; $x_size], [[B; $y_size]; $x_size]>
+            for [[(A, B); $y_size]; $x_size]
         {
             fn concat_images(
-                input_a: &[[[u32; $a_len]; $y_size]; $x_size],
-                input_b: &[[[u32; $b_len]; $y_size]; $x_size],
-            ) -> [[[u32; $a_len + $b_len]; $y_size]; $x_size] {
-                let mut target = <[[[u32; $a_len + $b_len]; $y_size]; $x_size]>::default();
+                input_a: &[[A; $y_size]; $x_size],
+                input_b: &[[B; $y_size]; $x_size],
+            ) -> [[(A, B); $y_size]; $x_size] {
+                let mut target = <[[(A, B); $y_size]; $x_size]>::default();
                 for x in 0..$x_size {
                     for y in 0..$y_size {
-                        for i in 0..$a_len {
-                            target[x][y][i] = input_a[x][y][i];
-                        }
-                        for i in 0..$b_len {
-                            target[x][y][$a_len + i] = input_b[x][y][i];
-                        }
+                        target[x][y] = (input_a[x][y], input_b[x][y]);
                     }
                 }
                 target
@@ -899,23 +1119,614 @@ macro_rules! impl_concat_image {
     };
 }
 
-impl_concat_image!(1, 1, 32, 32);
-impl_concat_image!(2, 1, 32, 32);
-impl_concat_image!(3, 1, 32, 32);
-impl_concat_image!(4, 1, 32, 32);
-impl_concat_image!(5, 1, 32, 32);
-impl_concat_image!(6, 1, 32, 32);
+impl_concat_image!(32, 32);
+impl_concat_image!(16, 16);
+impl_concat_image!(8, 8);
 
 pub fn vec_concat_2_examples<A: Sync, B: Sync, T: ConcatImages<A, B> + Sync + Send>(
-    a: &Vec<(usize, A)>,
-    b: &Vec<(usize, B)>,
-) -> Vec<(usize, T)> {
+    a: &Vec<(A, usize)>,
+    b: &Vec<(B, usize)>,
+) -> Vec<(T, usize)> {
     assert_eq!(a.len(), b.len());
     a.par_iter()
         .zip(b.par_iter())
-        .map(|((a_class, a_image), (b_class, b_image))| {
+        .map(|((a_image, a_class), (b_image, b_class))| {
             assert_eq!(a_class, b_class);
-            (*a_class, T::concat_images(a_image, b_image))
+            (T::concat_images(a_image, b_image), *a_class)
         })
         .collect()
+}
+
+pub mod train {
+    use super::layers::{Apply, SaveLoad};
+    use super::{
+        BinaryFilter, BitLen, ExtractPatches, FlipBit, FlipBitIndexed, GetBit, GetPatch,
+        HammingDistance, SetBit,
+    };
+    use rand::prelude::*;
+    use rayon::prelude::*;
+    use std::iter;
+    use std::marker::PhantomData;
+    use std::path::Path;
+    use time::PreciseTime;
+
+    struct CacheItem<Input, Weights, Embedding> {
+        weights_type: PhantomData<Weights>,
+        input: Input,
+        class: usize,
+        embedding: Embedding,
+        output: [u32; 10],
+        bit_losses: [f64; 2],
+        cur_embedding_act: u32,
+    }
+
+    fn loss_from_scaled_output(input: &[f64; 10], true_class: usize) -> f64 {
+        let mut exp = [0f64; 10];
+        let mut sum_exp = 0f64;
+        for c in 0..10 {
+            exp[c] = (input[c]).exp();
+            sum_exp += exp[c];
+        }
+        let sum_loss: f64 = exp
+            .iter()
+            .enumerate()
+            .map(|(c, x)| ((x / sum_exp) - (c == true_class) as u8 as f64).powi(2))
+            .sum();
+        //sum_loss / 10f64
+        sum_loss
+    }
+
+    fn loss_from_embedding<Embedding: HammingDistance + BitLen>(
+        embedding: &Embedding,
+        head: &[Embedding; 10],
+        true_class: usize,
+    ) -> f64 {
+        let mut scaled = [0f64; 10];
+        for c in 0..10 {
+            let sum = head[c].hamming_distance(&embedding);
+            scaled[c] = sum as f64 / <Embedding>::BIT_LEN as f64;
+        }
+
+        loss_from_scaled_output(&scaled, true_class)
+    }
+
+    impl<
+            Input: HammingDistance + BitLen + GetBit + Sync + Copy,
+            Embedding: HammingDistance + BitLen + GetBit + SetBit + Default + Copy,
+            Weights: Apply<Input, Embedding>,
+        > CacheItem<Input, Weights, Embedding>
+    {
+        fn compute_embedding(&mut self, weights: &Weights) {
+            self.embedding = weights.apply(&self.input);
+        }
+        fn update_embedding_bit(&mut self, weights_patch: &Input, embedding_bit_index: usize) {
+            self.embedding.set_bit(
+                embedding_bit_index,
+                weights_patch.hamming_distance(&self.input) > (<Input>::BIT_LEN / 2) as u32,
+            );
+        }
+        fn compute_embedding_act(&mut self, weights_patch: &Input) {
+            self.cur_embedding_act = weights_patch.hamming_distance(&self.input);
+        }
+        fn compute_output(&mut self, head: &[Embedding; 10]) {
+            for c in 0..10 {
+                let sum = head[c].hamming_distance(&self.embedding);
+                self.output[c] = sum;
+            }
+        }
+        fn compute_bit_losses(&mut self, head: &[Embedding; 10], embedding_bit_index: usize) {
+            let mut embedding = self.embedding;
+            embedding.set_bit(embedding_bit_index, false);
+            self.bit_losses[0] = loss_from_embedding(&embedding, head, self.class as usize);
+            embedding.set_bit(embedding_bit_index, true);
+            self.bit_losses[1] = loss_from_embedding(&embedding, head, self.class as usize);
+        }
+        fn update_head_output_from_bit(
+            &mut self,
+            class_index: usize,
+            embedding_bit_index: usize,
+            head_bit: bool,
+        ) {
+            let embedding_bit = self.embedding.bit(embedding_bit_index);
+            if head_bit ^ embedding_bit {
+                // if !=, changing will decrease activation
+                self.output[class_index] -= 1;
+            } else {
+                self.output[class_index] += 1;
+            };
+        }
+        fn update_cur_embedding_act_from_bit(&mut self, input_bit_index: usize, weights_bit: bool) {
+            //let input_bit = self.input.bit(input_bit_index);
+            if weights_bit ^ self.input.bit(input_bit_index) {
+                // if !=, changing will decrease activation
+                self.cur_embedding_act -= 1;
+            } else {
+                self.cur_embedding_act += 1;
+            };
+        }
+        fn loss_from_head_bit(
+            &self,
+            embedding_bit_index: usize,
+            class_index: usize,
+            head_bit: bool,
+        ) -> f64 {
+            let input_bit = self.embedding.bit(embedding_bit_index);
+            let mut output = self.output;
+            if head_bit ^ input_bit {
+                // if !=, changing will decrease activation
+                output[class_index] = self.output[class_index] - 1;
+            } else {
+                output[class_index] = self.output[class_index] + 1;
+            };
+            let mut scaled = [0f64; 10];
+            for c in 0..10 {
+                scaled[c] = output[c] as f64 / <Embedding>::BIT_LEN as f64;
+            }
+            loss_from_scaled_output(&scaled, self.class as usize)
+        }
+        #[inline(always)]
+        fn loss_from_bit(&self, input_bit_index: usize, weights_bit: bool) -> f64 {
+            //let input_bit = self.input.bit(input_bit_index);
+            let new_act = if weights_bit ^ self.input.bit(input_bit_index) {
+                // if !=, changing will decrease activation
+                self.cur_embedding_act - 1
+            } else {
+                self.cur_embedding_act + 1
+            };
+            self.bit_losses[(new_act > (<Input>::BIT_LEN / 2) as u32) as usize]
+        }
+        fn true_loss(&self, weights: &Weights, head: &[Embedding; 10]) -> f64 {
+            let embedding = weights.apply(&self.input);
+            loss_from_embedding(&embedding, head, self.class as usize)
+        }
+        fn is_correct(&self) -> bool {
+            self.output
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, v)| *v)
+                .unwrap()
+                .0
+                == self.class as usize
+        }
+        fn new(input: &Input, class: usize) -> Self {
+            CacheItem {
+                weights_type: PhantomData,
+                input: *input,
+                embedding: Embedding::default(),
+                output: [0u32; 10],
+                bit_losses: [0f64; 2],
+                class: class,
+                cur_embedding_act: 0u32,
+            }
+        }
+    }
+
+    pub struct CacheBatch<Input, Weights, Embedding> {
+        items: Vec<CacheItem<Input, Weights, Embedding>>,
+        weights: Weights,
+        head: [Embedding; 10],
+        embedding_bit_index: usize,
+        embedding_is_clean: bool,
+        output_is_clean: bool,
+    }
+
+    impl<
+            Input: HammingDistance + Sync + Send + BitLen + GetBit + Copy,
+            Weights: GetPatch<Input> + Send + FlipBitIndexed + Sync + Copy + Apply<Input, Embedding>,
+            Embedding: Send + Sync + Copy + FlipBit + HammingDistance + GetBit + BitLen + SetBit + Default,
+        > CacheBatch<Input, Weights, Embedding>
+    {
+        fn new(weights: &Weights, head: &[Embedding; 10], examples: &[(Input, usize)]) -> Self {
+            let weights_patch = weights.get_patch(0);
+            CacheBatch {
+                items: examples
+                    .par_iter()
+                    .map(|(input, class)| {
+                        let mut cache = CacheItem::new(input, *class as usize);
+                        cache.compute_embedding(weights);
+                        cache.compute_output(head);
+                        cache.compute_bit_losses(head, 0);
+                        cache.compute_embedding_act(&weights_patch);
+                        cache
+                    })
+                    .collect(),
+                weights: *weights,
+                head: *head,
+                embedding_bit_index: 0,
+                embedding_is_clean: true,
+                output_is_clean: true,
+            }
+        }
+        fn head_bit_loss(&mut self, embedding_bit_index: usize, class_index: usize) -> f64 {
+            if !self.embedding_is_clean {
+                let embedding_bit_index = self.embedding_bit_index;
+                let weights_patch = self.weights.get_patch(self.embedding_bit_index);
+                let _: Vec<_> = self
+                    .items
+                    .par_iter_mut()
+                    .map(|cache| cache.update_embedding_bit(&weights_patch, embedding_bit_index))
+                    .collect();
+                self.embedding_is_clean = true;
+            }
+            let head = self.head;
+            if !self.output_is_clean {
+                let _: Vec<_> = self
+                    .items
+                    .par_iter_mut()
+                    .map(|cache| cache.compute_output(&head))
+                    .collect();
+                self.output_is_clean = true;
+            }
+            let head_bit = self.head[class_index].bit(embedding_bit_index);
+            let sum_loss: f64 = self
+                .items
+                .par_iter()
+                .map(|cache| cache.loss_from_head_bit(embedding_bit_index, class_index, head_bit))
+                .sum();
+            sum_loss as f64 / self.items.len() as f64
+        }
+        fn bit_loss(&mut self, input_bit_index: usize) -> f64 {
+            let cur_mut_bit_val = self
+                .weights
+                .get_patch(self.embedding_bit_index)
+                .bit(input_bit_index);
+            let sum_loss: f64 = self
+                .items
+                .par_iter()
+                .map(|cache| cache.loss_from_bit(input_bit_index, cur_mut_bit_val))
+                .sum();
+            sum_loss / self.items.len() as f64
+        }
+        fn true_loss(&mut self) -> f64 {
+            let sum_loss: f64 = self
+                .items
+                .par_iter()
+                .map(|cache| cache.true_loss(&self.weights, &self.head))
+                .sum();
+            sum_loss / self.items.len() as f64
+        }
+        fn acc(&mut self) -> f64 {
+            let head = self.head;
+            let sum_iscorrect: u64 = self
+                .items
+                .par_iter_mut()
+                .map(|cache| {
+                    cache.compute_output(&head);
+                    cache.is_correct() as u64
+                })
+                .sum();
+            sum_iscorrect as f64 / self.items.len() as f64
+        }
+        fn flip_weights_bit(&mut self, input_bit_index: usize) {
+            self.embedding_is_clean = false;
+            self.output_is_clean = false;
+            let cur_mut_bit_val = self
+                .weights
+                .get_patch(self.embedding_bit_index)
+                .bit(input_bit_index);
+            let _: Vec<_> = self
+                .items
+                .par_iter_mut()
+                .map(|cache| {
+                    cache.update_cur_embedding_act_from_bit(input_bit_index, cur_mut_bit_val)
+                })
+                .collect();
+            self.weights
+                .flip_bit_indexed(self.embedding_bit_index, input_bit_index);
+        }
+        fn flip_head_bit(&mut self, class: usize, embedding_bit_index: usize) {
+            let head_bit = self.head[class].bit(embedding_bit_index);
+            let _: Vec<_> = self
+                .items
+                .par_iter_mut()
+                .map(|cache| {
+                    cache.update_head_output_from_bit(class, embedding_bit_index, head_bit)
+                })
+                .collect();
+            self.output_is_clean = true;
+            self.head[class].flip_bit(embedding_bit_index);
+        }
+        fn transition_embedding_bit(&mut self, new_embedding_bit_index: usize) {
+            let old_embedding_bit_index = self.embedding_bit_index;
+            let old_weights_patch = self.weights.get_patch(old_embedding_bit_index);
+            let new_weights_patch = self.weights.get_patch(new_embedding_bit_index);
+            let head = self.head;
+            let _: Vec<_> = self
+                .items
+                .par_iter_mut()
+                .map(|cache| {
+                    cache.update_embedding_bit(&old_weights_patch, old_embedding_bit_index);
+                    cache.compute_embedding_act(&new_weights_patch);
+                    cache.compute_bit_losses(&head, new_embedding_bit_index);
+                })
+                .collect();
+            self.embedding_bit_index = new_embedding_bit_index;
+        }
+    }
+
+    pub struct EmbeddingSplitCacheBatch<Input, Weights, Embedding> {
+        pub cache_batch: CacheBatch<Input, Weights, Embedding>,
+    }
+
+    pub trait OptimizePass<Input, Weights, Head> {
+        fn optimize(weights: &mut Weights, head: &mut Head, examples: &[(Input, usize)]) -> f64;
+    }
+
+    impl<
+            Input: BitLen + Send + Sync + GetBit + HammingDistance + Copy,
+            Weights: Copy + Send + Sync + FlipBitIndexed + GetPatch<Input> + Apply<Input, Embedding>,
+            Embedding: Copy + Send + Sync + GetBit + FlipBit + BitLen + Default + SetBit + HammingDistance,
+        > OptimizePass<Input, Weights, [Embedding; 10]>
+        for EmbeddingSplitCacheBatch<Input, Weights, Embedding>
+    {
+        fn optimize(
+            weights: &mut Weights,
+            head: &mut [Embedding; 10],
+            examples: &[(Input, usize)],
+        ) -> f64 {
+            let minibatch_size = examples.len() / Embedding::BIT_LEN;
+            println!(
+                "{} / {} = {}",
+                examples.len(),
+                Embedding::BIT_LEN,
+                minibatch_size
+            );
+            for e in 0..<Embedding>::BIT_LEN {
+                let mut cache_batch = CacheBatch::new(
+                    weights,
+                    head,
+                    &examples[(e * minibatch_size)..((e + 1) * minibatch_size)],
+                );
+                // hack to get the current loss
+                cache_batch.flip_weights_bit(0);
+                let mut cur_loss = cache_batch.bit_loss(0);
+                cache_batch.flip_weights_bit(0);
+                for c in 0..10 {
+                    let new_loss = cache_batch.head_bit_loss(e, c);
+                    if new_loss < cur_loss {
+                        cache_batch.flip_head_bit(c, e);
+                        head[c].flip_bit(e);
+                        cur_loss = new_loss;
+                    }
+                }
+                cache_batch.transition_embedding_bit(e);
+                for b in 0..<Input>::BIT_LEN {
+                    let new_loss = cache_batch.bit_loss(b);
+                    if new_loss < cur_loss {
+                        cur_loss = new_loss;
+                        cache_batch.flip_weights_bit(b);
+                        weights.flip_bit_indexed(e, b);
+                    }
+                }
+            }
+            let mut cache_batch = CacheBatch::new(weights, head, examples);
+            cache_batch.acc()
+        }
+    }
+
+    impl<
+            Input: BitLen + Send + Sync + GetBit + HammingDistance + Copy,
+            Weights: Copy + Send + Sync + FlipBitIndexed + GetPatch<Input> + Apply<Input, Embedding>,
+            Embedding: Copy + Send + Sync + GetBit + FlipBit + BitLen + Default + SetBit + HammingDistance,
+        > OptimizePass<Input, Weights, [Embedding; 10]> for CacheBatch<Input, Weights, Embedding>
+    {
+        fn optimize(
+            weights: &mut Weights,
+            head: &mut [Embedding; 10],
+            examples: &[(Input, usize)],
+        ) -> f64 {
+            let mut cache_batch = CacheBatch::new(weights, head, examples);
+            let mut cur_loss = cache_batch.bit_loss(0);
+            for e in 0..<Embedding>::BIT_LEN {
+                //let head_start = PreciseTime::now();
+                for c in 0..10 {
+                    let new_loss = cache_batch.head_bit_loss(e, c);
+                    if new_loss < cur_loss {
+                        cache_batch.flip_head_bit(c, e);
+                        head[c].flip_bit(e);
+                        cur_loss = new_loss;
+                        //println!("head {} {} {}", c, e, new_loss);
+                    }
+                }
+                //println!("head time: {}", head_start.to(PreciseTime::now()));
+                //let trans_start = PreciseTime::now();
+                cache_batch.transition_embedding_bit(e);
+                //println!("trans time: {}", trans_start.to(PreciseTime::now()));
+                //let patch_start = PreciseTime::now();
+                for b in 0..<Input>::BIT_LEN {
+                    let new_loss = cache_batch.bit_loss(b);
+                    if new_loss < cur_loss {
+                        cur_loss = new_loss;
+                        cache_batch.flip_weights_bit(b);
+                        weights.flip_bit_indexed(e, b);
+                        //println!("{} {}: {:?}", e, b, new_loss);
+                    }
+                }
+                //println!("patch time: {}", patch_start.to(PreciseTime::now()));
+            }
+            cache_batch.acc()
+        }
+    }
+
+    pub trait RecursiveTrain<Input, Embedding, Optimizer> {
+        fn recurse_train(
+            weights: &mut Self,
+            head: &mut [Embedding; 10],
+            examples: &[(Input, usize)],
+            depth: usize,
+        ) -> f64;
+    }
+
+    impl<
+            Input: Sync + Send,
+            Embedding: Sync + Send,
+            Optimizer: OptimizePass<Input, Self, [Embedding; 10]>,
+            Weights: SaveLoad + Apply<Input, Embedding> + Sync + Send,
+        > RecursiveTrain<Input, Embedding, Optimizer> for Weights
+    {
+        fn recurse_train(
+            weights: &mut Weights,
+            head: &mut [Embedding; 10],
+            examples: &[(Input, usize)],
+            depth: usize,
+        ) -> f64 {
+            if depth == 0 {
+                Optimizer::optimize(weights, head, &examples[0..examples.len() / 2]);
+            } else {
+                <Weights as RecursiveTrain<Input, Embedding, Optimizer>>::recurse_train(
+                    weights,
+                    head,
+                    &examples[0..examples.len() / 2],
+                    depth - 1,
+                );
+            }
+            let acc = Optimizer::optimize(weights, head, &examples[(examples.len() / 2)..]);
+            println!("depth: {} {}", depth, acc * 100f64);
+            acc
+        }
+    }
+
+    pub trait TrainFC<Input, Weights, Embedding, Optimizer> {
+        fn train<RNG: rand::Rng>(
+            rng: &mut RNG,
+            examples: &Vec<(Input, usize)>,
+            weights_path: &Path,
+            depth: usize,
+            n_full_pass: usize,
+        ) -> Vec<(Embedding, usize)>;
+    }
+
+    impl<
+            Input: Sync + Send,
+            Weights: SaveLoad
+                + Apply<Input, Embedding>
+                + Sync
+                + Send
+                + RecursiveTrain<Input, Embedding, Optimizer>,
+            Embedding: Sync + Send,
+            Optimizer: OptimizePass<Input, Weights, [Embedding; 10]>,
+        > TrainFC<Input, Weights, Embedding, Optimizer> for Weights
+    where
+        rand::distributions::Standard: rand::distributions::Distribution<Weights>,
+        rand::distributions::Standard: rand::distributions::Distribution<Embedding>,
+    {
+        fn train<RNG: rand::Rng>(
+            rng: &mut RNG,
+            examples: &Vec<(Input, usize)>,
+            weights_path: &Path,
+            depth: usize,
+            n_full_pass: usize,
+        ) -> Vec<(Embedding, usize)> {
+            let weights = Self::new_from_fs(weights_path).unwrap_or_else(|| {
+                println!("{} not found, training", &weights_path.to_str().unwrap());
+
+                let mut weights: Weights = rng.gen();
+                let mut head: [Embedding; 10] = rng.gen();
+                let mut acc =
+                    <Weights as RecursiveTrain<Input, Embedding, Optimizer>>::recurse_train(
+                        &mut weights,
+                        &mut head,
+                        &examples,
+                        depth,
+                    );
+
+                for p in 0..n_full_pass {
+                    acc = Optimizer::optimize(&mut weights, &mut head, examples);
+                    println!("{} acc: {}%", p, acc * 100f64);
+                }
+                println!("final acc: {}%", acc * 100f64);
+                weights.write_to_fs(&weights_path);
+                weights
+            });
+
+            examples
+                .par_iter()
+                .map(|(input, class)| (weights.apply(input), *class))
+                .collect()
+        }
+    }
+
+    pub trait TrainConv<InputImage, OutputImage, InputPatch, Weights, Embedding, Optimizer> {
+        fn train<RNG: rand::Rng>(
+            rng: &mut RNG,
+            examples: &Vec<(InputImage, usize)>,
+            weights_path: &Path,
+            depth: usize,
+            n_full_pass: usize,
+        ) -> Vec<(OutputImage, usize)>;
+    }
+    impl<
+            InputImage: ExtractPatches<InputPatch> + Sync + Send,
+            OutputImage: Send + Sync,
+            InputPatch: Sync + Send + Copy,
+            Weights: SaveLoad
+                + Apply<InputPatch, Embedding>
+                + Apply<InputImage, OutputImage>
+                + Sync
+                + Send
+                + RecursiveTrain<InputPatch, Embedding, Optimizer>
+                + BinaryFilter,
+            Embedding: Sync + Send,
+            Optimizer: OptimizePass<InputPatch, Weights, [Embedding; 10]>,
+        > TrainConv<InputImage, OutputImage, InputPatch, Weights, Embedding, Optimizer> for Weights
+    where
+        rand::distributions::Standard: rand::distributions::Distribution<Weights>,
+        rand::distributions::Standard: rand::distributions::Distribution<Embedding>,
+    {
+        fn train<RNG: rand::Rng>(
+            rng: &mut RNG,
+            examples: &Vec<(InputImage, usize)>,
+            weights_path: &Path,
+            depth: usize,
+            n_full_pass: usize,
+        ) -> Vec<(OutputImage, usize)> {
+            let weights = Self::new_from_fs(weights_path).unwrap_or_else(|| {
+                println!("{} not found, training", &weights_path.to_str().unwrap());
+
+                //let mut weights: Weights = rng.gen();
+                let mut weights = Weights::binary_filter();
+                let mut head: [Embedding; 10] = rng.gen();
+                let mut patches = {
+                    let mut patches: Vec<(InputPatch, usize)> = examples
+                        .iter()
+                        .map(|(image, class)| {
+                            let patches: Vec<(InputPatch, usize)> = image
+                                .patches()
+                                .iter()
+                                .cloned()
+                                .zip(iter::repeat(*class))
+                                .collect();
+                            patches
+                        })
+                        .flatten()
+                        .collect();
+                    // and shuffle them
+                    patches.shuffle(rng);
+                    patches
+                };
+
+                let mut acc =
+                    <Weights as RecursiveTrain<InputPatch, Embedding, Optimizer>>::recurse_train(
+                        &mut weights,
+                        &mut head,
+                        &patches,
+                        depth,
+                    );
+
+                for p in 0..n_full_pass {
+                    acc = Optimizer::optimize(&mut weights, &mut head, &patches);
+                    patches.shuffle(rng);
+                    println!("{} acc: {}%", p, acc * 100f64);
+                }
+                println!("final acc: {}%", acc * 100f64);
+                weights.write_to_fs(&weights_path);
+                weights
+            });
+
+            examples
+                .par_iter()
+                .map(|(input, class)| (weights.apply(input), *class))
+                .collect()
+        }
+    }
 }
