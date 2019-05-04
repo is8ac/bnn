@@ -28,36 +28,42 @@ fn main() {
     let mut rng = Hc128Rng::seed_from_u64(42);
     let cifar_base_path = Path::new("/home/isaac/big/cache/datasets/cifar-10-batches-bin");
 
-    let chan3_images: Vec<(usize, [[[u32; 3]; 32]; 32])> = cifar::load_images_from_base(cifar_base_path, 50_000);
-    let mut l0_images: Vec<(usize, [[[u32; 1]; 32]; 32])> = cifar::load_images_from_base(cifar_base_path, 50_000);
+    let chan3_images: Vec<(usize, [[[u32; 3]; 32]; 32])> =
+        cifar::load_images_from_base(cifar_base_path, 50_000);
+    let mut l0_images: Vec<(usize, [[[u32; 1]; 32]; 32])> =
+        cifar::load_images_from_base(cifar_base_path, 50_000);
     let eval_creator = VulkanFastCacheObjectiveEvalCreator::new();
 
     let start = PreciseTime::now();
-    let mut l1_images: Vec<(usize, [[[u32; 1]; 32]; 32])> = <[[[[[u32; 3]; 3]; 3]; 16]; 1]>::train_from_images(
-        &mut rng,
-        &eval_creator,
-        &chan3_images,
-        &base_path.join("b1_l0_c3_3-1"),
-        11,
-        HEAD_UPDATE_FREQ,
-        &log_file_path,
-        2,
-    );
-    let c0_1_images: Vec<(usize, [[[u32; 2]; 32]; 32])> = vec_concat_2_examples(&l0_images, &l1_images);
+    let mut l1_images: Vec<(usize, [[[u32; 1]; 32]; 32])> =
+        <[[[[[u32; 3]; 3]; 3]; 16]; 1]>::train_from_images(
+            &mut rng,
+            &eval_creator,
+            &chan3_images,
+            &base_path.join("b1_l0_c3_3-1"),
+            11,
+            HEAD_UPDATE_FREQ,
+            &log_file_path,
+            2,
+        );
+    let c0_1_images: Vec<(usize, [[[u32; 2]; 32]; 32])> =
+        vec_concat_2_examples(&l0_images, &l1_images);
 
-    let mut l2_images: Vec<(usize, [[[u32; 1]; 32]; 32])> = <[[[[[u32; 2]; 3]; 3]; 16]; 1]>::train_from_images(
-        &mut rng,
-        &eval_creator,
-        &c0_1_images,
-        &base_path.join("b1_l1_c3_2-1"),
-        11,
-        HEAD_UPDATE_FREQ,
-        &log_file_path,
-        2,
-    );
+    let mut l2_images: Vec<(usize, [[[u32; 1]; 32]; 32])> =
+        <[[[[[u32; 2]; 3]; 3]; 16]; 1]>::train_from_images(
+            &mut rng,
+            &eval_creator,
+            &c0_1_images,
+            &base_path.join("b1_l1_c3_2-1"),
+            11,
+            HEAD_UPDATE_FREQ,
+            &log_file_path,
+            2,
+        );
 
     for l in 2..20 {
-        let c0_1_2_images: Vec<(usize, [[[u32; 3]; 32]; 32])> = vec_concat_3_examples(&l0_images, &l1_images, &l2_images);
+        let c0_1_2_images: Vec<(usize, [[[u32; 3]; 32]; 32])> =
+            vec_concat_3_examples(&l0_images, &l1_images, &l2_images);
         l0_images = l1_images;
         l1_images = l2_images;
         l2_images = <[[[[[u32; 3]; 3]; 3]; 16]; 1]>::train_from_images(

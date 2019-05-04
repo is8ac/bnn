@@ -47,6 +47,29 @@ pub mod datasets {
             }
             return images;
         }
+        pub fn load_images_bitpacked_u32(path: &Path, size: usize) -> Vec<[u32; 25]> {
+            let path = Path::new(path);
+            let mut file = File::open(&path).expect("can't open images");
+            let mut header: [u8; 16] = [0; 16];
+            file.read_exact(&mut header).expect("can't read header");
+
+            let mut images_bytes: [u8; 784] = [0; 784];
+
+            let mut images: Vec<[u32; 25]> = Vec::new();
+            for _ in 0..size {
+                file.read_exact(&mut images_bytes)
+                    .expect("can't read images");
+                let mut image_words: [u32; 25] = [0; 25];
+                for p in 0..784 {
+                    let word_index = p / 32;
+                    image_words[word_index] =
+                        image_words[word_index] | (((images_bytes[p] > 128) as u32) << p % 32);
+                }
+                images.push(image_words);
+            }
+            return images;
+        }
+
         pub fn load_images_u8_unary(path: &Path, size: usize) -> Vec<[[u8; 28]; 28]> {
             let mut file = File::open(&path).expect("can't open images");
             let mut header: [u8; 16] = [0; 16];
@@ -81,6 +104,9 @@ pub mod datasets {
             };
         }
 
+        to_unary!(to_2, u8, 2);
+        to_unary!(to_3, u8, 3);
+        to_unary!(to_4, u8, 4);
         to_unary!(to_10, u32, 10);
         to_unary!(to_11, u32, 11);
         to_unary!(to_32, u32, 32);
@@ -98,6 +124,11 @@ pub mod datasets {
                 [to_11(pixel[0]) as u32
                     | ((to_11(pixel[1]) as u32) << 11)
                     | ((to_10(pixel[2]) as u32) << 22)]
+            }
+        }
+        impl ConvertPixel for u8 {
+            fn convert(pixel: [u8; 3]) -> u8 {
+                to_3(pixel[0]) | ((to_3(pixel[1])) << 3) | ((to_3(pixel[2])) << 6)
             }
         }
 
@@ -151,6 +182,14 @@ pub mod datasets {
 pub trait GetBit {
     fn bit(&self, i: usize) -> bool;
 }
+
+impl GetBit for bool {
+    #[inline(always)]
+    fn bit(&self, _i: usize) -> bool {
+        *self
+    }
+}
+
 impl GetBit for u8 {
     #[inline(always)]
     fn bit(&self, i: usize) -> bool {
@@ -206,6 +245,11 @@ impl<A: GetBit + BitLen, B: GetBit + BitLen> GetBit for (A, B) {
 pub trait BitLen: Sized {
     const BIT_LEN: usize;
 }
+
+impl BitLen for bool {
+    const BIT_LEN: usize = 1;
+}
+
 impl BitLen for u8 {
     const BIT_LEN: usize = 8;
 }
@@ -662,7 +706,7 @@ impl<A: HammingDistance, B: HammingDistance> HammingDistance for (A, B) {
 
 #[macro_use]
 pub mod layers {
-    use super::{BitLen, HammingDistance, GetBit};
+    use super::{BitLen, GetBit, HammingDistance, SetBit};
     use bincode::{deserialize_from, serialize_into};
     use std::fs::File;
     use std::io::BufWriter;
@@ -713,18 +757,34 @@ pub mod layers {
     //    }
     //}
 
-    // This is an integer u8! But the u32 is just 32 bits.
-    impl Apply<[[u8; 3]; 3], u32> for [[u32; 3]; 3] {
-        fn apply(&self, input: &[[u8; 3]; 3]) -> u32 {
-            let mut target = 0u32;
-            for i in 0..32 {
-                let mut sum_act = 0i32;
-                for x in 0..3 {
-                    for y in 0..3 {
-                        sum_act += if self[x][y].bit(i) {input[x][y] as i32} else {-(input[x][y] as i32)}
-                    }
-                }
-                target |= ((sum_act > 0) as u32) << i;
+    // The u8 is a base 2 integer. But the u32 is just 32 bits.
+    //impl Apply<[[[u8; 3]; 3]; 3], u32> for [[[u32; 3]; 3]; 3] {
+    //    fn apply(&self, input: &[[[u8; 3]; 3]; 3]) -> u32 {
+    //        let mut target = 0u32;
+    //        for b in 0..32 {
+    //            let mut sum_act = 0i32;
+    //            for x in 0..3 {
+    //                for y in 0..3 {
+    //                    for c in 0..3 {
+    //                        if self[x][y][c].bit(b) {
+    //                            sum_act += input[x][y][c] as i32;
+    //                        } else {
+    //                            sum_act -= input[x][y][c] as i32;
+    //                        }
+    //                    }
+    //                }
+    //            }
+    //            target.set_bit(b, sum_act > 0);
+    //        }
+    //        target
+    //    }
+    //}
+
+    impl<I: HammingDistance + BitLen> Apply<I, u8> for [I; 8] {
+        fn apply(&self, input: &I) -> u8 {
+            let mut target = 0u8;
+            for i in 0..8 {
+                target |= ((self[i].hamming_distance(input) > (I::BIT_LEN as u32 / 2)) as u8) << i;
             }
             target
         }
@@ -739,12 +799,21 @@ pub mod layers {
             target
         }
     }
+    impl<I: HammingDistance + BitLen> Apply<I, [u32; 10]> for [I; 10] {
+        fn apply(&self, input: &I) -> [u32; 10] {
+            let mut target = [0u32; 10];
+            for i in 0..10 {
+                target[i] = self[i].hamming_distance(input);
+            }
+            target
+        }
+    }
 
     macro_rules! impl_apply_for_array_output {
         ($len:expr) => {
-            impl<I, T: Apply<I, u32>> Apply<I, [u32; $len]> for [T; $len] {
-                fn apply(&self, input: &I) -> [u32; $len] {
-                    let mut target = [0u32; $len];
+            impl<I, O: Default + Copy, T: Apply<I, O>> Apply<I, [O; $len]> for [T; $len] {
+                fn apply(&self, input: &I) -> [O; $len] {
+                    let mut target = [O::default(); $len];
                     for i in 0..$len {
                         target[i] = self[i].apply(input);
                     }
@@ -838,6 +907,10 @@ pub mod layers {
         fn apply(&self, input: &I) -> O;
     }
 
+    pub trait Conv2D<I, O> {
+        fn conv2d(&self, input: &I) -> O;
+    }
+
     macro_rules! patch_conv_2x2_apply_trait {
         ($x_size:expr, $y_size:expr) => {
             impl<I: Copy, O: Default + Copy, W: Apply<[[I; 2]; 2], O>>
@@ -861,19 +934,19 @@ pub mod layers {
         };
     }
 
-    patch_conv_2x2_apply_trait!(28, 28);
-    patch_conv_2x2_apply_trait!(32, 32);
-    patch_conv_2x2_apply_trait!(16, 16);
-    patch_conv_2x2_apply_trait!(14, 14);
-    patch_conv_2x2_apply_trait!(8, 8);
-    patch_conv_2x2_apply_trait!(7, 7);
+    //patch_conv_2x2_apply_trait!(32, 32);
+    //patch_conv_2x2_apply_trait!(28, 28);
+    //patch_conv_2x2_apply_trait!(16, 16);
+    //patch_conv_2x2_apply_trait!(14, 14);
+    //patch_conv_2x2_apply_trait!(8, 8);
+    //patch_conv_2x2_apply_trait!(7, 7);
 
-    macro_rules! conv3x3_apply_trait {
+    macro_rules! conv2d_3x3_apply_trait {
         ($x_size:expr, $y_size:expr) => {
             impl<I: Copy, W: Apply<[[I; 3]; 3], O>, O: Default + Copy>
-                Apply<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]> for W
+                Conv2D<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]> for W
             {
-                fn apply(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size]; $x_size] {
+                fn conv2d(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size]; $x_size] {
                     let mut target = [[O::default(); $y_size]; $x_size];
                     for x in 0..$x_size - 2 {
                         for y in 0..$y_size - 2 {
@@ -885,17 +958,19 @@ pub mod layers {
             }
         };
     }
-    conv3x3_apply_trait!(32, 32);
-    conv3x3_apply_trait!(28, 28);
-    conv3x3_apply_trait!(16, 16);
-    conv3x3_apply_trait!(8, 8);
+    conv2d_3x3_apply_trait!(32, 32);
+    conv2d_3x3_apply_trait!(16, 16);
+    conv2d_3x3_apply_trait!(8, 8);
 
-    macro_rules! conv3x3_apply_trait_no_pad {
+    conv2d_3x3_apply_trait!(28, 28);
+    conv2d_3x3_apply_trait!(14, 14);
+
+    macro_rules! conv2d_3x3_apply_trait_no_pad {
         ($x_size:expr, $y_size:expr) => {
             impl<I: Copy, W: Apply<[[I; 3]; 3], O>, O: Default + Copy>
-                Apply<[[I; $y_size]; $x_size], [[O; $y_size - 2]; $x_size - 2]> for W
+                Conv2D<[[I; $y_size]; $x_size], [[O; $y_size - 2]; $x_size - 2]> for W
             {
-                fn apply(
+                fn conv2d(
                     &self,
                     input: &[[I; $y_size]; $x_size],
                 ) -> [[O; $y_size - 2]; $x_size - 2] {
@@ -911,21 +986,44 @@ pub mod layers {
         };
     }
 
-    conv3x3_apply_trait_no_pad!(32, 32);
-    conv3x3_apply_trait_no_pad!(30, 30);
-    conv3x3_apply_trait_no_pad!(28, 28);
-    conv3x3_apply_trait_no_pad!(26, 26);
-    conv3x3_apply_trait_no_pad!(24, 24);
-    conv3x3_apply_trait_no_pad!(22, 22);
-    conv3x3_apply_trait_no_pad!(20, 20);
-    conv3x3_apply_trait_no_pad!(18, 18);
-    conv3x3_apply_trait_no_pad!(16, 16);
-    conv3x3_apply_trait_no_pad!(14, 14);
-    conv3x3_apply_trait_no_pad!(12, 12);
-    conv3x3_apply_trait_no_pad!(10, 10);
-    conv3x3_apply_trait_no_pad!(8, 8);
-    conv3x3_apply_trait_no_pad!(6, 5);
-    conv3x3_apply_trait_no_pad!(4, 4);
+    conv2d_3x3_apply_trait_no_pad!(32, 32);
+    conv2d_3x3_apply_trait_no_pad!(30, 30);
+    conv2d_3x3_apply_trait_no_pad!(28, 28);
+    //conv2d_3x3_apply_trait_no_pad!(26, 26);
+    //conv2d_3x3_apply_trait_no_pad!(24, 24);
+    //conv2d_3x3_apply_trait_no_pad!(22, 22);
+    //conv2d_3x3_apply_trait_no_pad!(20, 20);
+    //conv2d_3x3_apply_trait_no_pad!(18, 18);
+    //conv2d_3x3_apply_trait_no_pad!(16, 16);
+    //conv2d_3x3_apply_trait_no_pad!(14, 14);
+    //conv2d_3x3_apply_trait_no_pad!(12, 12);
+    //conv2d_3x3_apply_trait_no_pad!(10, 10);
+    //conv2d_3x3_apply_trait_no_pad!(8, 8);
+    //conv2d_3x3_apply_trait_no_pad!(6, 5);
+    //conv2d_3x3_apply_trait_no_pad!(4, 4);
+
+    macro_rules! conv5x5_apply_trait_no_pad {
+        ($x_size:expr, $y_size:expr) => {
+            impl<I: Copy, W: Apply<[[I; 5]; 5], O>, O: Default + Copy>
+                Apply<[[I; $y_size]; $x_size], [[O; $y_size - 4]; $x_size - 4]> for W
+            {
+                fn apply(
+                    &self,
+                    input: &[[I; $y_size]; $x_size],
+                ) -> [[O; $y_size - 4]; $x_size - 4] {
+                    let mut target = [[O::default(); $y_size - 4]; $x_size - 4];
+                    for x in 0..$x_size - 4 {
+                        for y in 0..$y_size - 4 {
+                            target[x][y] = self.apply(&patch_5x5!(input, x, y));
+                        }
+                    }
+                    target
+                }
+            }
+        };
+    }
+
+    //conv5x5_apply_trait_no_pad!(32, 32);
 
     //macro_rules! conv5x5_apply_trait {
     //    ($x_size:expr, $y_size:expr, $output_len:expr) => {
@@ -1170,7 +1268,7 @@ pub mod train {
         let sum_loss: f64 = exp
             .iter()
             .enumerate()
-            .map(|(c, x)| ((x / sum_exp) - (c == true_class) as u8 as f64).powi(2))
+            .map(|(c, x)| (((x / sum_exp) - (c == true_class) as u8 as f64).powi(2)))
             .sum();
         //sum_loss / 10f64
         sum_loss
@@ -1449,7 +1547,11 @@ pub mod train {
     }
 
     pub trait OptimizePass<Input, Weights, Head> {
-        fn optimize(weights: &mut Weights, head: &mut Head, examples: &[(Input, usize)]) -> f64;
+        fn optimize(
+            weights: &mut Weights,
+            head: &mut Head,
+            examples: &[(Input, usize)],
+        ) -> (f64, u64);
     }
 
     impl<
@@ -1463,7 +1565,8 @@ pub mod train {
             weights: &mut Weights,
             head: &mut [Embedding; 10],
             examples: &[(Input, usize)],
-        ) -> f64 {
+        ) -> (f64, u64) {
+            let mut updates = 0;
             let minibatch_size = examples.len() / Embedding::BIT_LEN;
             println!(
                 "{} / {} = {}",
@@ -1481,14 +1584,14 @@ pub mod train {
                 cache_batch.flip_weights_bit(0);
                 let mut cur_loss = cache_batch.bit_loss(0);
                 cache_batch.flip_weights_bit(0);
-                for c in 0..10 {
-                    let new_loss = cache_batch.head_bit_loss(e, c);
-                    if new_loss < cur_loss {
-                        cache_batch.flip_head_bit(c, e);
-                        head[c].flip_bit(e);
-                        cur_loss = new_loss;
-                    }
-                }
+                //for c in 0..10 {
+                //    let new_loss = cache_batch.head_bit_loss(e, c);
+                //    if new_loss < cur_loss {
+                //        cache_batch.flip_head_bit(c, e);
+                //        head[c].flip_bit(e);
+                //        cur_loss = new_loss;
+                //    }
+                //}
                 cache_batch.transition_embedding_bit(e);
                 for b in 0..<Input>::BIT_LEN {
                     let new_loss = cache_batch.bit_loss(b);
@@ -1496,11 +1599,12 @@ pub mod train {
                         cur_loss = new_loss;
                         cache_batch.flip_weights_bit(b);
                         weights.flip_bit_indexed(e, b);
+                        updates += 1;
                     }
                 }
             }
             let mut cache_batch = CacheBatch::new(weights, head, examples);
-            cache_batch.acc()
+            (cache_batch.acc(), updates)
         }
     }
 
@@ -1514,20 +1618,21 @@ pub mod train {
             weights: &mut Weights,
             head: &mut [Embedding; 10],
             examples: &[(Input, usize)],
-        ) -> f64 {
+        ) -> (f64, u64) {
             let mut cache_batch = CacheBatch::new(weights, head, examples);
             let mut cur_loss = cache_batch.bit_loss(0);
+            let mut updates = 0;
             for e in 0..<Embedding>::BIT_LEN {
                 //let head_start = PreciseTime::now();
-                for c in 0..10 {
-                    let new_loss = cache_batch.head_bit_loss(e, c);
-                    if new_loss < cur_loss {
-                        cache_batch.flip_head_bit(c, e);
-                        head[c].flip_bit(e);
-                        cur_loss = new_loss;
-                        //println!("head {} {} {}", c, e, new_loss);
-                    }
-                }
+                //for c in 0..10 {
+                //    let new_loss = cache_batch.head_bit_loss(e, c);
+                //    if new_loss < cur_loss {
+                //        cache_batch.flip_head_bit(c, e);
+                //        head[c].flip_bit(e);
+                //        cur_loss = new_loss;
+                //        //println!("head {} {} {}", c, e, new_loss);
+                //    }
+                //}
                 //println!("head time: {}", head_start.to(PreciseTime::now()));
                 //let trans_start = PreciseTime::now();
                 cache_batch.transition_embedding_bit(e);
@@ -1539,12 +1644,13 @@ pub mod train {
                         cur_loss = new_loss;
                         cache_batch.flip_weights_bit(b);
                         weights.flip_bit_indexed(e, b);
+                        updates += 1;
                         //println!("{} {}: {:?}", e, b, new_loss);
                     }
                 }
                 //println!("patch time: {}", patch_start.to(PreciseTime::now()));
             }
-            cache_batch.acc()
+            (cache_batch.acc(), updates)
         }
     }
 
@@ -1580,7 +1686,8 @@ pub mod train {
                     depth - 1,
                 );
             }
-            let acc = Optimizer::optimize(weights, head, &examples[(examples.len() / 2)..]);
+            let (acc, updates) =
+                Optimizer::optimize(weights, head, &examples[(examples.len() / 2)..]);
             println!("depth: {} {}", depth, acc * 100f64);
             acc
         }
@@ -1592,7 +1699,7 @@ pub mod train {
             examples: &Vec<(Input, usize)>,
             weights_path: &Path,
             depth: usize,
-            n_full_pass: usize,
+            updates_thresh: u64,
         ) -> Vec<(Embedding, usize)>;
     }
 
@@ -1615,7 +1722,7 @@ pub mod train {
             examples: &Vec<(Input, usize)>,
             weights_path: &Path,
             depth: usize,
-            n_full_pass: usize,
+            updates_thresh: u64,
         ) -> Vec<(Embedding, usize)> {
             let weights = Self::new_from_fs(weights_path).unwrap_or_else(|| {
                 println!("{} not found, training", &weights_path.to_str().unwrap());
@@ -1629,10 +1736,12 @@ pub mod train {
                         &examples,
                         depth,
                     );
-
-                for p in 0..n_full_pass {
-                    acc = Optimizer::optimize(&mut weights, &mut head, examples);
-                    println!("{} acc: {}%", p, acc * 100f64);
+                let mut updates = updates_thresh;
+                while updates >= updates_thresh {
+                    let result = Optimizer::optimize(&mut weights, &mut head, examples);
+                    updates = result.1;
+                    acc = result.0;
+                    println!("updates: {} acc: {}%", updates, acc * 100f64);
                 }
                 println!("final acc: {}%", acc * 100f64);
                 weights.write_to_fs(&weights_path);
@@ -1652,7 +1761,7 @@ pub mod train {
             examples: &Vec<(InputImage, usize)>,
             weights_path: &Path,
             depth: usize,
-            n_full_pass: usize,
+            updates_thresh: u64,
         ) -> Vec<(OutputImage, usize)>;
     }
     impl<
@@ -1664,8 +1773,7 @@ pub mod train {
                 + Apply<InputImage, OutputImage>
                 + Sync
                 + Send
-                + RecursiveTrain<InputPatch, Embedding, Optimizer>
-                + BinaryFilter,
+                + RecursiveTrain<InputPatch, Embedding, Optimizer>,
             Embedding: Sync + Send,
             Optimizer: OptimizePass<InputPatch, Weights, [Embedding; 10]>,
         > TrainConv<InputImage, OutputImage, InputPatch, Weights, Embedding, Optimizer> for Weights
@@ -1678,13 +1786,13 @@ pub mod train {
             examples: &Vec<(InputImage, usize)>,
             weights_path: &Path,
             depth: usize,
-            n_full_pass: usize,
+            updates_thresh: u64,
         ) -> Vec<(OutputImage, usize)> {
             let weights = Self::new_from_fs(weights_path).unwrap_or_else(|| {
                 println!("{} not found, training", &weights_path.to_str().unwrap());
 
-                //let mut weights: Weights = rng.gen();
-                let mut weights = Weights::binary_filter();
+                let mut weights: Weights = rng.gen();
+                //let mut weights = Weights::binary_filter();
                 let mut head: [Embedding; 10] = rng.gen();
                 let mut patches = {
                     let mut patches: Vec<(InputPatch, usize)> = examples
@@ -1713,10 +1821,13 @@ pub mod train {
                         depth,
                     );
 
-                for p in 0..n_full_pass {
-                    acc = Optimizer::optimize(&mut weights, &mut head, &patches);
+                let mut updates = updates_thresh;
+                while updates >= updates_thresh {
+                    let result = Optimizer::optimize(&mut weights, &mut head, &patches);
+                    updates = result.1;
+                    acc = result.0;
                     patches.shuffle(rng);
-                    println!("{} acc: {}%", p, acc * 100f64);
+                    println!("updates: {} acc: {}%", updates, acc * 100f64);
                 }
                 println!("final acc: {}%", acc * 100f64);
                 weights.write_to_fs(&weights_path);

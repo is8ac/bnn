@@ -52,5 +52,5 @@ https://arxiv.org/abs/1812.11446
 
 # Batchmode
 GPU dispatch is high overhead, so dispatch all 32 bits of a word simultaneously and collect as a batch. The 32 bits of a word are not significantly co-correlated [citation needed] and so we can therefore optimize then using naive bays.
-We still get determinism if we likewise batch the CPU sum, and hopefully, we will not hard acc too badly.
+We still get determinism if we likewise batch the CPU sum, and hopefully, we will not harm acc too badly.
 This may also help with memory bandwidth.

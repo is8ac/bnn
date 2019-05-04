@@ -1,0 +1,105 @@
+extern crate rand;
+extern crate time;
+
+extern crate bincode;
+extern crate bitnn;
+extern crate image;
+extern crate rand_hc;
+extern crate rayon;
+extern crate serde_derive;
+use bitnn::datasets::cifar;
+use bitnn::layers::{Apply, SaveLoad};
+use bitnn::objective_eval::VulkanObjectiveEvalCreator;
+use bitnn::optimize::TrainLayer;
+use rand::SeedableRng;
+use rand_hc::Hc128Rng;
+use std::fs;
+use std::path::Path;
+use time::PreciseTime;
+
+const HEAD_UPDATE_FREQ: usize = 30;
+// reduce sum batch size should have strictly no effect on obj.
+const RS_BATCH: usize = 400;
+// depth shoud have approximately no effect on run time.
+const DEPTH: usize = 9;
+
+// NOTE: To make obj eval lineor with pixel chans, cache sums of all but the word being mutated.
+// This requries that we recompute the partioal sum every 32 evaluated.
+// This would require two uints of cache per patch for mirroed conv.
+
+fn main() {
+    let log_file_path = Path::new("vk_train_log.txt");
+    let base_path = Path::new("params/vk_cheap_noskip_finalpass");
+    //let base_path = Path::new("params/vk_cheap_noskip_nofinal");
+    fs::create_dir_all(base_path).unwrap();
+    let mut rng = Hc128Rng::seed_from_u64(42);
+    let cifar_base_path = Path::new("/home/isaac/big/cache/datasets/cifar-10-batches-bin");
+
+    let eval_creator = VulkanObjectiveEvalCreator::new(RS_BATCH);
+    let mut b1_images = cifar::load_images_from_base(cifar_base_path, 50_000);
+
+    let start = PreciseTime::now();
+    for l in 0..5 {
+        b1_images = <[[[[[u32; 1]; 3]; 3]; 16]; 1]>::train_from_images(
+            &mut rng,
+            &eval_creator,
+            &b1_images,
+            &base_path.join(format!("b1_l{}_m3x3_1-1", l)),
+            DEPTH,
+            HEAD_UPDATE_FREQ,
+            &log_file_path,
+            true,
+        );
+    }
+
+    let mut b2_images: Vec<(usize, [[[u32; 2]; 16]; 16])> =
+        <[[[[[u32; 1]; 2]; 2]; 32]; 2]>::train_from_images(
+            &mut rng,
+            &eval_creator,
+            &b1_images,
+            &base_path.join("trans1-2_c2x2_2-2"),
+            DEPTH,
+            HEAD_UPDATE_FREQ,
+            &log_file_path,
+            true,
+        );
+
+    for l in 0..12 {
+        b2_images = <[[[[[u32; 2]; 3]; 3]; 16]; 2]>::train_from_images(
+            &mut rng,
+            &eval_creator,
+            &b2_images,
+            &base_path.join(format!("b2_l{}_3x3_2-2", l)),
+            DEPTH,
+            HEAD_UPDATE_FREQ,
+            &log_file_path,
+            true,
+        );
+    }
+    let mut b3_images: Vec<(usize, [[[u32; 4]; 8]; 8])> =
+        <[[[[[u32; 2]; 2]; 2]; 32]; 4]>::train_from_images(
+            &mut rng,
+            &eval_creator,
+            &b2_images,
+            &base_path.join("btrans2-3_c2x2_2-4"),
+            DEPTH,
+            HEAD_UPDATE_FREQ,
+            &log_file_path,
+            true,
+        );
+
+    for l in 0..30 {
+        b3_images = <[[[[[u32; 4]; 3]; 3]; 16]; 4]>::train_from_images(
+            &mut rng,
+            &eval_creator,
+            &b3_images,
+            &base_path.join(format!("b3_l{}_3x3_4-4", l)),
+            DEPTH,
+            HEAD_UPDATE_FREQ,
+            &log_file_path,
+            true,
+        );
+    }
+
+    println!("full time: {}", start.to(PreciseTime::now()));
+}
