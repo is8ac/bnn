@@ -238,13 +238,79 @@ impl<Input: BitLen + FlipBit, Weights: Apply<Input, Target>, Target: HammingDist
     }
 }
 
-pub trait TrainEncoder<Input, Embedded> {
+pub trait TrainEncoder<Input, Embedded, Decoder> {
     fn train_encoder<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<Input>) -> Self;
 }
 
-impl<Input, Embedding, Encoder: Apply<Input, Embedding> + MatrixBitIncrement<InputCounters, Target>> TrainEncoder<Input, Embedding> for Encoder {
-    fn train_encoder<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<Input>) -> Self{
+impl<
+        Input: Sync,
+        InputCounters,
+        Embedding,
+        EmbeddingCounters,
+        Decoder: Apply<Embedding, Input> + MatrixBitIncrement<EmbeddingCounters, Input>,
+    > TrainEncoder<Input, Embedding, Decoder> for [[Input; 32]; EMBEDDING_LEN]
+where
+    Self: Apply<Input, Embedding> + MatrixBitIncrement<InputCounters, Embedding>,
+    rand::distributions::Standard: rand::distributions::Distribution<Self>,
+    rand::distributions::Standard: rand::distributions::Distribution<Decoder>,
+{
+    fn train_encoder<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<Input>) -> Self {
+        let mut encoder: Self = rng.gen();
+        let mut decoder: Decoder = rng.gen();
 
+        let start = PreciseTime::now();
+        let decoder_counters = examples
+            .par_iter()
+            .fold(
+                || [[[[[[0u32; 32]; EMBEDDING_LEN]; 2]; 8]; 3]; 3],
+                |mut counter, patch| {
+                    let embedding = encoder.apply(patch);
+                    counter.increment_matrix_counters(&embedding, patch);
+                    counter
+                },
+            )
+            .reduce(
+                || [[[[[[0u32; 32]; EMBEDDING_LEN]; 2]; 8]; 3]; 3],
+                |mut a, b| {
+                    a.elementwise_add(&b);
+                    a
+                },
+            );
+        println!("decoder time: {}", start.to(PreciseTime::now()));
+        decoder = decoder_counters.bitpack();
+
+        let start = PreciseTime::now();
+        let encoder_counters = examples
+            .par_iter()
+            .fold(
+                || [[[[[[0u32; 8]; 3]; 3]; 2]; 32]; EMBEDDING_LEN],
+                |mut counter, patch| {
+                    let mut embedding = encoder.apply(patch);
+                    embedding.optimize(&decoder, patch);
+                    counter.increment_matrix_counters(patch, &embedding);
+                    counter
+                },
+            )
+            .reduce(
+                || [[[[[[0u32; 8]; 3]; 3]; 2]; 32]; EMBEDDING_LEN],
+                |mut a, b| {
+                    a.elementwise_add(&b);
+                    a
+                },
+            );
+
+        println!("encoder time: {}", start.to(PreciseTime::now()));
+        encoder = encoder_counters.bitpack();
+        let sum_hd: u64 = examples
+            .par_iter()
+            .map(|patch| {
+                let embedding = encoder.apply(patch);
+                let output = decoder.apply(&embedding);
+                output.hamming_distance(patch) as u64
+            })
+            .sum();
+        println!("avg hd: {:}", sum_hd as f64 / examples.len() as f64);
+        encoder
     }
 }
 
@@ -294,84 +360,4 @@ fn main() {
         patches
     };
     dbg!(patches.len());
-
-    let mut encoder: [[[[u8; 3]; 3]; 32]; EMBEDDING_LEN] = rng.gen();
-    let mut decoder: [[[[u32; EMBEDDING_LEN]; 8]; 3]; 3] = rng.gen();
-
-    let sum_hd: u64 = patches
-        .par_iter()
-        .map(|(patch, _)| {
-            let embedding = encoder.apply(patch);
-            impl_matrixbitincrement_for_array_of_matrixbitincrement!(1);
-
-            let output = decoder.apply(&embedding);
-            output.hamming_distance(patch) as u64
-        })
-        .sum();
-    println!("avg hd: {:}", sum_hd as f64 / patches.len() as f64);
-
-    let start = PreciseTime::now();
-    let decoder_counters = patches
-        .par_iter()
-        .fold(
-            || [[[[[[0u32; 32]; EMBEDDING_LEN]; 2]; 8]; 3]; 3],
-            |mut counter, (patch, _)| {
-                let embedding = encoder.apply(&patch);
-                counter.increment_matrix_counters(&embedding, patch);
-                counter
-            },
-        )
-        .reduce(
-            || [[[[[[0u32; 32]; EMBEDDING_LEN]; 2]; 8]; 3]; 3],
-            |mut a, b| {
-                a.elementwise_add(&b);
-                a
-            },
-        );
-    println!("decoder time: {}", start.to(PreciseTime::now()));
-    decoder = decoder_counters.bitpack();
-
-    let sum_hd: u64 = patches
-        .par_iter()
-        .map(|(patch, _)| {
-            let embedding = encoder.apply(patch);
-            let output = decoder.apply(&embedding);
-            output.hamming_distance(patch) as u64
-        })
-        .sum();
-    println!("avg hd: {:}", sum_hd as f64 / patches.len() as f64);
-
-    let start = PreciseTime::now();
-    let encoder_counters = patches
-        .par_iter()
-        .fold(
-            || [[[[[[0u32; 8]; 3]; 3]; 2]; 32]; EMBEDDING_LEN],
-            |mut counter, (patch, _)| {
-                let mut embedding = encoder.apply(&patch);
-                embedding.optimize(&decoder, patch);
-                counter.increment_matrix_counters(patch, &embedding);
-                counter
-            },
-        )
-        .reduce(
-            || [[[[[[0u32; 8]; 3]; 3]; 2]; 32]; EMBEDDING_LEN],
-            |mut a, b| {
-                a.elementwise_add(&b);
-                a
-            },
-        );
-
-    println!("encoder time: {}", start.to(PreciseTime::now()));
-    let encoder2: [[[[u8; 3]; 3]; 32]; EMBEDDING_LEN] = encoder_counters.bitpack();
-    encoder = encoder2;
-
-    let sum_hd: u64 = patches
-        .par_iter()
-        .map(|(patch, _)| {
-            let embedding = encoder.apply(patch);
-            let output = decoder.apply(&embedding);
-            output.hamming_distance(patch) as u64
-        })
-        .sum();
-    println!("avg hd: {:}", sum_hd as f64 / patches.len() as f64);
 }
