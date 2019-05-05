@@ -609,6 +609,13 @@ impl_binaryfilter_for_array!(16);
 pub trait HammingDistance {
     fn hamming_distance(&self, other: &Self) -> u32;
 }
+
+impl HammingDistance for bool {
+    fn hamming_distance(&self, other: &Self) -> u32 {
+        (self ^ other) as u32
+    }
+}
+
 impl HammingDistance for u8 {
     #[inline(always)]
     fn hamming_distance(&self, other: &u8) -> u32 {
@@ -652,6 +659,7 @@ array_hamming_distance!(5);
 array_hamming_distance!(6);
 array_hamming_distance!(7);
 array_hamming_distance!(8);
+array_hamming_distance!(10);
 array_hamming_distance!(13);
 
 impl<A: HammingDistance, B: HammingDistance> HammingDistance for (A, B) {
@@ -704,9 +712,468 @@ impl<A: HammingDistance, B: HammingDistance> HammingDistance for (A, B) {
 //    }
 //}
 
+pub trait ElementwiseAdd {
+    fn elementwise_add(&mut self, other: &Self);
+}
+
+impl ElementwiseAdd for u32 {
+    fn elementwise_add(&mut self, other: &u32) {
+        *self += other;
+    }
+}
+
+macro_rules! impl_elementwiseadd_for_array {
+    ($len:expr) => {
+        impl<T: ElementwiseAdd> ElementwiseAdd for [T; $len] {
+            fn elementwise_add(&mut self, other: &[T; $len]) {
+                for i in 0..$len {
+                    self[i].elementwise_add(&other[i]);
+                }
+            }
+        }
+    };
+}
+
+impl_elementwiseadd_for_array!(1);
+impl_elementwiseadd_for_array!(2);
+impl_elementwiseadd_for_array!(3);
+impl_elementwiseadd_for_array!(4);
+impl_elementwiseadd_for_array!(8);
+impl_elementwiseadd_for_array!(10);
+impl_elementwiseadd_for_array!(32);
+
+pub trait ArrayBitIncrement {
+    type CountersType;
+    fn increment_counters(&self, counters: &mut Self::CountersType);
+    fn compare_and_bitpack(
+        counters_0: &Self::CountersType,
+        counters_1: &Self::CountersType,
+    ) -> Self;
+}
+
+impl ArrayBitIncrement for u32 {
+    type CountersType = [u32; 32];
+    fn increment_counters(&self, counters: &mut Self::CountersType) {
+        for b in 0..32 {
+            counters[b] += (self >> b) & 1
+        }
+    }
+    fn compare_and_bitpack(
+        counters_0: &Self::CountersType,
+        counters_1: &Self::CountersType,
+    ) -> Self {
+        let mut target = 0u32;
+        for b in 0..32 {
+            target |= ((counters_0[b] > counters_1[b]) as u32) << b;
+        }
+        target
+    }
+}
+
+impl ArrayBitIncrement for u8 {
+    type CountersType = [u32; 8];
+    fn increment_counters(&self, counters: &mut Self::CountersType) {
+        for b in 0..8 {
+            counters[b] += ((self >> b) & 1) as u32
+        }
+    }
+    fn compare_and_bitpack(
+        counters_0: &Self::CountersType,
+        counters_1: &Self::CountersType,
+    ) -> Self {
+        let mut target = 0u8;
+        for b in 0..8 {
+            target |= ((counters_0[b] > counters_1[b]) as u8) << b;
+        }
+        target
+    }
+}
+
+macro_rules! impl_bitincrement_for_array {
+    ($len:expr) => {
+        impl<T: ArrayBitIncrement + Default + Copy> ArrayBitIncrement for [T; $len] {
+            type CountersType = [T::CountersType; $len];
+            fn increment_counters(&self, counters: &mut Self::CountersType) {
+                for i in 0..$len {
+                    self[i].increment_counters(&mut counters[i]);
+                }
+            }
+            fn compare_and_bitpack(
+                counters_0: &Self::CountersType,
+                counters_1: &Self::CountersType,
+            ) -> Self {
+                let mut target = [T::default(); $len];
+                for i in 0..$len {
+                    target[i] = T::compare_and_bitpack(&counters_0[i], &counters_1[i]);
+                }
+                target
+            }
+        }
+    };
+}
+
+impl_bitincrement_for_array!(1);
+impl_bitincrement_for_array!(2);
+impl_bitincrement_for_array!(3);
+impl_bitincrement_for_array!(4);
+impl_bitincrement_for_array!(8);
+impl_bitincrement_for_array!(32);
+
+pub trait MatrixBitIncrement<Input, Target> {
+    type MatrixCountersType;
+    fn increment_matrix_counters(
+        counters: &mut Self::MatrixCountersType,
+        input: &Input,
+        target: &Target,
+    );
+    fn bitpack(counters: &Self::MatrixCountersType) -> Self;
+}
+
+impl<Input: ArrayBitIncrement> MatrixBitIncrement<Input, bool> for Input {
+    type MatrixCountersType = [Input::CountersType; 2];
+    fn increment_matrix_counters(
+        counters: &mut Self::MatrixCountersType,
+        input: &Input,
+        target: &bool,
+    ) {
+        input.increment_counters(&mut counters[*target as usize]);
+    }
+    fn bitpack(counters: &Self::MatrixCountersType) -> Self {
+        Self::compare_and_bitpack(&counters[0], &counters[1])
+    }
+}
+
+// TODO pass current state.
+impl<Input: ArrayBitIncrement + Copy + Default> MatrixBitIncrement<Input, u8> for [Input; 8] {
+    type MatrixCountersType = [[Input::CountersType; 2]; 8];
+    fn increment_matrix_counters(
+        counters: &mut Self::MatrixCountersType,
+        input: &Input,
+        target: &u8,
+    ) {
+        for b in 0..8 {
+            input.increment_counters(&mut counters[b][target.bit(b) as usize]);
+        }
+    }
+    fn bitpack(counters: &Self::MatrixCountersType) -> Self {
+        let mut output = [Input::default(); 8];
+        for b in 0..8 {
+            output[b] = Input::compare_and_bitpack(&counters[b][0], &counters[b][1]);
+        }
+        output
+    }
+}
+
+impl<Input: ArrayBitIncrement + Copy + Default> MatrixBitIncrement<Input, u32> for [Input; 32] {
+    type MatrixCountersType = [[Input::CountersType; 2]; 32];
+    fn increment_matrix_counters(
+        counters: &mut Self::MatrixCountersType,
+        input: &Input,
+        target: &u32,
+    ) {
+        for b in 0..32 {
+            input.increment_counters(&mut counters[b][target.bit(b) as usize]);
+        }
+    }
+    fn bitpack(counters: &Self::MatrixCountersType) -> Self {
+        let mut output = [Input::default(); 32];
+        for b in 0..32 {
+            output[b] = Input::compare_and_bitpack(&counters[b][0], &counters[b][1]);
+        }
+        output
+    }
+}
+
+macro_rules! impl_matrixbitincrement_for_array_of_matrixbitincrement {
+    ($len:expr) => {
+        impl<Input, Target, MatrixBits: MatrixBitIncrement<Input, Target> + Copy + Default>
+            MatrixBitIncrement<Input, [Target; $len]> for [MatrixBits; $len]
+        {
+            type MatrixCountersType = [MatrixBits::MatrixCountersType; $len];
+            fn increment_matrix_counters(
+                counters: &mut Self::MatrixCountersType,
+                input: &Input,
+                target: &[Target; $len],
+            ) {
+                for i in 0..$len {
+                    MatrixBits::increment_matrix_counters(&mut counters[i], input, &target[i]);
+                }
+            }
+            fn bitpack(counters: &Self::MatrixCountersType) -> Self {
+                let mut output = [MatrixBits::default(); $len];
+                for i in 0..$len {
+                    output[i] = MatrixBits::bitpack(&counters[i]);
+                }
+                output
+            }
+        }
+    };
+}
+
+impl_matrixbitincrement_for_array_of_matrixbitincrement!(1);
+impl_matrixbitincrement_for_array_of_matrixbitincrement!(2);
+impl_matrixbitincrement_for_array_of_matrixbitincrement!(3);
+impl_matrixbitincrement_for_array_of_matrixbitincrement!(4);
+impl_matrixbitincrement_for_array_of_matrixbitincrement!(8);
+impl_matrixbitincrement_for_array_of_matrixbitincrement!(10);
+impl_matrixbitincrement_for_array_of_matrixbitincrement!(32);
+
+pub trait OptimizeInput<Weights, Target> {
+    fn optimize(&mut self, weights: &Weights, target: &Target);
+}
+
+impl<Input: BitLen + FlipBit, Weights: Apply<Input, Target>, Target: HammingDistance>
+    OptimizeInput<Weights, Target> for Input
+{
+    fn optimize(&mut self, weights: &Weights, target: &Target) {
+        let mut cur_hd = weights.apply(self).hamming_distance(target);
+        for b in 0..Input::BIT_LEN {
+            self.flip_bit(b);
+            let new_hd = weights.apply(self).hamming_distance(target);
+            if new_hd < cur_hd {
+                cur_hd = new_hd;
+            } else {
+                self.flip_bit(b);
+            }
+        }
+    }
+}
+
+pub trait TrainEncoder<Input, Embedding, Decoder> {
+    fn train_encoder<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<Input>) -> Self;
+}
+
+impl<
+        Input: Sync + Send + HammingDistance + BitLen,
+        Encoder: MatrixBitIncrement<Input, Embedding> + Sync + Send + Apply<Input, Embedding>,
+        Embedding: Sync + Send + OptimizeInput<Decoder, Input>,
+        Decoder: MatrixBitIncrement<Embedding, Input> + Sync + Send + Apply<Embedding, Input>,
+    > TrainEncoder<Input, Embedding, Decoder> for Encoder
+where
+    Encoder::MatrixCountersType: Default + Sync + Send + ElementwiseAdd,
+    Decoder::MatrixCountersType: Default + Sync + Send + ElementwiseAdd,
+    rand::distributions::Standard: rand::distributions::Distribution<Encoder>,
+    rand::distributions::Standard: rand::distributions::Distribution<Decoder>,
+    <Decoder as MatrixBitIncrement<Embedding, Input>>::MatrixCountersType: std::marker::Send,
+{
+    fn train_encoder<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<Input>) -> Self {
+        let mut encoder: Encoder = rng.gen();
+        let mut decoder: Decoder = rng.gen();
+
+        let encoder_counters = examples
+            .par_iter()
+            .fold(
+                || Encoder::MatrixCountersType::default(),
+                |mut counter, patch| {
+                    let mut embedding = encoder.apply(&patch);
+                    for i in 0..1 {
+                        embedding.optimize(&decoder, patch);
+                    }
+                    Encoder::increment_matrix_counters(&mut counter, patch, &embedding);
+                    counter
+                },
+            )
+            .reduce(
+                || Encoder::MatrixCountersType::default(),
+                |mut a, b| {
+                    a.elementwise_add(&b);
+                    a
+                },
+            );
+
+        let encoder = <Encoder as MatrixBitIncrement<Input, Embedding>>::bitpack(&encoder_counters);
+
+        let decoder_counters = examples
+            .par_iter()
+            .fold(
+                || Decoder::MatrixCountersType::default(),
+                |mut counter, patch| {
+                    let embedding = encoder.apply(&patch);
+                    <Decoder>::increment_matrix_counters(&mut counter, &embedding, patch);
+                    counter
+                },
+            )
+            .reduce(
+                || Decoder::MatrixCountersType::default(),
+                |mut a, b| {
+                    a.elementwise_add(&b);
+                    a
+                },
+            );
+        let decoder = <Decoder as MatrixBitIncrement<Embedding, Input>>::bitpack(&decoder_counters);
+
+        let encoder_counters = examples
+            .par_iter()
+            .fold(
+                || Encoder::MatrixCountersType::default(),
+                |mut counter, patch| {
+                    let mut embedding = encoder.apply(&patch);
+                    for i in 0..1 {
+                        embedding.optimize(&decoder, patch);
+                    }
+                    Encoder::increment_matrix_counters(&mut counter, patch, &embedding);
+                    counter
+                },
+            )
+            .reduce(
+                || Encoder::MatrixCountersType::default(),
+                |mut a, b| {
+                    a.elementwise_add(&b);
+                    a
+                },
+            );
+
+        let encoder = <Encoder as MatrixBitIncrement<Input, Embedding>>::bitpack(&encoder_counters);
+
+        let sum_hd: u64 = examples
+            .par_iter()
+            .map(|patch| {
+                let embedding = encoder.apply(patch);
+                let output = decoder.apply(&embedding);
+                output.hamming_distance(patch) as u64
+            })
+            .sum();
+            println!("avg hd: {} / {}", sum_hd as f64 / examples.len() as f64, Input::BIT_LEN);
+        encoder
+    }
+}
+
+pub trait TrainEncoderSupervised<Input, Embedding, Decoder, Target> {
+    fn train_encoder<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<(Input, Target)>) -> Self;
+}
+
+impl<
+        Input: Sync + Send,
+        Encoder: MatrixBitIncrement<Input, Embedding> + Sync + Send + Apply<Input, Embedding>,
+        Embedding: Sync + Send + OptimizeInput<Decoder, Target>,
+        Decoder: MatrixBitIncrement<Embedding, Target> + Sync + Send + Apply<Embedding, Target>,
+        Target: Sync + Send + HammingDistance,
+    > TrainEncoderSupervised<Input, Embedding, Decoder, Target> for Encoder
+where
+    Encoder::MatrixCountersType: Default + Sync + Send + ElementwiseAdd,
+    Decoder::MatrixCountersType: Default + Sync + Send + ElementwiseAdd,
+    rand::distributions::Standard: rand::distributions::Distribution<Encoder>,
+    rand::distributions::Standard: rand::distributions::Distribution<Decoder>,
+    <Decoder as MatrixBitIncrement<Embedding, Target>>::MatrixCountersType: Send,
+{
+    fn train_encoder<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<(Input, Target)>) -> Self {
+        let mut encoder: Encoder = rng.gen();
+
+        let decoder_counters = examples
+            .par_iter()
+            .fold(
+                || Decoder::MatrixCountersType::default(),
+                |mut counter, (input, target)| {
+                    let embedding = encoder.apply(&input);
+                    <Decoder>::increment_matrix_counters(&mut counter, &embedding, target);
+                    counter
+                },
+            )
+            .reduce(
+                || Decoder::MatrixCountersType::default(),
+                |mut a, b| {
+                    a.elementwise_add(&b);
+                    a
+                },
+            );
+        let decoder =
+            <Decoder as MatrixBitIncrement<Embedding, Target>>::bitpack(&decoder_counters);
+
+        let encoder_counters = examples
+            .par_iter()
+            .fold(
+                || Encoder::MatrixCountersType::default(),
+                |mut counter, (input, target)| {
+                    let mut embedding = encoder.apply(&input);
+                    embedding.optimize(&decoder, target);
+                    Encoder::increment_matrix_counters(&mut counter, input, &embedding);
+                    counter
+                },
+            )
+            .reduce(
+                || Encoder::MatrixCountersType::default(),
+                |mut a, b| {
+                    a.elementwise_add(&b);
+                    a
+                },
+            );
+
+        encoder = <Encoder as MatrixBitIncrement<Input, Embedding>>::bitpack(&encoder_counters);
+
+        let sum_hd: u64 = examples
+            .par_iter()
+            .map(|(patch, target)| {
+                let embedding = encoder.apply(patch);
+                let output = decoder.apply(&embedding);
+                output.hamming_distance(target) as u64
+            })
+            .sum();
+        println!("avg hd: {:}", sum_hd as f64 / examples.len() as f64);
+        encoder
+    }
+}
+
+pub trait Apply<I, O> {
+    fn apply(&self, input: &I) -> O;
+}
+
+impl<I: HammingDistance + BitLen> Apply<I, bool> for I {
+    fn apply(&self, input: &I) -> bool {
+        self.hamming_distance(input) > (I::BIT_LEN as u32 / 2)
+    }
+}
+
+impl<I: HammingDistance + BitLen> Apply<I, u8> for [I; 8] {
+    fn apply(&self, input: &I) -> u8 {
+        let mut target = 0u8;
+        for i in 0..8 {
+            target |= ((self[i].hamming_distance(input) > (I::BIT_LEN as u32 / 2)) as u8) << i;
+        }
+        target
+    }
+}
+
+impl<I: HammingDistance + BitLen> Apply<I, u32> for [I; 32] {
+    fn apply(&self, input: &I) -> u32 {
+        let mut target = 0u32;
+        for i in 0..32 {
+            target |= ((self[i].hamming_distance(input) > (I::BIT_LEN as u32 / 2)) as u32) << i;
+        }
+        target
+    }
+}
+impl<I: HammingDistance + BitLen> Apply<I, u32> for I {
+    fn apply(&self, input: &I) -> u32 {
+        self.hamming_distance(input)
+    }
+}
+
+macro_rules! impl_apply_for_array_output {
+    ($len:expr) => {
+        impl<I, O: Default + Copy, T: Apply<I, O>> Apply<I, [O; $len]> for [T; $len] {
+            fn apply(&self, input: &I) -> [O; $len] {
+                let mut target = [O::default(); $len];
+                for i in 0..$len {
+                    target[i] = self[i].apply(input);
+                }
+                target
+            }
+        }
+    };
+}
+impl_apply_for_array_output!(1);
+impl_apply_for_array_output!(2);
+impl_apply_for_array_output!(3);
+impl_apply_for_array_output!(4);
+impl_apply_for_array_output!(5);
+impl_apply_for_array_output!(6);
+impl_apply_for_array_output!(7);
+impl_apply_for_array_output!(8);
+impl_apply_for_array_output!(10);
+
 #[macro_use]
 pub mod layers {
-    use super::{BitLen, GetBit, HammingDistance, SetBit};
+    use super::{Apply, BitLen, GetBit, HammingDistance, SetBit};
     use bincode::{deserialize_from, serialize_into};
     use std::fs::File;
     use std::io::BufWriter;
@@ -780,57 +1247,6 @@ pub mod layers {
     //    }
     //}
 
-    impl<I: HammingDistance + BitLen> Apply<I, u8> for [I; 8] {
-        fn apply(&self, input: &I) -> u8 {
-            let mut target = 0u8;
-            for i in 0..8 {
-                target |= ((self[i].hamming_distance(input) > (I::BIT_LEN as u32 / 2)) as u8) << i;
-            }
-            target
-        }
-    }
-
-    impl<I: HammingDistance + BitLen> Apply<I, u32> for [I; 32] {
-        fn apply(&self, input: &I) -> u32 {
-            let mut target = 0u32;
-            for i in 0..32 {
-                target |= ((self[i].hamming_distance(input) > (I::BIT_LEN as u32 / 2)) as u32) << i;
-            }
-            target
-        }
-    }
-    impl<I: HammingDistance + BitLen> Apply<I, [u32; 10]> for [I; 10] {
-        fn apply(&self, input: &I) -> [u32; 10] {
-            let mut target = [0u32; 10];
-            for i in 0..10 {
-                target[i] = self[i].hamming_distance(input);
-            }
-            target
-        }
-    }
-
-    macro_rules! impl_apply_for_array_output {
-        ($len:expr) => {
-            impl<I, O: Default + Copy, T: Apply<I, O>> Apply<I, [O; $len]> for [T; $len] {
-                fn apply(&self, input: &I) -> [O; $len] {
-                    let mut target = [O::default(); $len];
-                    for i in 0..$len {
-                        target[i] = self[i].apply(input);
-                    }
-                    target
-                }
-            }
-        };
-    }
-    impl_apply_for_array_output!(1);
-    impl_apply_for_array_output!(2);
-    impl_apply_for_array_output!(3);
-    impl_apply_for_array_output!(4);
-    impl_apply_for_array_output!(5);
-    impl_apply_for_array_output!(6);
-    impl_apply_for_array_output!(7);
-    impl_apply_for_array_output!(8);
-
     macro_rules! patch_2x2 {
         ($input:expr, $x:expr, $y:expr) => {
             [
@@ -901,10 +1317,6 @@ pub mod layers {
                 ],
             ]
         };
-    }
-
-    pub trait Apply<I, O> {
-        fn apply(&self, input: &I) -> O;
     }
 
     pub trait Conv2D<I, O> {
@@ -1236,9 +1648,9 @@ pub fn vec_concat_2_examples<A: Sync, B: Sync, T: ConcatImages<A, B> + Sync + Se
 }
 
 pub mod train {
-    use super::layers::{Apply, SaveLoad};
+    use super::layers::SaveLoad;
     use super::{
-        BinaryFilter, BitLen, ExtractPatches, FlipBit, FlipBitIndexed, GetBit, GetPatch,
+        Apply, BinaryFilter, BitLen, ExtractPatches, FlipBit, FlipBitIndexed, GetBit, GetPatch,
         HammingDistance, SetBit,
     };
     use rand::prelude::*;
