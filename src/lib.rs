@@ -280,6 +280,7 @@ array_bit_len!(7);
 array_bit_len!(8);
 array_bit_len!(13);
 array_bit_len!(16);
+array_bit_len!(32);
 
 impl<A: BitLen, B: BitLen> BitLen for (A, B) {
     const BIT_LEN: usize = A::BIT_LEN + B::BIT_LEN;

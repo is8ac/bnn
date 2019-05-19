@@ -6,7 +6,7 @@ extern crate time;
 
 use bitnn::datasets::mnist;
 use bitnn::layers::{Conv2D, SaveLoad};
-use bitnn::{Apply, HammingDistance, OptimizeInput};
+use bitnn::{Apply, HammingDistance};
 use bitnn::{BitLen, ElementwiseAdd, ExtractPatches, FlipBit, GetBit};
 use rand::Rng;
 use rand::SeedableRng;
@@ -58,6 +58,38 @@ where
         len: usize,
     ) -> <f64 as Wrap<Self>>::Wrapped;
     fn increment_counters(&self, counters: &mut <u32 as Wrap<Self>>::Wrapped);
+    fn backprop<Target: TargetBits<Self> + BitLen>(
+        &mut self,
+        target: &Target,
+        weights: &<Self as Wrap<Target>>::Wrapped,
+        tanh_width: u32,
+        n_updates: usize,
+    ) where
+        <u32 as Wrap<Self>>::Wrapped: Default,
+        <f64 as Wrap<Self>>::Wrapped: Wrap<Target>,
+        Self: Wrap<Target>,
+        (<u32 as Wrap<Self>>::Wrapped, <u32 as Wrap<Self>>::Wrapped): Wrap<Target>,
+        (<f64 as Wrap<Self>>::Wrapped, <f64 as Wrap<Self>>::Wrapped): Wrap<Target>,
+        f64: Wrap<<Self as Wrap<Target>>::Wrapped>,
+        Self: BitMatrix,
+        Self::IndexType: Sized + Copy,
+    {
+        let mut counters_0 = <u32 as Wrap<Self>>::Wrapped::default();
+        let mut counters_1 = <u32 as Wrap<Self>>::Wrapped::default();
+        target.increment_input_counters(
+            &mut counters_0,
+            &mut counters_1,
+            self,
+            weights,
+            tanh_width,
+        );
+        let diffs = Self::compare(&counters_0, &counters_1, Target::BIT_LEN);
+        let mut grads = self.indexed_grads(&diffs);
+        grads.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
+        for (_, index) in grads.iter().filter(|(x, _)| *x > 0f64).take(n_updates) {
+            self.flip_indexed_bit(*index);
+        }
+    }
 }
 
 macro_rules! impl_inputbits_for_uint {
@@ -125,7 +157,7 @@ impl_inputbits_for_len!(32);
 trait TargetBits<Input>
 where
     f64: Wrap<Input>,
-    (<f64 as Wrap<Input>>::Wrapped, <f64 as Wrap<Input>>::Wrapped): Wrap<Self>,
+    //(<f64 as Wrap<Input>>::Wrapped, <f64 as Wrap<Input>>::Wrapped): Wrap<Self>,
     u32: Wrap<Input>,
     (<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped): Wrap<Self>,
     Input: Wrap<Self>,
@@ -145,6 +177,14 @@ where
         >>::Wrapped,
         weights: &<Input as Wrap<Self>>::Wrapped,
         input: &Input,
+        tanh_width: u32,
+    );
+    fn increment_input_counters(
+        &self,
+        counters_0: &mut <u32 as Wrap<Input>>::Wrapped,
+        counters_1: &mut <u32 as Wrap<Input>>::Wrapped,
+        input: &Input,
+        weights: &<Input as Wrap<Self>>::Wrapped,
         tanh_width: u32,
     );
 }
@@ -190,6 +230,28 @@ macro_rules! impl_targetbits_for_uint {
                     }
                 }
             }
+            fn increment_input_counters(
+                &self,
+                counters_0: &mut <u32 as Wrap<Input>>::Wrapped,
+                counters_1: &mut <u32 as Wrap<Input>>::Wrapped,
+                input: &Input,
+                weights: &<Input as Wrap<$type>>::Wrapped,
+                tanh_width: u32
+            ) {
+                for b in 0..<$type>::BIT_LEN {
+                    let activation = weights[b].hamming_distance(&input);
+                    let threshold = Input::BIT_LEN as u32 / 2;
+                    // this patch only gets to vote if it is within tanh_width.
+                    let diff = activation.saturating_sub(threshold) | threshold.saturating_sub(activation);
+                    if diff < tanh_width {
+                        if self.bit(b) {
+                            weights[b].increment_counters(counters_0);
+                        } else {
+                            weights[b].increment_counters(counters_1);
+                        }
+                    }
+                }
+            }
         }
     };
 }
@@ -231,6 +293,18 @@ macro_rules! impl_targetbits_for_array {
                     self[i].increment_matrix_counters(&mut counters[i], &weights[i], input, tanh_width);
                 }
             }
+            fn increment_input_counters(
+                &self,
+                counters_0: &mut <u32 as Wrap<Input>>::Wrapped,
+                counters_1: &mut <u32 as Wrap<Input>>::Wrapped,
+                input: &Input,
+                weights: &<Input as Wrap<Self>>::Wrapped,
+                tanh_width: u32
+            ) {
+                for b in 0..$len {
+                    self[b].increment_input_counters(counters_0, counters_1, input, &weights[b], tanh_width);
+                }
+            }
         }
     }
 }
@@ -241,6 +315,59 @@ impl_targetbits_for_array!(3);
 impl_targetbits_for_array!(4);
 impl_targetbits_for_array!(8);
 impl_targetbits_for_array!(32);
+
+trait UpdateMatrix<Input, Output> {
+    fn update(&mut self, examples: &Vec<(Input, Output)>, n_updates: usize, tanh_width: u32);
+}
+
+impl<Input: Wrap<Output> + Sync, Output: Sync + TargetBits<Input>> UpdateMatrix<Input, Output>
+    for <Input as Wrap<Output>>::Wrapped
+where
+    u32: Wrap<Input>,
+    f64: Wrap<Input> + Wrap<<Input as Wrap<Output>>::Wrapped>,
+    <f64 as Wrap<Input>>::Wrapped:
+        Wrap<Output, Wrapped = <f64 as Wrap<<Input as Wrap<Output>>::Wrapped>>::Wrapped>,
+    (<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped): Wrap<Output>,
+    <(<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped) as Wrap<Output>>::Wrapped:
+        Default + Sync + Send + ElementwiseAdd,
+    Self: BitMatrix,
+    <Input as Wrap<Output>>::Wrapped: Sync,
+    <<Input as Wrap<Output>>::Wrapped as BitMatrix>::IndexType: Copy,
+{
+    fn update(&mut self, examples: &Vec<(Input, Output)>, n_updates: usize, tanh_width: u32) {
+        let counters = examples
+            .par_iter()
+            .fold(
+                || {
+                    <(<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped) as Wrap<
+                        Output,
+                    >>::Wrapped::default()
+                },
+                |mut counters, (input, target)| {
+                    target.increment_matrix_counters(&mut counters, self, &input, tanh_width);
+                    counters
+                },
+            )
+            .reduce(
+                || {
+                    <(<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped) as Wrap<
+                        Output,
+                    >>::Wrapped::default()
+                },
+                |mut a, b| {
+                    a.elementwise_add(&b);
+                    a
+                },
+            );
+        let diffs = <Output as TargetBits<Input>>::matrix_compare(&counters, examples.len());
+        let mut grads = self.indexed_grads(&diffs);
+        dbg!(grads.len());
+        grads.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
+        for (_, index) in grads.iter().filter(|(x, _)| *x > 0f64).take(n_updates) {
+            self.flip_indexed_bit(*index);
+        }
+    }
+}
 
 // Things we can do to a (N-dim) bit matrix.
 trait BitMatrix
@@ -253,7 +380,7 @@ where
     fn indexed_grads(&self, grads: &<f64 as Wrap<Self>>::Wrapped) -> Vec<(f64, Self::IndexType)>;
 }
 
-macro_rules! impl_indexgrads_for_uint {
+macro_rules! impl_bitmatrix_for_uint {
     ($type:ty) => {
         impl BitMatrix for $type
         where
@@ -275,10 +402,10 @@ macro_rules! impl_indexgrads_for_uint {
     };
 }
 
-impl_indexgrads_for_uint!(u8);
-impl_indexgrads_for_uint!(u32);
+impl_bitmatrix_for_uint!(u8);
+impl_bitmatrix_for_uint!(u32);
 
-macro_rules! impl_indexgrads_for_array {
+macro_rules! impl_bitmatrix_for_array {
     ($len:expr) => {
         impl<T: BitMatrix> BitMatrix for [T; $len]
         where
@@ -313,11 +440,12 @@ macro_rules! impl_indexgrads_for_array {
     };
 }
 
-impl_indexgrads_for_array!(1);
-impl_indexgrads_for_array!(2);
-impl_indexgrads_for_array!(3);
-impl_indexgrads_for_array!(4);
-impl_indexgrads_for_array!(8);
+impl_bitmatrix_for_array!(1);
+impl_bitmatrix_for_array!(2);
+impl_bitmatrix_for_array!(3);
+impl_bitmatrix_for_array!(4);
+impl_bitmatrix_for_array!(8);
+impl_bitmatrix_for_array!(32);
 
 fn log_hd<
     Encoder: Apply<Patch, Embedding> + Sync,
@@ -339,12 +467,13 @@ fn log_hd<
     println!("avg hd: {}", sum_hd as f64 / patches.len() as f64,);
 }
 
-type Embedding = [u32; 1];
+type Embedding = [u32; 2];
 type Patch = [[u8; 3]; 3];
 type Encoder = <Patch as Wrap<Embedding>>::Wrapped;
 type Decoder = <Embedding as Wrap<Patch>>::Wrapped;
 
-const N_EXAMPLES: usize = 300;
+const N_EXAMPLES: usize = 100;
+
 fn main() {
     rayon::ThreadPoolBuilder::new()
         .stack_size(2usize.pow(26))
@@ -401,7 +530,7 @@ fn main() {
                 ) as Wrap<Patch>>::Wrapped::default()
             },
             |mut counter, patch| {
-                let mut embedding = encoder.apply(&patch);
+                let embedding = encoder.apply(patch);
                 patch.increment_matrix_counters(&mut counter, &decoder, &embedding, 3);
                 counter
             },
@@ -424,59 +553,61 @@ fn main() {
     grads.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
     //dbg!(&grads[..30]);
     let mut updates = grads.iter().filter(|(x, _)| *x > 0f64);
-    for _ in 0..600 {
-        let (g, index) = updates.next().unwrap();
+    for _ in 0..1100 {
+        let (_, index) = updates.next().unwrap();
         decoder.flip_indexed_bit(*index);
     }
     dbg!(Decoder::BIT_LEN);
     log_hd(&encoder, &decoder, &patches);
     for _ in 0..10 {
-        let (g, index) = updates.next().unwrap();
+        let (_, index) = updates.next().unwrap();
         decoder.flip_indexed_bit(*index);
     }
     log_hd(&encoder, &decoder, &patches);
 
-    ////for &t in [4,3,2,1].iter() {
-    //let decoder_counters = patches
-    //    .par_iter()
-    //    .fold(
-    //        || <Decoder as MatrixBitIncrement<Embedding, Patch>>::MatrixCountersType::default(),
-    //        |mut counter, patch| {
-    //            let mut embedding = encoder.apply(&patch);
-    //            decoder.increment_matrix_counters(&mut counter, &embedding, &patch, 3);
-    //            counter
-    //        },
-    //    )
-    //    .reduce(
-    //        || <Decoder as MatrixBitIncrement<Embedding, Patch>>::MatrixCountersType::default(),
-    //        |mut a, b| {
-    //            a.elementwise_add(&b);
-    //            a
-    //        },
-    //    );
-    ////let indexes = decoder.top_n(&decoder_counters, 5);
-    ////dbg!(indexes);
-    //decoder.bitpack(&decoder_counters, examples.len());
-
-    //let encoder_counters = patches
-    //    .par_iter()
-    //    .fold(
-    //        || <Encoder as MatrixBitIncrement<Patch, Embedding>>::MatrixCountersType::default(),
-    //        |mut counter, patch| {
-    //            let mut embedding = encoder.apply(&patch);
-    //            embedding.optimize(&decoder, &patch);
-    //            encoder.increment_matrix_counters(&mut counter, &patch, &embedding, 3);
-    //            counter
-    //        },
-    //    )
-    //    .reduce(
-    //        || <Encoder as MatrixBitIncrement<Patch, Embedding>>::MatrixCountersType::default(),
-    //        |mut a, b| {
-    //            a.elementwise_add(&b);
-    //            a
-    //        },
-    //    );
-    //encoder.bitpack(&encoder_counters, examples.len());
-
-    //}
+    let start = PreciseTime::now();
+    let encoder_counters = patches
+        .par_iter()
+        .fold(
+            || {
+                <(<u32 as Wrap<Patch>>::Wrapped, <u32 as Wrap<Patch>>::Wrapped) as Wrap<
+                    Embedding,
+                >>::Wrapped::default()
+            },
+            |mut counter, patch| {
+                let mut embedding = encoder.apply(patch);
+                embedding.backprop(patch, &decoder, 2, 9);
+                embedding.increment_matrix_counters(&mut counter, &encoder, patch, 3);
+                counter
+            },
+        )
+        .reduce(
+            || {
+                <(<u32 as Wrap<Patch>>::Wrapped, <u32 as Wrap<Patch>>::Wrapped) as Wrap<
+                    Embedding,
+                >>::Wrapped::default()
+            },
+            |mut a, b| {
+                a.elementwise_add(&b);
+                a
+            },
+        );
+    println!("time: {}", start.to(PreciseTime::now()));
+    let diffs = <Embedding as TargetBits<Patch>>::matrix_compare(&encoder_counters, patches.len());
+    let mut grads = encoder.indexed_grads(&diffs);
+    dbg!(grads.len());
+    grads.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
+    //dbg!(&grads[..30]);
+    let mut updates = grads.iter().filter(|(x, _)| *x > 0f64);
+    for _ in 0..900 {
+        let (_, index) = updates.next().unwrap();
+        encoder.flip_indexed_bit(*index);
+    }
+    dbg!(Encoder::BIT_LEN);
+    log_hd(&encoder, &decoder, &patches);
+    for _ in 0..10 {
+        let (_, index) = updates.next().unwrap();
+        encoder.flip_indexed_bit(*index);
+    }
+    log_hd(&encoder, &decoder, &patches);
 }
