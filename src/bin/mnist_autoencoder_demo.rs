@@ -467,12 +467,12 @@ fn log_hd<
     println!("avg hd: {}", sum_hd as f64 / patches.len() as f64,);
 }
 
-type Embedding = [u32; 2];
+type Embedding = [u32; 1];
 type Patch = [[u8; 3]; 3];
 type Encoder = <Patch as Wrap<Embedding>>::Wrapped;
 type Decoder = <Embedding as Wrap<Patch>>::Wrapped;
 
-const N_EXAMPLES: usize = 100;
+const N_EXAMPLES: usize = 300;
 
 fn main() {
     rayon::ThreadPoolBuilder::new()
@@ -510,104 +510,18 @@ fn main() {
 
     let mut encoder: Encoder = rng.gen();
     let mut decoder: Decoder = rng.gen();
-    let sum_hd: u64 = patches
-        .par_iter()
-        .map(|patch| {
-            let embedding = encoder.apply(patch);
-            let output = decoder.apply(&embedding);
-            output.hamming_distance(patch) as u64
-        })
-        .sum();
-    println!("avg hd: {}", sum_hd as f64 / patches.len() as f64,);
-
-    let decoder_counters = patches
-        .par_iter()
-        .fold(
-            || {
-                <(
-                    <u32 as Wrap<Embedding>>::Wrapped,
-                    <u32 as Wrap<Embedding>>::Wrapped,
-                ) as Wrap<Patch>>::Wrapped::default()
-            },
-            |mut counter, patch| {
-                let embedding = encoder.apply(patch);
-                patch.increment_matrix_counters(&mut counter, &decoder, &embedding, 3);
-                counter
-            },
-        )
-        .reduce(
-            || {
-                <(
-                    <u32 as Wrap<Embedding>>::Wrapped,
-                    <u32 as Wrap<Embedding>>::Wrapped,
-                ) as Wrap<Patch>>::Wrapped::default()
-            },
-            |mut a, b| {
-                a.elementwise_add(&b);
-                a
-            },
-        );
-    let diffs = <Patch as TargetBits<Embedding>>::matrix_compare(&decoder_counters, patches.len());
-    let mut grads = decoder.indexed_grads(&diffs);
-    dbg!(grads.len());
-    grads.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
-    //dbg!(&grads[..30]);
-    let mut updates = grads.iter().filter(|(x, _)| *x > 0f64);
-    for _ in 0..1100 {
-        let (_, index) = updates.next().unwrap();
-        decoder.flip_indexed_bit(*index);
-    }
-    dbg!(Decoder::BIT_LEN);
-    log_hd(&encoder, &decoder, &patches);
-    for _ in 0..10 {
-        let (_, index) = updates.next().unwrap();
-        decoder.flip_indexed_bit(*index);
-    }
-    log_hd(&encoder, &decoder, &patches);
-
     let start = PreciseTime::now();
-    let encoder_counters = patches
-        .par_iter()
-        .fold(
-            || {
-                <(<u32 as Wrap<Patch>>::Wrapped, <u32 as Wrap<Patch>>::Wrapped) as Wrap<
-                    Embedding,
-                >>::Wrapped::default()
-            },
-            |mut counter, patch| {
-                let mut embedding = encoder.apply(patch);
-                embedding.backprop(patch, &decoder, 2, 9);
-                embedding.increment_matrix_counters(&mut counter, &encoder, patch, 3);
-                counter
-            },
-        )
-        .reduce(
-            || {
-                <(<u32 as Wrap<Patch>>::Wrapped, <u32 as Wrap<Patch>>::Wrapped) as Wrap<
-                    Embedding,
-                >>::Wrapped::default()
-            },
-            |mut a, b| {
-                a.elementwise_add(&b);
-                a
-            },
-        );
-    println!("time: {}", start.to(PreciseTime::now()));
-    let diffs = <Embedding as TargetBits<Patch>>::matrix_compare(&encoder_counters, patches.len());
-    let mut grads = encoder.indexed_grads(&diffs);
-    dbg!(grads.len());
-    grads.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
-    //dbg!(&grads[..30]);
-    let mut updates = grads.iter().filter(|(x, _)| *x > 0f64);
-    for _ in 0..900 {
-        let (_, index) = updates.next().unwrap();
-        encoder.flip_indexed_bit(*index);
-    }
-    dbg!(Encoder::BIT_LEN);
+    let examples: Vec<(Embedding, Patch)> = patches.par_iter().map(|patch|(encoder.apply(patch), *patch)).collect();
+    decoder.update(&examples, 500, 3);
+    println!("update time: {}", start.to(PreciseTime::now()));
     log_hd(&encoder, &decoder, &patches);
-    for _ in 0..10 {
-        let (_, index) = updates.next().unwrap();
-        encoder.flip_indexed_bit(*index);
-    }
+
+    let examples: Vec<(Patch, Embedding)> = patches.par_iter().map(|patch|{
+        let mut embedding = encoder.apply(patch);
+        embedding.backprop(patch, &decoder, 2, 9);
+        (*patch, embedding)
+    }).collect();
+
+    encoder.update(&examples, 420, 3);
     log_hd(&encoder, &decoder, &patches);
 }
