@@ -1144,9 +1144,9 @@ pub mod layers {
     conv2d_3x3_apply_trait_no_pad!(32, 32);
     conv2d_3x3_apply_trait_no_pad!(30, 30);
     conv2d_3x3_apply_trait_no_pad!(28, 28);
-    //conv2d_3x3_apply_trait_no_pad!(26, 26);
-    //conv2d_3x3_apply_trait_no_pad!(24, 24);
-    //conv2d_3x3_apply_trait_no_pad!(22, 22);
+    conv2d_3x3_apply_trait_no_pad!(26, 26);
+    conv2d_3x3_apply_trait_no_pad!(24, 24);
+    conv2d_3x3_apply_trait_no_pad!(22, 22);
     //conv2d_3x3_apply_trait_no_pad!(20, 20);
     //conv2d_3x3_apply_trait_no_pad!(18, 18);
     //conv2d_3x3_apply_trait_no_pad!(16, 16);

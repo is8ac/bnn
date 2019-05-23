@@ -13,7 +13,6 @@ use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;
 use std::fs;
-use std::iter::repeat;
 use std::path::Path;
 use time::PreciseTime;
 
@@ -62,8 +61,8 @@ where
         &mut self,
         target: &Target,
         weights: &<Self as Wrap<Target>>::Wrapped,
-        tanh_width: u32,
         n_updates: usize,
+        tanh_width: u32,
     ) where
         <u32 as Wrap<Self>>::Wrapped: Default,
         <f64 as Wrap<Self>>::Wrapped: Wrap<Target>,
@@ -361,7 +360,7 @@ where
             );
         let diffs = <Output as TargetBits<Input>>::matrix_compare(&counters, examples.len());
         let mut grads = self.indexed_grads(&diffs);
-        dbg!(grads.len());
+        //dbg!(grads.len());
         grads.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
         for (_, index) in grads.iter().filter(|(x, _)| *x > 0f64).take(n_updates) {
             self.flip_indexed_bit(*index);
@@ -447,9 +446,114 @@ impl_bitmatrix_for_array!(4);
 impl_bitmatrix_for_array!(8);
 impl_bitmatrix_for_array!(32);
 
+trait TrainAutoencoderConv<Patch, Embedding, InputImage, OutputImage> {
+    fn autoencoder<RNG: rand::Rng>(
+        rng: &mut RNG,
+        images: &Vec<InputImage>,
+        passes: &Vec<((usize, u32), (usize, u32), (usize, u32))>,
+        path: &Path,
+        write: bool,
+    ) -> Vec<OutputImage>;
+}
+
+impl<
+        Patch: Sync
+            + Send
+            + HammingDistance
+            + Wrap<Embedding, Wrapped = Self>
+            + Copy
+            + TargetBits<Embedding>
+            + BitLen,
+        Embedding: Send + Sync + InputBits + Wrap<Patch> + BitMatrix,
+        InputImage: Sync + ExtractPatches<Patch>,
+        OutputImage: Sync + Send,
+        Encoder: SaveLoad
+            + Conv2D<InputImage, OutputImage>
+            + Sync
+            + BitLen
+            + HammingDistance
+            + UpdateMatrix<Patch, Embedding>
+            + Apply<Patch, Embedding>,
+    > TrainAutoencoderConv<Patch, Embedding, InputImage, OutputImage> for Encoder
+where
+    u32: Wrap<Embedding>,
+    f64: Wrap<<Embedding as Wrap<Patch>>::Wrapped>,
+    f64: Wrap<Embedding>,
+    <f64 as Wrap<Embedding>>::Wrapped: Wrap<Patch>,
+    <u32 as Wrap<Embedding>>::Wrapped: Default,
+    (
+        <u32 as Wrap<Embedding>>::Wrapped,
+        <u32 as Wrap<Embedding>>::Wrapped,
+    ): Wrap<Patch> + Default,
+    (
+        <f64 as Wrap<Embedding>>::Wrapped,
+        <f64 as Wrap<Embedding>>::Wrapped,
+    ): Wrap<Patch>,
+    rand::distributions::Standard: rand::distributions::Distribution<Encoder>,
+    rand::distributions::Standard:
+        rand::distributions::Distribution<<Embedding as Wrap<Patch>>::Wrapped>,
+    <Embedding as Wrap<Patch>>::Wrapped:
+        UpdateMatrix<Embedding, Patch> + Sync + Apply<Embedding, Patch>,
+    <Embedding as BitMatrix>::IndexType: std::marker::Copy,
+{
+    fn autoencoder<RNG: rand::Rng>(
+        rng: &mut RNG,
+        images: &Vec<InputImage>,
+        passes: &Vec<((usize, u32), (usize, u32), (usize, u32))>,
+        path: &Path,
+        write: bool,
+    ) -> Vec<OutputImage> {
+        let encoder = Self::new_from_fs(path).unwrap_or_else(|| {
+            println!("{} not found, training", &path.to_str().unwrap());
+
+            let patches: Vec<Patch> = images
+                .iter()
+                .map(|image| {
+                    let patches: Vec<Patch> = image.patches().iter().cloned().collect();
+                    patches
+                })
+                .flatten()
+                .collect();
+            //dbg!(patches.len());
+
+            let mut encoder: Encoder = rng.gen();
+            let mut decoder: <Embedding as Wrap<Patch>>::Wrapped = rng.gen();
+
+            for &((dn, dt), (bn, bt), (en, et)) in passes {
+                let examples: Vec<(Embedding, Patch)> = patches
+                    .par_iter()
+                    .map(|patch| (encoder.apply(patch), *patch))
+                    .collect();
+                decoder.update(&examples, dn, dt);
+
+                let examples: Vec<(Patch, Embedding)> = patches
+                    .par_iter()
+                    .map(|patch| {
+                        let mut embedding = encoder.apply(patch);
+                        embedding.backprop(patch, &decoder, bn, bt);
+                        (*patch, embedding)
+                    })
+                    .collect();
+                encoder.update(&examples, en, et);
+                log_hd(&encoder, &decoder, &patches);
+            }
+            if write {
+                encoder.write_to_fs(&path);
+            }
+            encoder
+        });
+
+        images
+            .par_iter()
+            .map(|image| encoder.conv2d(image))
+            .collect()
+    }
+}
+
 fn log_hd<
     Encoder: Apply<Patch, Embedding> + Sync,
-    Patch: HammingDistance + Sync,
+    Patch: HammingDistance + Sync + BitLen,
+    Embedding: Sync,
     Decoder: Apply<Embedding, Patch> + Sync,
 >(
     encoder: &Encoder,
@@ -464,23 +568,29 @@ fn log_hd<
             output.hamming_distance(patch) as u64
         })
         .sum();
-    println!("avg hd: {}", sum_hd as f64 / patches.len() as f64,);
+    let avg_hd = sum_hd as f64 / patches.len() as f64;
+    println!(
+        "avg hd: {} / {} = {}",
+        avg_hd,
+        Patch::BIT_LEN,
+        avg_hd / Patch::BIT_LEN as f64
+    );
 }
 
-type Embedding = [u32; 1];
-type Patch = [[u8; 3]; 3];
-type Encoder = <Patch as Wrap<Embedding>>::Wrapped;
-type Decoder = <Embedding as Wrap<Patch>>::Wrapped;
+//type Embedding = [u32; 1];
+//type Patch = [[u8; 3]; 3];
+//type Encoder = <Patch as Wrap<Embedding>>::Wrapped;
+//type Decoder = <Embedding as Wrap<Patch>>::Wrapped;
 
-const N_EXAMPLES: usize = 300;
+const N_EXAMPLES: usize = 60_00;
 
 fn main() {
     rayon::ThreadPoolBuilder::new()
-        .stack_size(2usize.pow(26))
+        .stack_size(2usize.pow(27))
         .build_global()
         .unwrap();
 
-    let base_path = Path::new("params/fc_test_1");
+    let base_path = Path::new("params/ac_conv_test1");
     fs::create_dir_all(base_path).unwrap();
 
     let mut rng = Hc128Rng::seed_from_u64(8);
@@ -492,36 +602,79 @@ fn main() {
         Path::new("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"),
         N_EXAMPLES,
     );
-    let examples: Vec<([[u8; 28]; 28], usize)> = images
-        .iter()
-        .cloned()
-        .zip(classes.iter().map(|x| *x as usize))
-        .collect();
+    //let examples: Vec<([[u8; 28]; 28], usize)> = images
+    //    .iter()
+    //    .cloned()
+    //    .zip(classes.iter().map(|x| *x as usize))
+    //    .collect();
 
-    let patches: Vec<Patch> = images
-        .iter()
-        .map(|image| {
-            let patches: Vec<Patch> = image.patches().iter().cloned().collect();
-            patches
-        })
-        .flatten()
-        .collect();
-    dbg!(patches.len());
-
-    let mut encoder: Encoder = rng.gen();
-    let mut decoder: Decoder = rng.gen();
     let start = PreciseTime::now();
-    let examples: Vec<(Embedding, Patch)> = patches.par_iter().map(|patch|(encoder.apply(patch), *patch)).collect();
-    decoder.update(&examples, 500, 3);
+    let images: Vec<[[[u32; 1]; 26]; 26]> =
+        <<[[u8; 3]; 3] as Wrap<[u32; 1]>>::Wrapped as TrainAutoencoderConv<
+            [[u8; 3]; 3],
+            [u32; 1],
+            _,
+            _,
+        >>::autoencoder(
+            &mut rng,
+            &images,
+            &vec![((850, 5), (5, 2), (600, 4))],
+            &base_path.join("autoencoder_1"),
+            true,
+        );
     println!("update time: {}", start.to(PreciseTime::now()));
-    log_hd(&encoder, &decoder, &patches);
 
-    let examples: Vec<(Patch, Embedding)> = patches.par_iter().map(|patch|{
-        let mut embedding = encoder.apply(patch);
-        embedding.backprop(patch, &decoder, 2, 9);
-        (*patch, embedding)
-    }).collect();
+    let start = PreciseTime::now();
+    for &v in [2,3,4,5,6,7,8,9,10, 11, 12, 13, 14, 15, 16, 20].iter() {
+        dbg!(v);
+        let mut rng = Hc128Rng::seed_from_u64(8);
+        let images: Vec<[[[u32; 2]; 24]; 24]> =
+            <<[[[u32; 1]; 3]; 3] as Wrap<[u32; 2]>>::Wrapped as TrainAutoencoderConv<
+                [[[u32; 1]; 3]; 3],
+                [u32; 2],
+                _,
+                _,
+            >>::autoencoder(
+                &mut rng,
+                &images,
+                &vec![((3600, 12), (10, 6), (100, 11)), ((2900, 7), (9, 5), (250, 5))],
+                &base_path.join("autoencoder_2"),
+                false,
+            );
+    }
+    println!("update time: {}", start.to(PreciseTime::now()));
+    // 32.9
 
-    encoder.update(&examples, 420, 3);
-    log_hd(&encoder, &decoder, &patches);
+    //let images: Vec<[[[u32; 1]; 22]; 22]> =
+    //    <<[[[u32; 1]; 3]; 3] as Wrap<[u32; 1]>>::Wrapped as TrainAutoencoderConv<
+    //        [[[u32; 1]; 3]; 3],
+    //        [u32; 1],
+    //        _,
+    //        _,
+    //    >>::autoencoder(
+    //        &mut rng,
+    //        &images,
+    //        &vec![
+    //            ((1925, 6), (5, 6), (600, 5)),
+    //            ((1500, 7), (5, 5), (300, 5)),
+    //        ],
+    //        &base_path.join("autoencoder_3"),
+    //        false,
+    //    );
+
+    //let encoder = <[[[u32; 1]; 3]; 3] as Wrap<[u32; 1]>>::Wrapped::new_from_fs(
+    //    &base_path.join("autoencoder_2"),
+    //)
+    //.unwrap();
+
+    //let image = images[classes.iter().enumerate().find(|(_, c)| **c == 0).unwrap().0];
+    //for b in 0..32 {
+    //    for x in 0..24 {
+    //        for y in 0..24 {
+    //            print!("{}", (image[x][y][0].bit(b)) as u8);
+    //        }
+    //        print!("\n");
+    //    }
+    //    print!("\n",);
+    //}
 }
