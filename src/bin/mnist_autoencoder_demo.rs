@@ -15,6 +15,7 @@ use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
 use time::PreciseTime;
+use std::iter::Iterator;
 
 trait Wrap<T> {
     type Wrapped;
@@ -582,11 +583,11 @@ fn log_hd<
 //type Encoder = <Patch as Wrap<Embedding>>::Wrapped;
 //type Decoder = <Embedding as Wrap<Patch>>::Wrapped;
 
-const N_EXAMPLES: usize = 60_00;
+const N_EXAMPLES: usize = 60_0;
 
 fn main() {
     rayon::ThreadPoolBuilder::new()
-        .stack_size(2usize.pow(27))
+        .stack_size(2usize.pow(28))
         .build_global()
         .unwrap();
 
@@ -598,10 +599,10 @@ fn main() {
         Path::new("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"),
         N_EXAMPLES,
     );
-    let classes = mnist::load_labels(
-        Path::new("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"),
-        N_EXAMPLES,
-    );
+    //let classes = mnist::load_labels(
+    //    Path::new("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"),
+    //    N_EXAMPLES,
+    //);
     //let examples: Vec<([[u8; 28]; 28], usize)> = images
     //    .iter()
     //    .cloned()
@@ -625,43 +626,46 @@ fn main() {
     println!("update time: {}", start.to(PreciseTime::now()));
 
     let start = PreciseTime::now();
-    for &v in [2,3,4,5,6,7,8,9,10, 11, 12, 13, 14, 15, 16, 20].iter() {
+    let images: Vec<[[[u32; 2]; 24]; 24]> =
+        <<[[[u32; 1]; 3]; 3] as Wrap<[u32; 2]>>::Wrapped as TrainAutoencoderConv<
+            [[[u32; 1]; 3]; 3],
+            [u32; 2],
+            _,
+            _,
+        >>::autoencoder(
+            &mut rng,
+            &images,
+            &vec![
+                ((3800, 12), (10, 6), (70, 11)),
+                ((2900, 7), (9, 5), (300, 5)),
+                ((30, 6), (5, 4), (45, 4)),
+            ],
+            &base_path.join("autoencoder_2"),
+            true,
+        );
+    println!("update time: {}", start.to(PreciseTime::now()));
+    // 32.9
+    // 23.4
+
+    //for v in (0..30).map(|x| x * 100 + 2000) {
+    for v in (1500..3000).step_by(50) {
         dbg!(v);
         let mut rng = Hc128Rng::seed_from_u64(8);
-        let images: Vec<[[[u32; 2]; 24]; 24]> =
-            <<[[[u32; 1]; 3]; 3] as Wrap<[u32; 2]>>::Wrapped as TrainAutoencoderConv<
-                [[[u32; 1]; 3]; 3],
-                [u32; 2],
+        let images: Vec<[[[u32; 4]; 12]; 12]> =
+            <<[[[u32; 2]; 2]; 2] as Wrap<[u32; 4]>>::Wrapped as TrainAutoencoderConv<
+                [[[u32; 2]; 2]; 2],
+                [u32; 4],
                 _,
                 _,
             >>::autoencoder(
                 &mut rng,
                 &images,
-                &vec![((3600, 12), (10, 6), (100, 11)), ((2900, 7), (9, 5), (250, 5))],
-                &base_path.join("autoencoder_2"),
+                &vec![((10600, 12), (5, 6), (500, 12)), ((v, 7), (5, 5), (300, 5))],
+                &base_path.join("autoencoder_3"),
                 false,
             );
     }
-    println!("update time: {}", start.to(PreciseTime::now()));
-    // 32.9
-
-    //let images: Vec<[[[u32; 1]; 22]; 22]> =
-    //    <<[[[u32; 1]; 3]; 3] as Wrap<[u32; 1]>>::Wrapped as TrainAutoencoderConv<
-    //        [[[u32; 1]; 3]; 3],
-    //        [u32; 1],
-    //        _,
-    //        _,
-    //    >>::autoencoder(
-    //        &mut rng,
-    //        &images,
-    //        &vec![
-    //            ((1925, 6), (5, 6), (600, 5)),
-    //            ((1500, 7), (5, 5), (300, 5)),
-    //        ],
-    //        &base_path.join("autoencoder_3"),
-    //        false,
-    //    );
-
+    // 32.2
     //let encoder = <[[[u32; 1]; 3]; 3] as Wrap<[u32; 1]>>::Wrapped::new_from_fs(
     //    &base_path.join("autoencoder_2"),
     //)

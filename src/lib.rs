@@ -179,6 +179,25 @@ pub mod datasets {
     }
 }
 
+pub trait BitOr {
+    fn bit_or(&self, other: &Self) -> Self;
+}
+
+macro_rules! impl_bitor_for_uint {
+    ($type:ty) => {
+        impl BitOr for $type {
+            fn bit_or(&self, other: &Self) -> $type {
+                self | other
+            }
+        }
+    };
+}
+
+impl_bitor_for_uint!(u8);
+impl_bitor_for_uint!(u16);
+impl_bitor_for_uint!(u32);
+impl_bitor_for_uint!(u64);
+
 pub trait GetBit {
     fn bit(&self, i: usize) -> bool;
 }
@@ -1025,7 +1044,7 @@ impl_apply_for_array_output!(10);
 
 #[macro_use]
 pub mod layers {
-    use super::{Apply, BitLen, GetBit, HammingDistance, SetBit};
+    use super::{Apply, BitLen, BitOr, GetBit, HammingDistance, SetBit};
     use bincode::{deserialize_from, serialize_into};
     use std::fs::File;
     use std::io::BufWriter;
@@ -1066,12 +1085,12 @@ pub mod layers {
         fn conv2d(&self, input: &I) -> O;
     }
 
-    macro_rules! patch_conv_2x2_apply_trait {
+    macro_rules! impl_conv2d_2x2 {
         ($x_size:expr, $y_size:expr) => {
             impl<I: Copy, O: Default + Copy, W: Apply<[[I; 2]; 2], O>>
-                Apply<[[I; $y_size]; $x_size], [[O; $y_size / 2]; $x_size / 2]> for W
+                Conv2D<[[I; $y_size]; $x_size], [[O; $y_size / 2]; $x_size / 2]> for W
             {
-                fn apply(
+                fn conv2d(
                     &self,
                     input: &[[I; $y_size]; $x_size],
                 ) -> [[O; $y_size / 2]; $x_size / 2] {
@@ -1089,12 +1108,13 @@ pub mod layers {
         };
     }
 
-    //patch_conv_2x2_apply_trait!(32, 32);
-    //patch_conv_2x2_apply_trait!(28, 28);
-    //patch_conv_2x2_apply_trait!(16, 16);
-    //patch_conv_2x2_apply_trait!(14, 14);
-    //patch_conv_2x2_apply_trait!(8, 8);
-    //patch_conv_2x2_apply_trait!(7, 7);
+    impl_conv2d_2x2!(32, 32);
+    impl_conv2d_2x2!(24, 24);
+    impl_conv2d_2x2!(28, 28);
+    impl_conv2d_2x2!(16, 16);
+    impl_conv2d_2x2!(14, 14);
+    impl_conv2d_2x2!(8, 8);
+    impl_conv2d_2x2!(7, 7);
 
     macro_rules! conv2d_3x3_apply_trait {
         ($x_size:expr, $y_size:expr) => {
@@ -1156,6 +1176,34 @@ pub mod layers {
     //conv2d_3x3_apply_trait_no_pad!(8, 8);
     //conv2d_3x3_apply_trait_no_pad!(6, 5);
     //conv2d_3x3_apply_trait_no_pad!(4, 4);
+
+    pub trait OrPool<Output> {
+        fn or_pool(&self) -> Output;
+    }
+    macro_rules! impl_orpool {
+        ($x_size:expr, $y_size:expr) => {
+            impl<Pixel: BitOr + Default + Copy> OrPool<[[Pixel; $y_size / 2]; $x_size / 2]>
+                for [[Pixel; $y_size]; $x_size]
+            {
+                fn or_pool(&self) -> [[Pixel; $y_size / 2]; $x_size / 2] {
+                    let mut target = [[Pixel::default(); $y_size / 2]; $x_size / 2];
+                    for x in 0..$x_size / 2 {
+                        let x_index = x * 2;
+                        for y in 0..$y_size / 2 {
+                            let y_index = y * 2;
+                            target[x][y] = self[x_index + 0][y_index + 0]
+                                .bit_or(&self[x_index + 0][y_index + 1])
+                                .bit_or(&self[x_index + 1][y_index + 0])
+                                .bit_or(&self[x_index + 1][y_index + 1]);
+                        }
+                    }
+                    target
+                }
+            }
+        };
+    }
+
+    impl_orpool!(32, 32);
 
     pub trait SaveLoad
     where
