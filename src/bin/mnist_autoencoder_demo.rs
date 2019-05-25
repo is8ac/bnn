@@ -8,14 +8,14 @@ use bitnn::datasets::mnist;
 use bitnn::layers::{Conv2D, SaveLoad};
 use bitnn::{Apply, HammingDistance};
 use bitnn::{BitLen, ElementwiseAdd, ExtractPatches, FlipBit, GetBit};
-use rand::Rng;
+//use rand::Rng;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;
 use std::fs;
+use std::iter::Iterator;
 use std::path::Path;
 use time::PreciseTime;
-use std::iter::Iterator;
 
 trait Wrap<T> {
     type Wrapped;
@@ -591,7 +591,7 @@ fn main() {
         .build_global()
         .unwrap();
 
-    let base_path = Path::new("params/ac_conv_test1");
+    let base_path = Path::new("params/ac_conv_test2");
     fs::create_dir_all(base_path).unwrap();
 
     let mut rng = Hc128Rng::seed_from_u64(8);
@@ -619,13 +619,27 @@ fn main() {
         >>::autoencoder(
             &mut rng,
             &images,
-            &vec![((850, 5), (5, 2), (600, 4))],
-            &base_path.join("autoencoder_1"),
+            &vec![
+                ((110, 7), (6, 4), (110, 7)),
+                ((110, 7), (6, 4), (110, 7)),
+                ((100, 7), (6, 4), (100, 7)),
+                ((100, 7), (6, 4), (100, 7)),
+                ((50, 7), (6, 4), (50, 7)),
+                ((30, 7), (6, 4), (30, 7)),
+                ((20, 7), (6, 4), (20, 7)),
+                ((20, 7), (6, 4), (20, 7)),
+                ((10, 7), (6, 4), (10, 7)),
+                ((10, 6), (6, 4), (10, 6)),
+                ((7, 5), (6, 4), (7, 5)),
+            ],
+            &base_path.join("l1"),
             true,
         );
+    // 5.68
     println!("update time: {}", start.to(PreciseTime::now()));
+    // 6.1
 
-    let start = PreciseTime::now();
+    //let start = PreciseTime::now();
     let images: Vec<[[[u32; 2]; 24]; 24]> =
         <<[[[u32; 1]; 3]; 3] as Wrap<[u32; 2]>>::Wrapped as TrainAutoencoderConv<
             [[[u32; 1]; 3]; 3],
@@ -636,35 +650,52 @@ fn main() {
             &mut rng,
             &images,
             &vec![
-                ((3800, 12), (10, 6), (70, 11)),
-                ((2900, 7), (9, 5), (300, 5)),
-                ((30, 6), (5, 4), (45, 4)),
+                ((70, 10), (10, 7), (70, 10)),
+                ((70, 10), (10, 7), (70, 10)),
+                ((70, 10), (10, 7), (70, 10)),
+                ((70, 10), (10, 7), (70, 10)),
+                ((70, 10), (10, 7), (70, 10)),
+                ((70, 10), (10, 7), (70, 10)),
+                ((60, 10), (10, 7), (60, 10)),
+                ((60, 10), (10, 7), (60, 10)),
+                ((60, 10), (8,  6), (60, 10)),
+                ((60, 10), (8,  6), (60, 10)),
+                ((50, 10), (8,  5), (50, 10)),
+                ((50, 10), (7,  5), (50, 10)),
+                ((20, 8), (7, 5), (20, 8)),
+                ((20, 8), (7, 5), (20, 8)),
+                ((10, 7), (6, 4), (10, 7)),
+                ((10, 7), (6, 4), (10, 7)),
+                ((10, 6), (6, 4), (10, 6)),
+                ((10, 6), (6, 4), (10, 6)),
+                ((10, 6), (6, 4), (10, 6)),
             ],
             &base_path.join("autoencoder_2"),
-            true,
+            false,
         );
-    println!("update time: {}", start.to(PreciseTime::now()));
+    //92
+    //println!("update time: {}", start.to(PreciseTime::now()));
     // 32.9
     // 23.4
 
     //for v in (0..30).map(|x| x * 100 + 2000) {
-    for v in (1500..3000).step_by(50) {
-        dbg!(v);
-        let mut rng = Hc128Rng::seed_from_u64(8);
-        let images: Vec<[[[u32; 4]; 12]; 12]> =
-            <<[[[u32; 2]; 2]; 2] as Wrap<[u32; 4]>>::Wrapped as TrainAutoencoderConv<
-                [[[u32; 2]; 2]; 2],
-                [u32; 4],
-                _,
-                _,
-            >>::autoencoder(
-                &mut rng,
-                &images,
-                &vec![((10600, 12), (5, 6), (500, 12)), ((v, 7), (5, 5), (300, 5))],
-                &base_path.join("autoencoder_3"),
-                false,
-            );
-    }
+    //for v in (1500..3000).step_by(50) {
+    //    dbg!(v);
+    //    let mut rng = Hc128Rng::seed_from_u64(8);
+    //    let images: Vec<[[[u32; 4]; 12]; 12]> =
+    //        <<[[[u32; 2]; 2]; 2] as Wrap<[u32; 4]>>::Wrapped as TrainAutoencoderConv<
+    //            [[[u32; 2]; 2]; 2],
+    //            [u32; 4],
+    //            _,
+    //            _,
+    //        >>::autoencoder(
+    //            &mut rng,
+    //            &images,
+    //            &vec![((10600, 12), (5, 6), (500, 12)), ((v, 7), (5, 5), (300, 5))],
+    //            &base_path.join("autoencoder_3"),
+    //            false,
+    //        );
+    //}
     // 32.2
     //let encoder = <[[[u32; 1]; 3]; 3] as Wrap<[u32; 1]>>::Wrapped::new_from_fs(
     //    &base_path.join("autoencoder_2"),
