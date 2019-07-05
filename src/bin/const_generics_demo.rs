@@ -1,7 +1,13 @@
 #![feature(const_generics)]
+use bitnn::datasets::mnist;
+use bitnn::ExtractPatches;
+use rand::seq::SliceRandom;
 use rand::Rng;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
+use rayon::prelude::*;
+use std::fs;
+use std::path::Path;
 
 macro_rules! patch_3x3 {
     ($input:expr, $x:expr, $y:expr) => {
@@ -24,6 +30,37 @@ macro_rules! patch_3x3 {
         ]
     };
 }
+
+pub trait ElementwiseAdd {
+    fn elementwise_add(&mut self, other: &Self);
+}
+impl ElementwiseAdd for u16 {
+    fn elementwise_add(&mut self, other: &u16) {
+        *self += other;
+    }
+}
+
+impl ElementwiseAdd for u32 {
+    fn elementwise_add(&mut self, other: &u32) {
+        *self += other;
+    }
+}
+
+impl<T: ElementwiseAdd> ElementwiseAdd for (T, T) {
+    fn elementwise_add(&mut self, other: &Self) {
+        self.0.elementwise_add(&other.0);
+        self.1.elementwise_add(&other.1);
+    }
+}
+
+impl<T: ElementwiseAdd, const L: usize> ElementwiseAdd for [T; L] {
+    fn elementwise_add(&mut self, other: &[T; L]) {
+        for i in 0..L {
+            self[i].elementwise_add(&other[i]);
+        }
+    }
+}
+
 trait Wrap<T> {
     type Wrap;
 }
@@ -66,7 +103,7 @@ where
         &self,
         a: &Self::BitCounterType,
         b: &Self::BitCounterType,
-    ) -> (Option<Self::IndexType>, u32);
+    ) -> (Option<Self::IndexType>, u16);
 }
 
 trait UInt {
@@ -87,18 +124,18 @@ macro_rules! impl_bitlen_for_uint {
             }
         }
         impl IncrementCounters for $type {
-            type BitCounterType = [u32; <$type>::BIT_LEN];
+            type BitCounterType = [u16; <$type>::BIT_LEN];
             fn increment_counters(&self, counters: &mut Self::BitCounterType) {
                 for b in 0..<$type>::BIT_LEN {
-                    counters[b] += ((self >> b) & 1) as u32
+                    counters[b] += ((self >> b) & 1) as u16
                 }
             }
             fn top1_index(
                 &self,
                 a: &Self::BitCounterType,
                 b: &Self::BitCounterType,
-            ) -> (Option<Self::IndexType>, u32) {
-                let mut max_diff = 0u32;
+            ) -> (Option<Self::IndexType>, u16) {
+                let mut max_diff = 0u16;
                 let mut index = None;
                 for i in 0..$len {
                     let grad_sign = a[i] <= b[i];
@@ -200,8 +237,8 @@ macro_rules! impl_bitlen_for_uint {
             fn matrix_top1_index(
                 &self,
                 counters: &Self::MatrixBitCounterType,
-            ) -> (Option<Self::IndexType>, u32) {
-                let mut max_diff = 0u32;
+            ) -> (Option<Self::IndexType>, u16) {
+                let mut max_diff = 0u16;
                 let mut index = None;
                 for i in 0..$len {
                     let (sub_index, diff) = self[i].top1_index(&counters[i].0, &counters[i].1);
@@ -263,8 +300,8 @@ where
         &self,
         a: &Self::BitCounterType,
         b: &Self::BitCounterType,
-    ) -> (Option<Self::IndexType>, u32) {
-        let mut max_diff = 0u32;
+    ) -> (Option<Self::IndexType>, u16) {
+        let mut max_diff = 0u16;
         let mut index = None;
         for i in 0..L {
             let (sub_index, diff) = self[i].top1_index(&a[i], &b[i]);
@@ -312,7 +349,7 @@ where
     fn matrix_top1_index(
         &self,
         counters: &Self::MatrixBitCounterType,
-    ) -> (Option<Self::IndexType>, u32);
+    ) -> (Option<Self::IndexType>, u16);
 }
 
 impl<
@@ -362,8 +399,8 @@ impl<
     fn matrix_top1_index(
         &self,
         counters: &Self::MatrixBitCounterType,
-    ) -> (Option<Self::IndexType>, u32) {
-        let mut max_diff = 0u32;
+    ) -> (Option<Self::IndexType>, u16) {
+        let mut max_diff = 0u16;
         let mut index = None;
         for i in 0..L {
             let (sub_index, diff) = self[i].matrix_top1_index(&counters[i]);
@@ -472,7 +509,7 @@ where
             self,
             tanh_width,
         );
-        let (embedding_index, val) =
+        let (embedding_index, _) =
             embedding.top1_index(&embedding_counters_0, &embedding_counters_1);
         if let Some(index) = embedding_index {
             encoder.lesser_backprop(encoder_counter, self, &index, &embedding, tanh_width);
@@ -480,10 +517,103 @@ where
     }
 }
 
+trait AutoencoderMinibatch<Example>
+where
+    Example: Wrap<Self> + Sized,
+    Self: Wrap<Example> + Sized,
+{
+    fn minibatch(
+        encoder: &mut <Example as Wrap<Self>>::Wrap,
+        decoder: &mut <Self as Wrap<Example>>::Wrap,
+        examples: &[Example],
+        tanh_width: u32,
+    );
+    fn epoch(
+        encoder: &mut <Example as Wrap<Self>>::Wrap,
+        decoder: &mut <Self as Wrap<Example>>::Wrap,
+        examples: &[Example],
+        minibatch_size: usize,
+        tanh_width: u32,
+    ) {
+        let n_minibatches = examples.len() / minibatch_size;
+        dbg!(n_minibatches);
+        for i in 0..n_minibatches {
+            <Self as AutoencoderMinibatch<Example>>::minibatch(
+                encoder,
+                decoder,
+                &examples[(i * minibatch_size)..((i + 1) * minibatch_size)],
+                tanh_width,
+            );
+            //if i % 10 == 0 {
+            //    dbg!(avg_hd!(examples[0..1024], encoder, decoder));
+            //}
+        }
+    }
+}
+
+impl<Example: Send + Sync + Wrap<Embedding> + IncrementCounters + HammingDistance, Embedding: Wrap<Example> + Sized + IncrementCounters>
+    AutoencoderMinibatch<Example> for Embedding
+where
+    <Example as Wrap<Embedding>>::Wrap: IncrementMatrixCounters<Example, Embedding> + BitMul<Example, Embedding> + Sync,
+    <Embedding as Wrap<Example>>::Wrap: IncrementMatrixCounters<Embedding, Example> + BitMul<Embedding, Example> + Sync,
+    <<Embedding as Wrap<Example>>::Wrap as IncrementMatrixCounters<Embedding, Example>>::MatrixBitCounterType: Default + Send + ElementwiseAdd,
+    <<Example as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<Example, Embedding>>::MatrixBitCounterType: Default + Send + ElementwiseAdd,
+    Embedding::BitCounterType: Default,
+{
+    fn minibatch(
+        encoder: &mut <Example as Wrap<Embedding>>::Wrap,
+        decoder: &mut <Embedding as Wrap<Example>>::Wrap,
+        examples: &[Example],
+        tanh_width: u32,
+    ) {
+        let (encoder_counters, decoder_counters) = examples.par_iter().fold(||{
+            (<<Example as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<
+                Example,
+                Embedding,
+            >>::MatrixBitCounterType::default(),
+            <<Embedding as Wrap<Example>>::Wrap as IncrementMatrixCounters<
+                Embedding,
+                Example,
+            >>::MatrixBitCounterType::default())
+        }, |mut counters, example|{
+            <Example as AutoencoderSample<Embedding>>::update_counters(
+                &example,
+                &encoder,
+                &mut counters.0,
+                &decoder,
+                &mut counters.1,
+                tanh_width,
+            );
+            counters
+        }).reduce(||{
+            (<<Example as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<
+                Example,
+                Embedding,
+            >>::MatrixBitCounterType::default(),
+            <<Embedding as Wrap<Example>>::Wrap as IncrementMatrixCounters<
+                Embedding,
+                Example,
+            >>::MatrixBitCounterType::default())
+        }, |mut a, b|{
+            a.0.elementwise_add(&b.0);
+            a.1.elementwise_add(&b.1);
+            a
+        });
+        let (index, _) = encoder.matrix_top1_index(&encoder_counters);
+        if let Some(index) = index {
+            encoder.flip_bit_index(&index);
+        }
+        let (index, _) = decoder.matrix_top1_index(&decoder_counters);
+        if let Some(index) = index {
+            decoder.flip_bit_index(&index);
+        }
+    }
+}
+
 macro_rules! avg_hd {
     ($examples:expr, $encoder:expr, $decoder:expr) => {{
         let sum_hd: u32 = $examples
-            .iter()
+            .par_iter()
             .map(|example| {
                 let embedding = $encoder.bit_mul(&example);
                 let output = $decoder.bit_mul(&embedding);
@@ -495,50 +625,57 @@ macro_rules! avg_hd {
 }
 
 const EMBEDDING_LEN: usize = 1;
-const N_EXAMPLES: usize = 60_0;
+const N_EXAMPLES: usize = 20_000;
+const N_STAGES: usize = 4;
+//const MINIBATCH_SIZE: usize = 512;
+// 6.64 2m8
+// 6.09 3m34
+// 5.36 6m34
+// 4.9
+// 7.09 0m30
+// 6.9 0m38
+// 5.97 0.25
 
 fn main() {
-    let mut rng = Hc128Rng::seed_from_u64(3);
-    let examples = vec![
-        [[!0u8, 0u8, 0u8], [0u8, !0u8, 0u8], [0u8, !0u8, 0u8]],
-        [[!0u8, 0u8, 0u8], [!0u8, 0u8, 0u8], [!0u8, 0u8, 0u8]],
-        [[0u8, 0u8, 0u8], [0u8, 0u8, 0u8], [!0u8, !0u8, !0u8]],
-        [[0u8, 0u8, !0u8], [0u8, 0u8, !0u8], [0u8, 0u8, !0u8]],
-        [[!0u8, !0u8, !0u8], [0u8, 0u8, 0u8], [!0u8, !0u8, !0u8]],
-        [[!0u8, 0u8, 0u8], [0u8, !0u8, 0u8], [0u8, !0u8, 0u8]],
-        [[!0u8, !0u8, !0u8], [0u8, 0u8, 0u8], [!0u8, !0u8, !0u8]],
-    ];
+    let mut rng = Hc128Rng::seed_from_u64(0);
+    rayon::ThreadPoolBuilder::new()
+        .stack_size(2usize.pow(28))
+        .num_threads(4)
+        .build_global()
+        .unwrap();
+
+    let base_path = Path::new("params/ac_conv_test2");
+    fs::create_dir_all(base_path).unwrap();
+
+    let images = mnist::load_images_u8_unary(
+        Path::new("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"),
+        N_EXAMPLES,
+    );
+
+    let mut examples: Vec<[[u8; 3]; 3]> = images
+        .par_iter()
+        .map(|image| image.patches())
+        .flatten()
+        .collect();
+    examples.shuffle(&mut rng);
     let mut encoder: [[[[u8; 3]; 3]; 32]; EMBEDDING_LEN] = rng.gen();
     let mut decoder: [[[[u32; EMBEDDING_LEN]; 8]; 3]; 3] = rng.gen();
-    let mut encoder_counters = [[([[[0u32; 8]; 3]; 3], [[[0u32; 8]; 3]; 3]); 32]; EMBEDDING_LEN];
-    let mut decoder_counters =
-        [[[([[0u32; 32]; EMBEDDING_LEN], [[0u32; 32]; EMBEDDING_LEN]); 8]; 3]; 3];
+
     dbg!(avg_hd!(examples, encoder, decoder));
-    for &t in &[9, 8,7, 6, 5, 4, 3, 2, 1] {
-        dbg!(t);
-        for i in 0..1000 {
-            for example in &examples {
-                <[[u8; 3]; 3] as AutoencoderSample<[u32; EMBEDDING_LEN]>>::update_counters(
-                    &example,
-                    &encoder,
-                    &mut encoder_counters,
-                    &decoder,
-                    &mut decoder_counters,
-                    t,
-                );
-            }
-            let (index, val) = encoder.matrix_top1_index(&encoder_counters);
-            if let Some(index) = index {
-                encoder.flip_bit_index(&index);
-            }
-            let (index, val) = decoder.matrix_top1_index(&decoder_counters);
-            if let Some(index) = index {
-                decoder.flip_bit_index(&index);
-            }
-            if i % 10 == 0 {
-                dbg!(avg_hd!(examples, encoder, decoder));
-            }
-        }
+    let stage_size = examples.len() / N_STAGES;
+    for (i, t) in (0..N_STAGES).rev().enumerate() {
+        let minibatch_size = 2usize.pow(i as u32 + 9);
+        dbg!(minibatch_size);
+        let tanh_width = t as u32 + 2;
+        dbg!(tanh_width);
+        <[u32; EMBEDDING_LEN] as AutoencoderMinibatch<[[u8; 3]; 3]>>::epoch(
+            &mut encoder,
+            &mut decoder,
+            &examples[(i * stage_size)..((i + 1) * stage_size)],
+            minibatch_size,
+            tanh_width,
+        );
+        dbg!(avg_hd!(examples, encoder, decoder));
     }
 }
 
