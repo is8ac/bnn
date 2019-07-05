@@ -6,7 +6,6 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;
-use std::fs;
 use std::path::Path;
 
 macro_rules! patch_3x3 {
@@ -470,7 +469,7 @@ where
             Self,
         >>::MatrixBitCounterType,
         tanh_width: u32,
-    );
+    ) -> bool;
 }
 
 impl<Input: IncrementCounters + HammingDistance, Embedding: IncrementCounters>
@@ -497,7 +496,7 @@ where
             Self,
         >>::MatrixBitCounterType,
         tanh_width: u32,
-    ) {
+    ) -> bool {
         let embedding = encoder.bit_mul(self);
         let mut embedding_counters_0 = Embedding::BitCounterType::default();
         let mut embedding_counters_1 = Embedding::BitCounterType::default();
@@ -513,6 +512,9 @@ where
             embedding.top1_index(&embedding_counters_0, &embedding_counters_1);
         if let Some(index) = embedding_index {
             encoder.lesser_backprop(encoder_counter, self, &index, &embedding, tanh_width);
+            true
+        } else {
+            false
         }
     }
 }
@@ -527,7 +529,7 @@ where
         decoder: &mut <Self as Wrap<Example>>::Wrap,
         examples: &[Example],
         tanh_width: u32,
-    );
+    ) -> u64;
     fn epoch(
         encoder: &mut <Example as Wrap<Self>>::Wrap,
         decoder: &mut <Self as Wrap<Example>>::Wrap,
@@ -538,16 +540,49 @@ where
         let n_minibatches = examples.len() / minibatch_size;
         dbg!(n_minibatches);
         for i in 0..n_minibatches {
-            <Self as AutoencoderMinibatch<Example>>::minibatch(
+            let n_updates = <Self as AutoencoderMinibatch<Example>>::minibatch(
                 encoder,
                 decoder,
                 &examples[(i * minibatch_size)..((i + 1) * minibatch_size)],
                 tanh_width,
             );
+            let update_frac = n_updates as f64 / minibatch_size as f64;
+            if update_frac != 1.0 {
+                dbg!(update_frac);
+            }
             //if i % 10 == 0 {
             //    dbg!(avg_hd!(examples[0..1024], encoder, decoder));
             //}
         }
+    }
+    fn epoch_n_chunks(
+        encoder: &mut <Example as Wrap<Self>>::Wrap,
+        decoder: &mut <Self as Wrap<Example>>::Wrap,
+        examples: &[Example],
+        minibatch_size: usize,
+        tanh_width: u32,
+    ) {
+        let mut chunks = examples.chunks_exact(minibatch_size);
+        let mut update_frac = 1f64;
+        let mut n_minibatches = 0;
+        for chunk in chunks {
+            n_minibatches += 1;
+            let n_updates = <Self as AutoencoderMinibatch<Example>>::minibatch(
+                encoder,
+                decoder,
+                chunk,
+                tanh_width,
+            );
+            update_frac = n_updates as f64 / minibatch_size as f64;
+            if update_frac < 0.2 {
+                dbg!(update_frac);
+                //break
+            }
+            //if i % 10 == 0 {
+            //    dbg!(avg_hd!(examples[0..1024], encoder, decoder));
+            //}
+        }
+        dbg!(n_minibatches);
     }
 }
 
@@ -565,38 +600,40 @@ where
         decoder: &mut <Embedding as Wrap<Example>>::Wrap,
         examples: &[Example],
         tanh_width: u32,
-    ) {
-        let (encoder_counters, decoder_counters) = examples.par_iter().fold(||{
-            (<<Example as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<
+    ) -> u64 {
+        let (updates, (encoder_counters, decoder_counters)) = examples.par_iter().fold(||{
+            (0u64, (<<Example as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<
                 Example,
                 Embedding,
             >>::MatrixBitCounterType::default(),
             <<Embedding as Wrap<Example>>::Wrap as IncrementMatrixCounters<
                 Embedding,
                 Example,
-            >>::MatrixBitCounterType::default())
+            >>::MatrixBitCounterType::default()))
         }, |mut counters, example|{
-            <Example as AutoencoderSample<Embedding>>::update_counters(
+            let is_update = <Example as AutoencoderSample<Embedding>>::update_counters(
                 &example,
                 &encoder,
-                &mut counters.0,
+                &mut (counters.1).0,
                 &decoder,
-                &mut counters.1,
+                &mut (counters.1).1,
                 tanh_width,
             );
+            counters.0 += is_update as u64;
             counters
         }).reduce(||{
-            (<<Example as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<
+            (0u64, (<<Example as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<
                 Example,
                 Embedding,
             >>::MatrixBitCounterType::default(),
             <<Embedding as Wrap<Example>>::Wrap as IncrementMatrixCounters<
                 Embedding,
                 Example,
-            >>::MatrixBitCounterType::default())
+            >>::MatrixBitCounterType::default()))
         }, |mut a, b|{
-            a.0.elementwise_add(&b.0);
-            a.1.elementwise_add(&b.1);
+            a.0 += b.0;
+            (a.1).0.elementwise_add(&(b.1).0);
+            (a.1).1.elementwise_add(&(b.1).1);
             a
         });
         let (index, _) = encoder.matrix_top1_index(&encoder_counters);
@@ -607,6 +644,7 @@ where
         if let Some(index) = index {
             decoder.flip_bit_index(&index);
         }
+        updates
     }
 }
 
@@ -625,8 +663,8 @@ macro_rules! avg_hd {
 }
 
 const EMBEDDING_LEN: usize = 1;
-const N_EXAMPLES: usize = 20_000;
-const N_STAGES: usize = 4;
+const N_EXAMPLES: usize = 6_000;
+const N_STAGES: usize = 5;
 //const MINIBATCH_SIZE: usize = 512;
 // 6.64 2m8
 // 6.09 3m34
@@ -636,6 +674,8 @@ const N_STAGES: usize = 4;
 // 6.9 0m38
 // 5.97 0.25
 
+// full: 5.915 1m10
+
 fn main() {
     let mut rng = Hc128Rng::seed_from_u64(0);
     rayon::ThreadPoolBuilder::new()
@@ -643,9 +683,6 @@ fn main() {
         .num_threads(4)
         .build_global()
         .unwrap();
-
-    let base_path = Path::new("params/ac_conv_test2");
-    fs::create_dir_all(base_path).unwrap();
 
     let images = mnist::load_images_u8_unary(
         Path::new("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"),
@@ -668,7 +705,7 @@ fn main() {
         dbg!(minibatch_size);
         let tanh_width = t as u32 + 2;
         dbg!(tanh_width);
-        <[u32; EMBEDDING_LEN] as AutoencoderMinibatch<[[u8; 3]; 3]>>::epoch(
+        <[u32; EMBEDDING_LEN] as AutoencoderMinibatch<[[u8; 3]; 3]>>::epoch_n_chunks(
             &mut encoder,
             &mut decoder,
             &examples[(i * stage_size)..((i + 1) * stage_size)],
@@ -677,6 +714,45 @@ fn main() {
         );
         dbg!(avg_hd!(examples, encoder, decoder));
     }
+    let classes = mnist::load_labels(
+        Path::new("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"),
+        N_EXAMPLES,
+    );
+    let image_index = classes
+        .iter()
+        .enumerate()
+        .find(|(_, c)| **c == 0)
+        .unwrap()
+        .0;
+    let image2: [[[u32; EMBEDDING_LEN]; 28]; 28] = encoder.conv2d(&images[image_index]);
+
+    //for w in 0..EMBEDDING_LEN {
+    //    for b in 0..32 {
+    //        for x in 0..3 {
+    //            for y in 0..3 {
+    //                print!("{:08b} ", encoder[w][b][x][y]);
+    //            }
+    //            print!("\n");
+    //        }
+    //        dbg!(b);
+    //        for x in 0..3 {
+    //            for y in 0..3 {
+    //                for wb in 0..8 {
+    //                    print!("{}", if decoder[x][y][wb][w].bit(b) { 1 } else { 0 });
+    //                }
+    //                print!(" ");
+    //            }
+    //            print!("\n");
+    //        }
+
+    //        for row in &image2 {
+    //            for pixel in row {
+    //                print!("{}", if pixel[w].bit(b) { 1 } else { 0 });
+    //            }
+    //            print!("\n");
+    //        }
+    //    }
+    //}
 }
 
 // only one bit of embedding has gradient
