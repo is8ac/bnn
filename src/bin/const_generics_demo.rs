@@ -85,6 +85,13 @@ trait NestedIndex {
     fn flip_bit_index(&mut self, index: &Self::IndexType);
 }
 
+impl<T: NestedIndex> NestedIndex for (T, u32) {
+    type IndexType = T::IndexType;
+    fn flip_bit_index(&mut self, index: &Self::IndexType) {
+        self.0.flip_bit_index(index);
+    }
+}
+
 impl<T: UInt> NestedIndex for T {
     type IndexType = usize;
     fn flip_bit_index(&mut self, &index: &Self::IndexType) {
@@ -157,6 +164,17 @@ macro_rules! impl_bitlen_for_uint {
         impl BitLen for $type {
             const BIT_LEN: usize = $len;
         }
+        impl<I: HammingDistance + BitLen> BitMul<I, $type> for [(I, u32); $len] {
+            fn bit_mul(&self, input: &I) -> $type {
+                let mut target = <$type>::default();
+                for i in 0..$len {
+                    target |=
+                        ((self[i].0.hamming_distance(input) > self[i].1) as $type) << i;
+                }
+                target
+            }
+        }
+
         impl<I: HammingDistance + BitLen> BitMul<I, $type> for [I; $len] {
             fn bit_mul(&self, input: &I) -> $type {
                 let mut target = <$type>::default();
@@ -241,6 +259,82 @@ macro_rules! impl_bitlen_for_uint {
                 let mut index = None;
                 for i in 0..$len {
                     let (sub_index, diff) = self[i].top1_index(&counters[i].0, &counters[i].1);
+                    if diff > max_diff {
+                        max_diff = diff;
+                        index = sub_index.map(|x| (x, i));
+                    }
+                }
+                (index, max_diff)
+            }
+        }
+        impl<Input: IncrementCounters + BitLen + HammingDistance>
+            IncrementMatrixCounters<Input, $type> for [(Input, u32); $len]
+        {
+            type MatrixBitCounterType = [(Input::BitCounterType, Input::BitCounterType, u32); $len];
+            // No grad is:
+            //      _____
+            //     |
+            // ____|
+            // current is:
+            //       _____
+            //      /
+            // ____/
+            // where the width is adjustable.
+            fn backprop(
+                &self,
+                counters: &mut Self::MatrixBitCounterType,
+                input: &Input,
+                input_counters_0: &mut Input::BitCounterType,
+                input_counters_1: &mut Input::BitCounterType,
+                target: &$type,
+                tanh_width: u32,
+            ) {
+                for b in 0..<$type>::BIT_LEN {
+                    let activation = self[b].0.hamming_distance(&input);
+                    let threshold = Input::BIT_LEN as u32 / 2;
+                    // this patch only gets to vote if it is within tanh_width.
+                    let diff =
+                        activation.saturating_sub(threshold) | threshold.saturating_sub(activation);
+                    if diff < tanh_width {
+                        if target.bit(b) {
+                            self[b].0.increment_counters(input_counters_0);
+                            input.increment_counters(&mut counters[b].0);
+                        } else {
+                            self[b].0.increment_counters(input_counters_1);
+                            input.increment_counters(&mut counters[b].1);
+                        }
+                    }
+                }
+            }
+            fn lesser_backprop(
+                &self,
+                matrix_counters: &mut Self::MatrixBitCounterType,
+                input: &Input,
+                &target_index: &usize,
+                target: &$type,
+                tanh_width: u32,
+            ) {
+                let activation = self[target_index].0.hamming_distance(&input);
+                let threshold = self[target_index].1;
+                // this patch only gets to vote if it is within tanh_width.
+                let diff =
+                    activation.saturating_sub(threshold) | threshold.saturating_sub(activation);
+                if diff < tanh_width {
+                    if target.bit(target_index) {
+                        input.increment_counters(&mut matrix_counters[target_index].0);
+                    } else {
+                        input.increment_counters(&mut matrix_counters[target_index].1);
+                    }
+                }
+            }
+            fn matrix_top1_index(
+                &self,
+                counters: &Self::MatrixBitCounterType,
+            ) -> (Option<Self::IndexType>, u16) {
+                let mut max_diff = 0u16;
+                let mut index = None;
+                for i in 0..$len {
+                    let (sub_index, diff) = self[i].0.top1_index(&counters[i].0, &counters[i].1);
                     if diff > max_diff {
                         max_diff = diff;
                         index = sub_index.map(|x| (x, i));
