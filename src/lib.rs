@@ -35,13 +35,11 @@ pub mod datasets {
 
             let mut images: Vec<[u64; 13]> = Vec::new();
             for _ in 0..size {
-                file.read_exact(&mut images_bytes)
-                    .expect("can't read images");
+                file.read_exact(&mut images_bytes).expect("can't read images");
                 let mut image_words: [u64; 13] = [0; 13];
                 for p in 0..784 {
                     let word_index = p / 64;
-                    image_words[word_index] =
-                        image_words[word_index] | (((images_bytes[p] > 128) as u64) << p % 64);
+                    image_words[word_index] = image_words[word_index] | (((images_bytes[p] > 128) as u64) << p % 64);
                 }
                 images.push(image_words);
             }
@@ -57,13 +55,11 @@ pub mod datasets {
 
             let mut images: Vec<[u32; 25]> = Vec::new();
             for _ in 0..size {
-                file.read_exact(&mut images_bytes)
-                    .expect("can't read images");
+                file.read_exact(&mut images_bytes).expect("can't read images");
                 let mut image_words: [u32; 25] = [0; 25];
                 for p in 0..784 {
                     let word_index = p / 32;
-                    image_words[word_index] =
-                        image_words[word_index] | (((images_bytes[p] > 128) as u32) << p % 32);
+                    image_words[word_index] = image_words[word_index] | (((images_bytes[p] > 128) as u32) << p % 32);
                 }
                 images.push(image_words);
             }
@@ -79,8 +75,7 @@ pub mod datasets {
 
             let mut images: Vec<[[u8; 28]; 28]> = Vec::new();
             for _ in 0..size {
-                file.read_exact(&mut images_bytes)
-                    .expect("can't read images");
+                file.read_exact(&mut images_bytes).expect("can't read images");
                 let mut image = [[0u8; 28]; 28];
                 for p in 0..784 {
                     image[p / 28][p % 28] = images_bytes[p];
@@ -121,9 +116,7 @@ pub mod datasets {
         }
         impl ConvertPixel for [u32; 1] {
             fn convert(pixel: [u8; 3]) -> [u32; 1] {
-                [to_11(pixel[0]) as u32
-                    | ((to_11(pixel[1]) as u32) << 11)
-                    | ((to_10(pixel[2]) as u32) << 22)]
+                [to_11(pixel[0]) as u32 | ((to_11(pixel[1]) as u32) << 11) | ((to_10(pixel[2]) as u32) << 22)]
             }
         }
         impl ConvertPixel for u8 {
@@ -138,33 +131,24 @@ pub mod datasets {
             }
         }
 
-        pub fn load_images_from_base<T: Default + Copy + ConvertPixel>(
-            base_path: &Path,
-            n: usize,
-        ) -> Vec<([[T; 32]; 32], usize)> {
+        pub fn load_images_from_base<T: Default + Copy + ConvertPixel>(base_path: &Path, n: usize) -> Vec<([[T; 32]; 32], usize)> {
             if n > 50000 {
                 panic!("n must be <= 50,000");
             }
             (1..6)
                 .map(|i| {
-                    let mut file = File::open(&base_path.join(format!("data_batch_{}.bin", i)))
-                        .expect("can't open data");
+                    let mut file = File::open(&base_path.join(format!("data_batch_{}.bin", i))).expect("can't open data");
 
                     let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
                     let mut label: [u8; 1] = [0; 1];
                     let mut images: Vec<([[T; 32]; 32], usize)> = Vec::new();
                     for _ in 0..10000 {
                         file.read_exact(&mut label).expect("can't read label");
-                        file.read_exact(&mut image_bytes)
-                            .expect("can't read images");
+                        file.read_exact(&mut image_bytes).expect("can't read images");
                         let mut image = [[T::default(); 32]; 32];
                         for x in 0..32 {
                             for y in 0..32 {
-                                let pixel = [
-                                    image_bytes[(0 * 1024) + (y * 32) + x],
-                                    image_bytes[(1 * 1024) + (y * 32) + x],
-                                    image_bytes[(2 * 1024) + (y * 32) + x],
-                                ];
+                                let pixel = [image_bytes[(0 * 1024) + (y * 32) + x], image_bytes[(1 * 1024) + (y * 32) + x], image_bytes[(2 * 1024) + (y * 32) + x]];
                                 image[x][y] = T::convert(pixel);
                             }
                         }
@@ -201,13 +185,6 @@ impl_bitor_for_uint!(u64);
 pub trait GetBit {
     fn bit(&self, i: usize) -> bool;
 }
-
-//impl GetBit for bool {
-//    #[inline(always)]
-//    fn bit(&self, _i: usize) -> bool {
-//        *self
-//    }
-//}
 
 impl GetBit for u8 {
     #[inline(always)]
@@ -635,12 +612,7 @@ pub trait ArrayBitIncrement {
     //    counters_1: &Self::CountersType,
     //    len: usize,
     //) -> Self::DiffType;
-    fn compare_and_bitpack(
-        &mut self,
-        counters_0: &Self::CountersType,
-        counters_1: &Self::CountersType,
-        len: usize,
-    );
+    fn compare_and_bitpack(&mut self, counters_0: &Self::CountersType, counters_1: &Self::CountersType, len: usize);
 }
 
 impl ArrayBitIncrement for u32 {
@@ -662,12 +634,7 @@ impl ArrayBitIncrement for u32 {
     //    }
     //    diffs
     //}
-    fn compare_and_bitpack(
-        &mut self,
-        counters_0: &Self::CountersType,
-        counters_1: &Self::CountersType,
-        len: usize,
-    ) {
+    fn compare_and_bitpack(&mut self, counters_0: &Self::CountersType, counters_1: &Self::CountersType, len: usize) {
         for b in 0..32 {
             let diff = (counters_0[b] as f64 - counters_1[b] as f64) / len as f64;
             if diff.abs() > 0.1 {
@@ -696,12 +663,7 @@ impl ArrayBitIncrement for u8 {
     //    }
     //    diffs
     //}
-    fn compare_and_bitpack(
-        &mut self,
-        counters_0: &Self::CountersType,
-        counters_1: &Self::CountersType,
-        len: usize,
-    ) {
+    fn compare_and_bitpack(&mut self, counters_0: &Self::CountersType, counters_1: &Self::CountersType, len: usize) {
         let mut target = 0u8;
         for b in 0..8 {
             let diff = (counters_0[b] as f64 - counters_1[b] as f64) / len as f64;
@@ -734,12 +696,7 @@ macro_rules! impl_bitincrement_for_array {
             //    }
             //    diffs
             //}
-            fn compare_and_bitpack(
-                &mut self,
-                counters_0: &Self::CountersType,
-                counters_1: &Self::CountersType,
-                len: usize,
-            ) {
+            fn compare_and_bitpack(&mut self, counters_0: &Self::CountersType, counters_1: &Self::CountersType, len: usize) {
                 for i in 0..$len {
                     self[i].compare_and_bitpack(&counters_0[i], &counters_1[i], len);
                 }
@@ -757,28 +714,14 @@ impl_bitincrement_for_array!(32);
 
 pub trait MatrixBitIncrement<Input, Target> {
     type MatrixCountersType;
-    fn increment_matrix_counters(
-        &self,
-        counters: &mut Self::MatrixCountersType,
-        input: &Input,
-        target: &Target,
-        tanh_width: u32,
-    );
+    fn increment_matrix_counters(&self, counters: &mut Self::MatrixCountersType, input: &Input, target: &Target, tanh_width: u32);
     fn bitpack(&mut self, counters: &Self::MatrixCountersType, len: usize);
 }
 
 // TODO pass current state.
-impl<Input: ArrayBitIncrement + Copy + Default + HammingDistance + BitLen>
-    MatrixBitIncrement<Input, u8> for [Input; 8]
-{
+impl<Input: ArrayBitIncrement + Copy + Default + HammingDistance + BitLen> MatrixBitIncrement<Input, u8> for [Input; 8] {
     type MatrixCountersType = [(Input::CountersType, Input::CountersType); 8];
-    fn increment_matrix_counters(
-        &self,
-        counters: &mut Self::MatrixCountersType,
-        input: &Input,
-        target: &u8,
-        tanh_width: u32,
-    ) {
+    fn increment_matrix_counters(&self, counters: &mut Self::MatrixCountersType, input: &Input, target: &u8, tanh_width: u32) {
         for b in 0..8 {
             let activation = self[b].hamming_distance(&input);
             let threshold = Input::BIT_LEN as u32 / 2;
@@ -800,17 +743,9 @@ impl<Input: ArrayBitIncrement + Copy + Default + HammingDistance + BitLen>
     }
 }
 
-impl<Input: ArrayBitIncrement + Copy + Default + HammingDistance + BitLen>
-    MatrixBitIncrement<Input, u32> for [Input; 32]
-{
+impl<Input: ArrayBitIncrement + Copy + Default + HammingDistance + BitLen> MatrixBitIncrement<Input, u32> for [Input; 32] {
     type MatrixCountersType = [(Input::CountersType, Input::CountersType); 32];
-    fn increment_matrix_counters(
-        &self,
-        counters: &mut Self::MatrixCountersType,
-        input: &Input,
-        target: &u32,
-        tanh_width: u32,
-    ) {
+    fn increment_matrix_counters(&self, counters: &mut Self::MatrixCountersType, input: &Input, target: &u32, tanh_width: u32) {
         for b in 0..32 {
             // No grad is:
             //      _____
@@ -843,24 +778,11 @@ impl<Input: ArrayBitIncrement + Copy + Default + HammingDistance + BitLen>
 
 macro_rules! impl_matrixbitincrement_for_array_of_matrixbitincrement {
     ($len:expr) => {
-        impl<Input, Target, MatrixBits: MatrixBitIncrement<Input, Target> + Copy + Default>
-            MatrixBitIncrement<Input, [Target; $len]> for [MatrixBits; $len]
-        {
+        impl<Input, Target, MatrixBits: MatrixBitIncrement<Input, Target> + Copy + Default> MatrixBitIncrement<Input, [Target; $len]> for [MatrixBits; $len] {
             type MatrixCountersType = [MatrixBits::MatrixCountersType; $len];
-            fn increment_matrix_counters(
-                &self,
-                counters: &mut Self::MatrixCountersType,
-                input: &Input,
-                target: &[Target; $len],
-                tanh_width: u32,
-            ) {
+            fn increment_matrix_counters(&self, counters: &mut Self::MatrixCountersType, input: &Input, target: &[Target; $len], tanh_width: u32) {
                 for i in 0..$len {
-                    self[i].increment_matrix_counters(
-                        &mut counters[i],
-                        input,
-                        &target[i],
-                        tanh_width,
-                    );
+                    self[i].increment_matrix_counters(&mut counters[i], input, &target[i], tanh_width);
                 }
             }
             fn bitpack(&mut self, counters: &Self::MatrixCountersType, len: usize) {
@@ -884,9 +806,7 @@ pub trait OptimizeInput<Weights, Target> {
     fn optimize(&mut self, weights: &Weights, target: &Target);
 }
 
-impl<Input: BitLen + FlipBit + GetBit, Weights: Apply<Input, Target>, Target: HammingDistance>
-    OptimizeInput<Weights, Target> for Input
-{
+impl<Input: BitLen + FlipBit + GetBit, Weights: Apply<Input, Target>, Target: HammingDistance> OptimizeInput<Weights, Target> for Input {
     fn optimize(&mut self, weights: &Weights, target: &Target) {
         let mut cur_hd = weights.apply(self).hamming_distance(target);
         for b in 0..Input::BIT_LEN {
@@ -907,12 +827,7 @@ pub trait TrainAutoencoder<Input, Embedding, Decoder> {
 
 impl<
         Input: Sync + Send + HammingDistance + BitLen,
-        Encoder: MatrixBitIncrement<Input, Embedding>
-            + Sync
-            + Send
-            + Apply<Input, Embedding>
-            + HammingDistance
-            + Copy,
+        Encoder: MatrixBitIncrement<Input, Embedding> + Sync + Send + Apply<Input, Embedding> + HammingDistance + Copy,
         Embedding: Sync + Send + OptimizeInput<Decoder, Input>,
         Decoder: MatrixBitIncrement<Embedding, Input> + Sync + Send + Apply<Embedding, Input>,
     > TrainAutoencoder<Input, Embedding, Decoder> for Encoder
@@ -980,11 +895,7 @@ where
                     output.hamming_distance(patch) as u64
                 })
                 .sum();
-            println!(
-                "avg hd: {} / {}",
-                sum_hd as f64 / examples.len() as f64,
-                Input::BIT_LEN
-            );
+            println!("avg hd: {} / {}", sum_hd as f64 / examples.len() as f64, Input::BIT_LEN);
         }
         encoder
     }
@@ -1052,31 +963,16 @@ pub mod layers {
 
     macro_rules! patch_2x2 {
         ($input:expr, $x:expr, $y:expr) => {
-            [
-                [$input[$x + 0][$y + 0], $input[$x + 0][$y + 1]],
-                [$input[$x + 1][$y + 0], $input[$x + 1][$y + 1]],
-            ]
+            [[$input[$x + 0][$y + 0], $input[$x + 0][$y + 1]], [$input[$x + 1][$y + 0], $input[$x + 1][$y + 1]]]
         };
     }
 
     macro_rules! patch_3x3 {
         ($input:expr, $x:expr, $y:expr) => {
             [
-                [
-                    $input[$x + 0][$y + 0],
-                    $input[$x + 0][$y + 1],
-                    $input[$x + 0][$y + 2],
-                ],
-                [
-                    $input[$x + 1][$y + 0],
-                    $input[$x + 1][$y + 1],
-                    $input[$x + 1][$y + 2],
-                ],
-                [
-                    $input[$x + 2][$y + 0],
-                    $input[$x + 2][$y + 1],
-                    $input[$x + 2][$y + 2],
-                ],
+                [$input[$x + 0][$y + 0], $input[$x + 0][$y + 1], $input[$x + 0][$y + 2]],
+                [$input[$x + 1][$y + 0], $input[$x + 1][$y + 1], $input[$x + 1][$y + 2]],
+                [$input[$x + 2][$y + 0], $input[$x + 2][$y + 1], $input[$x + 2][$y + 2]],
             ]
         };
     }
@@ -1087,13 +983,8 @@ pub mod layers {
 
     macro_rules! impl_conv2d_2x2 {
         ($x_size:expr, $y_size:expr) => {
-            impl<I: Copy, O: Default + Copy, W: Apply<[[I; 2]; 2], O>>
-                Conv2D<[[I; $y_size]; $x_size], [[O; $y_size / 2]; $x_size / 2]> for W
-            {
-                fn conv2d(
-                    &self,
-                    input: &[[I; $y_size]; $x_size],
-                ) -> [[O; $y_size / 2]; $x_size / 2] {
+            impl<I: Copy, O: Default + Copy, W: Apply<[[I; 2]; 2], O>> Conv2D<[[I; $y_size]; $x_size], [[O; $y_size / 2]; $x_size / 2]> for W {
+                fn conv2d(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size / 2]; $x_size / 2] {
                     let mut target = [[O::default(); $y_size / 2]; $x_size / 2];
                     for x in 0..($x_size / 2) {
                         let x_base = x * 2;
@@ -1118,9 +1009,7 @@ pub mod layers {
 
     macro_rules! conv2d_3x3_apply_trait {
         ($x_size:expr, $y_size:expr) => {
-            impl<I: Copy, W: Apply<[[I; 3]; 3], O>, O: Default + Copy>
-                Conv2D<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]> for W
-            {
+            impl<I: Copy, W: Apply<[[I; 3]; 3], O>, O: Default + Copy> Conv2D<[[I; $y_size]; $x_size], [[O; $y_size]; $x_size]> for W {
                 fn conv2d(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size]; $x_size] {
                     let mut target = [[O::default(); $y_size]; $x_size];
                     for x in 0..$x_size - 2 {
@@ -1142,13 +1031,8 @@ pub mod layers {
 
     macro_rules! conv2d_3x3_apply_trait_no_pad {
         ($x_size:expr, $y_size:expr) => {
-            impl<I: Copy, W: Apply<[[I; 3]; 3], O>, O: Default + Copy>
-                Conv2D<[[I; $y_size]; $x_size], [[O; $y_size - 2]; $x_size - 2]> for W
-            {
-                fn conv2d(
-                    &self,
-                    input: &[[I; $y_size]; $x_size],
-                ) -> [[O; $y_size - 2]; $x_size - 2] {
+            impl<I: Copy, W: Apply<[[I; 3]; 3], O>, O: Default + Copy> Conv2D<[[I; $y_size]; $x_size], [[O; $y_size - 2]; $x_size - 2]> for W {
+                fn conv2d(&self, input: &[[I; $y_size]; $x_size]) -> [[O; $y_size - 2]; $x_size - 2] {
                     let mut target = [[O::default(); $y_size - 2]; $x_size - 2];
                     for x in 0..$x_size - 2 {
                         for y in 0..$y_size - 2 {
@@ -1182,9 +1066,7 @@ pub mod layers {
     }
     macro_rules! impl_orpool {
         ($x_size:expr, $y_size:expr) => {
-            impl<Pixel: BitOr + Default + Copy> OrPool<[[Pixel; $y_size / 2]; $x_size / 2]>
-                for [[Pixel; $y_size]; $x_size]
-            {
+            impl<Pixel: BitOr + Default + Copy> OrPool<[[Pixel; $y_size / 2]; $x_size / 2]> for [[Pixel; $y_size]; $x_size] {
                 fn or_pool(&self) -> [[Pixel; $y_size / 2]; $x_size / 2] {
                     let mut target = [[Pixel::default(); $y_size / 2]; $x_size / 2];
                     for x in 0..$x_size / 2 {

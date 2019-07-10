@@ -11,21 +11,21 @@ use std::path::Path;
 macro_rules! patch_3x3 {
     ($input:expr, $x:expr, $y:expr) => {
         [
-            [
-                $input[$x + 0][$y + 0],
-                $input[$x + 0][$y + 1],
-                $input[$x + 0][$y + 2],
-            ],
-            [
-                $input[$x + 1][$y + 0],
-                $input[$x + 1][$y + 1],
-                $input[$x + 1][$y + 2],
-            ],
-            [
-                $input[$x + 2][$y + 0],
-                $input[$x + 2][$y + 1],
-                $input[$x + 2][$y + 2],
-            ],
+            [$input[$x + 0][$y + 0], $input[$x + 0][$y + 1], $input[$x + 0][$y + 2]],
+            [$input[$x + 1][$y + 0], $input[$x + 1][$y + 1], $input[$x + 1][$y + 2]],
+            [$input[$x + 2][$y + 0], $input[$x + 2][$y + 1], $input[$x + 2][$y + 2]],
+        ]
+    };
+}
+
+macro_rules! patch_5x6 {
+    ($input:expr, $x:expr, $y:expr) => {
+        [
+            [$input[$x + 0][$y + 0], $input[$x + 0][$y + 1], $input[$x + 0][$y + 2], $input[$x + 0][$y + 3], $input[$x + 0][$y + 4]],
+            [$input[$x + 1][$y + 0], $input[$x + 1][$y + 1], $input[$x + 1][$y + 2], $input[$x + 1][$y + 3], $input[$x + 1][$y + 4]],
+            [$input[$x + 2][$y + 0], $input[$x + 2][$y + 1], $input[$x + 2][$y + 2], $input[$x + 2][$y + 3], $input[$x + 2][$y + 4]],
+            [$input[$x + 3][$y + 0], $input[$x + 3][$y + 1], $input[$x + 3][$y + 2], $input[$x + 3][$y + 3], $input[$x + 3][$y + 4]],
+            [$input[$x + 4][$y + 0], $input[$x + 4][$y + 1], $input[$x + 4][$y + 2], $input[$x + 4][$y + 3], $input[$x + 4][$y + 4]],
         ]
     };
 }
@@ -45,7 +45,7 @@ impl ElementwiseAdd for u32 {
     }
 }
 
-impl<T: ElementwiseAdd> ElementwiseAdd for (T, T) {
+impl<A: ElementwiseAdd, B: ElementwiseAdd> ElementwiseAdd for (A, B) {
     fn elementwise_add(&mut self, other: &Self) {
         self.0.elementwise_add(&other.0);
         self.1.elementwise_add(&other.1);
@@ -60,12 +60,12 @@ impl<T: ElementwiseAdd, const L: usize> ElementwiseAdd for [T; L] {
     }
 }
 
-trait Wrap<T> {
-    type Wrap;
+trait WeightsMatrix<Input> {
+    type Weights;
 }
 
-impl<T, I: Wrap<T>, const L: usize> Wrap<[T; L]> for I {
-    type Wrap = [<I as Wrap<T>>::Wrap; L];
+impl<Input, T: WeightsMatrix<Input>, const L: usize> WeightsMatrix<Input> for [T; L] {
+    type Weights = [T::Weights; L];
 }
 
 pub trait BitLen: Sized {
@@ -85,19 +85,12 @@ trait NestedIndex {
     fn flip_bit_index(&mut self, index: &Self::IndexType);
 }
 
-impl<T: NestedIndex> NestedIndex for (T, u32) {
-    type IndexType = T::IndexType;
-    fn flip_bit_index(&mut self, index: &Self::IndexType) {
-        self.0.flip_bit_index(index);
-    }
-}
-
-impl<T: UInt> NestedIndex for T {
-    type IndexType = usize;
-    fn flip_bit_index(&mut self, &index: &Self::IndexType) {
-        self.flip_bit(index);
-    }
-}
+//impl<T: NestedIndex> NestedIndex for (T, u32) {
+//    type IndexType = T::IndexType;
+//    fn flip_bit_index(&mut self, index: &Self::IndexType) {
+//        self.0.flip_bit_index(index);
+//    }
+//}
 
 trait IncrementCounters
 where
@@ -105,28 +98,57 @@ where
 {
     type BitCounterType;
     fn increment_counters(&self, counters: &mut Self::BitCounterType);
-    fn top1_index(
-        &self,
-        a: &Self::BitCounterType,
-        b: &Self::BitCounterType,
-    ) -> (Option<Self::IndexType>, u16);
+    fn top1_index(&self, a: &Self::BitCounterType, b: &Self::BitCounterType) -> (Option<Self::IndexType>, u16);
 }
 
-trait UInt {
-    const UINT_BIT_LEN: usize;
-    fn flip_bit(&mut self, b: usize);
+trait NewWeights {
+    fn rand_weights<RNG: rand::Rng>(rng: &mut RNG) -> Self;
+}
+
+impl<T: BitLen + NewWeights> NewWeights for (T, u32) {
+    fn rand_weights<RNG: rand::Rng>(rng: &mut RNG) -> Self {
+        (T::rand_weights(rng), T::BIT_LEN as u32 / 2)
+    }
+}
+
+impl<T: NewWeights, const L: usize> NewWeights for [T; L]
+where
+    Self: Default,
+{
+    fn rand_weights<RNG: rand::Rng>(rng: &mut RNG) -> Self {
+        let mut target = Self::default();
+        for i in 0..L {
+            target[i] = T::rand_weights(rng);
+        }
+        target
+    }
+}
+
+pub trait GetBit {
     fn bit(&self, i: usize) -> bool;
 }
 
 macro_rules! impl_bitlen_for_uint {
     ($type:ty, $len:expr) => {
-        impl UInt for $type {
-            const UINT_BIT_LEN: usize = $len;
-            fn flip_bit(&mut self, index: usize) {
-                *self ^= 1 << index
-            }
+        impl GetBit for $type {
+            #[inline(always)]
             fn bit(&self, i: usize) -> bool {
                 ((self >> i) & 1) == 1
+            }
+        }
+        impl NestedIndex for $type {
+            type IndexType = usize;
+            fn flip_bit_index(&mut self, &index: &Self::IndexType) {
+                *self ^= 1 << index;
+            }
+        }
+        impl<Input> WeightsMatrix<Input> for $type {
+            type Weights = [(Input, u32); $len];
+        }
+
+        impl NewWeights for $type {
+            fn rand_weights<RNG: rand::Rng>(rng: &mut RNG) -> Self {
+                rng.gen()
             }
         }
         impl IncrementCounters for $type {
@@ -136,11 +158,7 @@ macro_rules! impl_bitlen_for_uint {
                     counters[b] += ((self >> b) & 1) as u16
                 }
             }
-            fn top1_index(
-                &self,
-                a: &Self::BitCounterType,
-                b: &Self::BitCounterType,
-            ) -> (Option<Self::IndexType>, u16) {
+            fn top1_index(&self, a: &Self::BitCounterType, b: &Self::BitCounterType) -> (Option<Self::IndexType>, u16) {
                 let mut max_diff = 0u16;
                 let mut index = None;
                 for i in 0..$len {
@@ -158,9 +176,6 @@ macro_rules! impl_bitlen_for_uint {
                 (index, max_diff)
             }
         }
-        impl<I> Wrap<$type> for I {
-            type Wrap = [I; <$type>::BIT_LEN];
-        }
         impl BitLen for $type {
             const BIT_LEN: usize = $len;
         }
@@ -168,8 +183,7 @@ macro_rules! impl_bitlen_for_uint {
             fn bit_mul(&self, input: &I) -> $type {
                 let mut target = <$type>::default();
                 for i in 0..$len {
-                    target |=
-                        ((self[i].0.hamming_distance(input) > self[i].1) as $type) << i;
+                    target |= ((self[i].0.hamming_distance(input) > self[i].1) as $type) << i;
                 }
                 target
             }
@@ -179,8 +193,7 @@ macro_rules! impl_bitlen_for_uint {
             fn bit_mul(&self, input: &I) -> $type {
                 let mut target = <$type>::default();
                 for i in 0..$len {
-                    target |=
-                        ((self[i].hamming_distance(input) > (I::BIT_LEN as u32 / 2)) as $type) << i;
+                    target |= ((self[i].hamming_distance(input) > (I::BIT_LEN as u32 / 2)) as $type) << i;
                 }
                 target
             }
@@ -191,86 +204,8 @@ macro_rules! impl_bitlen_for_uint {
                 (self ^ other).count_ones()
             }
         }
-        impl<Input: IncrementCounters + BitLen + HammingDistance>
-            IncrementMatrixCounters<Input, $type> for [Input; $len]
-        {
-            type MatrixBitCounterType = [(Input::BitCounterType, Input::BitCounterType); $len];
-            // No grad is:
-            //      _____
-            //     |
-            // ____|
-            // current is:
-            //       _____
-            //      /
-            // ____/
-            // where the width is adjustable.
-            fn backprop(
-                &self,
-                counters: &mut Self::MatrixBitCounterType,
-                input: &Input,
-                input_counters_0: &mut Input::BitCounterType,
-                input_counters_1: &mut Input::BitCounterType,
-                target: &$type,
-                tanh_width: u32,
-            ) {
-                for b in 0..<$type>::BIT_LEN {
-                    let activation = self[b].hamming_distance(&input);
-                    let threshold = Input::BIT_LEN as u32 / 2;
-                    // this patch only gets to vote if it is within tanh_width.
-                    let diff =
-                        activation.saturating_sub(threshold) | threshold.saturating_sub(activation);
-                    if diff < tanh_width {
-                        if target.bit(b) {
-                            self[b].increment_counters(input_counters_0);
-                            input.increment_counters(&mut counters[b].0);
-                        } else {
-                            self[b].increment_counters(input_counters_1);
-                            input.increment_counters(&mut counters[b].1);
-                        }
-                    }
-                }
-            }
-            fn lesser_backprop(
-                &self,
-                matrix_counters: &mut Self::MatrixBitCounterType,
-                input: &Input,
-                &target_index: &usize,
-                target: &$type,
-                tanh_width: u32,
-            ) {
-                let activation = self[target_index].hamming_distance(&input);
-                let threshold = Input::BIT_LEN as u32 / 2;
-                // this patch only gets to vote if it is within tanh_width.
-                let diff =
-                    activation.saturating_sub(threshold) | threshold.saturating_sub(activation);
-                if diff < tanh_width {
-                    if target.bit(target_index) {
-                        input.increment_counters(&mut matrix_counters[target_index].0);
-                    } else {
-                        input.increment_counters(&mut matrix_counters[target_index].1);
-                    }
-                }
-            }
-            fn matrix_top1_index(
-                &self,
-                counters: &Self::MatrixBitCounterType,
-            ) -> (Option<Self::IndexType>, u16) {
-                let mut max_diff = 0u16;
-                let mut index = None;
-                for i in 0..$len {
-                    let (sub_index, diff) = self[i].top1_index(&counters[i].0, &counters[i].1);
-                    if diff > max_diff {
-                        max_diff = diff;
-                        index = sub_index.map(|x| (x, i));
-                    }
-                }
-                (index, max_diff)
-            }
-        }
-        impl<Input: IncrementCounters + BitLen + HammingDistance>
-            IncrementMatrixCounters<Input, $type> for [(Input, u32); $len]
-        {
-            type MatrixBitCounterType = [(Input::BitCounterType, Input::BitCounterType, u32); $len];
+        impl<Input: IncrementCounters + BitLen + HammingDistance> IncrementMatrixCounters<Input, $type> for [(Input, u32); $len] {
+            type MatrixBitCounterType = [((Input::BitCounterType, Input::BitCounterType), (u16, u16)); $len];
             // No grad is:
             //      _____
             //     |
@@ -291,56 +226,74 @@ macro_rules! impl_bitlen_for_uint {
             ) {
                 for b in 0..<$type>::BIT_LEN {
                     let activation = self[b].0.hamming_distance(&input);
-                    let threshold = Input::BIT_LEN as u32 / 2;
+                    let threshold = self[b].1;
                     // this patch only gets to vote if it is within tanh_width.
-                    let diff =
-                        activation.saturating_sub(threshold) | threshold.saturating_sub(activation);
+                    let diff = activation.saturating_sub(threshold) | threshold.saturating_sub(activation);
                     if diff < tanh_width {
                         if target.bit(b) {
+                            (counters[b].1).0 += 1;
                             self[b].0.increment_counters(input_counters_0);
-                            input.increment_counters(&mut counters[b].0);
+                            input.increment_counters(&mut (counters[b].0).0);
                         } else {
+                            (counters[b].1).1 += 1;
                             self[b].0.increment_counters(input_counters_1);
-                            input.increment_counters(&mut counters[b].1);
+                            input.increment_counters(&mut (counters[b].0).1);
                         }
                     }
                 }
             }
-            fn lesser_backprop(
-                &self,
-                matrix_counters: &mut Self::MatrixBitCounterType,
-                input: &Input,
-                &target_index: &usize,
-                target: &$type,
-                tanh_width: u32,
-            ) {
+            fn lesser_backprop(&self, matrix_counters: &mut Self::MatrixBitCounterType, input: &Input, &target_index: &usize, target: &$type, tanh_width: u32) {
                 let activation = self[target_index].0.hamming_distance(&input);
                 let threshold = self[target_index].1;
                 // this patch only gets to vote if it is within tanh_width.
-                let diff =
-                    activation.saturating_sub(threshold) | threshold.saturating_sub(activation);
+                let diff = activation.saturating_sub(threshold) | threshold.saturating_sub(activation);
                 if diff < tanh_width {
                     if target.bit(target_index) {
-                        input.increment_counters(&mut matrix_counters[target_index].0);
+                        (matrix_counters[target_index].1).0 += 1;
+                        input.increment_counters(&mut (matrix_counters[target_index].0).0);
                     } else {
-                        input.increment_counters(&mut matrix_counters[target_index].1);
+                        (matrix_counters[target_index].1).1 += 1;
+                        input.increment_counters(&mut (matrix_counters[target_index].0).1);
                     }
                 }
             }
-            fn matrix_top1_index(
-                &self,
-                counters: &Self::MatrixBitCounterType,
-            ) -> (Option<Self::IndexType>, u16) {
+            type WeightsMutationType = (Input::IndexType, usize);
+            fn weights_top1_index(&self, counters: &Self::MatrixBitCounterType) -> (Option<Self::WeightsMutationType>, u16) {
                 let mut max_diff = 0u16;
                 let mut index = None;
                 for i in 0..$len {
-                    let (sub_index, diff) = self[i].0.top1_index(&counters[i].0, &counters[i].1);
+                    let (sub_index, diff) = self[i].0.top1_index(&(counters[i].0).0, &(counters[i].0).1);
                     if diff > max_diff {
                         max_diff = diff;
                         index = sub_index.map(|x| (x, i));
                     }
                 }
                 (index, max_diff)
+            }
+            fn apply_wights_update(&mut self, (input_index, target_index): &Self::WeightsMutationType) {
+                self[*target_index].0.flip_bit_index(input_index);
+            }
+
+            type BiasMutationType = (usize, bool);
+            fn bias_top1_index(counters: &Self::MatrixBitCounterType) -> (Option<Self::BiasMutationType>, u16) {
+                let mut max_diff = 0u16;
+                let mut mutation = None;
+                for i in 0..$len {
+                    let diff = (counters[i].1).0.saturating_sub((counters[i].1).1) | (counters[i].1).1.saturating_sub((counters[i].1).0);
+                    if diff > max_diff {
+                        max_diff = diff;
+                        let sub_sign = (counters[i].1).0 < (counters[i].1).1;
+                        mutation = Some((i, sub_sign));
+                    }
+                }
+                (mutation, max_diff)
+            }
+            fn apply_bias_update(&mut self, (index, sign): &Self::BiasMutationType) {
+                if *sign {
+                    self[*index].1 += 1;
+                } else {
+                    self[*index].1 -= 1;
+                }
             }
         }
     };
@@ -370,6 +323,7 @@ array_bit_len!(7);
 array_bit_len!(8);
 array_bit_len!(13);
 array_bit_len!(16);
+array_bit_len!(25);
 array_bit_len!(32);
 
 impl<T: NestedIndex, const L: usize> NestedIndex for [T; L] {
@@ -389,11 +343,7 @@ where
             self[i].increment_counters(&mut counters[i]);
         }
     }
-    fn top1_index(
-        &self,
-        a: &Self::BitCounterType,
-        b: &Self::BitCounterType,
-    ) -> (Option<Self::IndexType>, u16) {
+    fn top1_index(&self, a: &Self::BitCounterType, b: &Self::BitCounterType) -> (Option<Self::IndexType>, u16) {
         let mut max_diff = 0u16;
         let mut index = None;
         for i in 0..L {
@@ -417,10 +367,7 @@ impl<T: HammingDistance, const L: usize> HammingDistance for [T; L] {
     }
 }
 
-trait IncrementMatrixCounters<Input: IncrementCounters, Target: NestedIndex>
-where
-    Self: NestedIndex,
-{
+trait IncrementMatrixCounters<Input: IncrementCounters, Target: NestedIndex> {
     type MatrixBitCounterType;
     fn backprop(
         &self,
@@ -431,26 +378,19 @@ where
         target: &Target,
         tanh_width: u32,
     );
-    fn lesser_backprop(
-        &self,
-        matrix_counters: &mut Self::MatrixBitCounterType,
-        input: &Input,
-        target_index: &Target::IndexType,
-        target: &Target,
-        tanh_width: u32,
-    );
-    fn matrix_top1_index(
-        &self,
-        counters: &Self::MatrixBitCounterType,
-    ) -> (Option<Self::IndexType>, u16);
+    fn lesser_backprop(&self, matrix_counters: &mut Self::MatrixBitCounterType, input: &Input, target_index: &Target::IndexType, target: &Target, tanh_width: u32);
+
+    type WeightsMutationType;
+    fn weights_top1_index(&self, counters: &Self::MatrixBitCounterType) -> (Option<Self::WeightsMutationType>, u16);
+    fn apply_wights_update(&mut self, index: &Self::WeightsMutationType);
+
+    type BiasMutationType;
+    fn bias_top1_index(counters: &Self::MatrixBitCounterType) -> (Option<Self::BiasMutationType>, u16);
+    fn apply_bias_update(&mut self, index: &Self::BiasMutationType);
 }
 
-impl<
-        Input: IncrementCounters,
-        Target: NestedIndex,
-        MatrixBits: IncrementMatrixCounters<Input, Target> + Copy + Default,
-        const L: usize,
-    > IncrementMatrixCounters<Input, [Target; L]> for [MatrixBits; L]
+impl<Input: IncrementCounters, Target: NestedIndex, MatrixBits: IncrementMatrixCounters<Input, Target> + Copy + Default, const L: usize> IncrementMatrixCounters<Input, [Target; L]>
+    for [MatrixBits; L]
 {
     type MatrixBitCounterType = [MatrixBits::MatrixBitCounterType; L];
     fn backprop(
@@ -463,46 +403,43 @@ impl<
         tanh_width: u32,
     ) {
         for i in 0..L {
-            self[i].backprop(
-                &mut counters[i],
-                input,
-                input_counters_0,
-                input_counters_1,
-                &target[i],
-                tanh_width,
-            );
+            self[i].backprop(&mut counters[i], input, input_counters_0, input_counters_1, &target[i], tanh_width);
         }
     }
-    fn lesser_backprop(
-        &self,
-        matrix_counters: &mut Self::MatrixBitCounterType,
-        input: &Input,
-        (sub_index, target_index): &(Target::IndexType, usize),
-        target: &[Target; L],
-        tanh_width: u32,
-    ) {
-        self[*target_index].lesser_backprop(
-            &mut matrix_counters[*target_index],
-            input,
-            &sub_index,
-            &target[*target_index],
-            tanh_width,
-        );
+    fn lesser_backprop(&self, matrix_counters: &mut Self::MatrixBitCounterType, input: &Input, (sub_index, target_index): &(Target::IndexType, usize), target: &[Target; L], tanh_width: u32) {
+        self[*target_index].lesser_backprop(&mut matrix_counters[*target_index], input, &sub_index, &target[*target_index], tanh_width);
     }
-    fn matrix_top1_index(
-        &self,
-        counters: &Self::MatrixBitCounterType,
-    ) -> (Option<Self::IndexType>, u16) {
+    type WeightsMutationType = (MatrixBits::WeightsMutationType, usize);
+    fn weights_top1_index(&self, counters: &Self::MatrixBitCounterType) -> (Option<Self::WeightsMutationType>, u16) {
         let mut max_diff = 0u16;
         let mut index = None;
         for i in 0..L {
-            let (sub_index, diff) = self[i].matrix_top1_index(&counters[i]);
+            let (sub_index, diff) = self[i].weights_top1_index(&counters[i]);
             if diff > max_diff {
                 max_diff = diff;
                 index = sub_index.map(|x| (x, i));
             }
         }
         (index, max_diff)
+    }
+    fn apply_wights_update(&mut self, (sub_index, index): &Self::WeightsMutationType) {
+        self[*index].apply_wights_update(sub_index);
+    }
+    type BiasMutationType = (MatrixBits::BiasMutationType, usize);
+    fn bias_top1_index(counters: &Self::MatrixBitCounterType) -> (Option<Self::BiasMutationType>, u16) {
+        let mut max_diff = 0u16;
+        let mut index = None;
+        for i in 0..L {
+            let (sub_index, diff) = MatrixBits::bias_top1_index(&counters[i]);
+            if diff > max_diff {
+                max_diff = diff;
+                index = sub_index.map(|x| (x, i));
+            }
+        }
+        (index, max_diff)
+    }
+    fn apply_bias_update(&mut self, (sub_index, index): &Self::BiasMutationType) {
+        self[*index].apply_bias_update(sub_index);
     }
 }
 
@@ -523,8 +460,7 @@ trait Conv2D<I, O> {
     fn conv2d(&self, input: &I) -> O;
 }
 
-impl<I: Copy, O: Default + Copy, W: BitMul<[[I; 3]; 3], O>, const X: usize, const Y: usize>
-    Conv2D<[[I; Y]; X], [[O; Y]; X]> for W
+impl<I: Copy, O: Default + Copy, W: BitMul<[[I; 3]; 3], O>, const X: usize, const Y: usize> Conv2D<[[I; Y]; X], [[O; Y]; X]> for W
 where
     [[O; Y]; X]: Default,
 {
@@ -539,71 +475,44 @@ where
     }
 }
 
-//trait Backprop<I, O> {
-//    fn backprop(&self, input: &I, output: &O, tanh_width: u32) -> I;
-//}
-//
 trait AutoencoderSample<Embedding>
 where
-    Self: Wrap<Embedding> + Sized + IncrementCounters,
-    Embedding: Wrap<Self> + Sized + IncrementCounters,
-    <Self as Wrap<Embedding>>::Wrap: IncrementMatrixCounters<Self, Embedding>,
-    <Embedding as Wrap<Self>>::Wrap: IncrementMatrixCounters<Embedding, Self>,
+    Embedding: WeightsMatrix<Self> + Sized + IncrementCounters,
+    Self: WeightsMatrix<Embedding> + Sized + IncrementCounters,
+    <Embedding as WeightsMatrix<Self>>::Weights: IncrementMatrixCounters<Self, Embedding> + BitMul<Self, Embedding>,
+    <Self as WeightsMatrix<Embedding>>::Weights: IncrementMatrixCounters<Embedding, Self> + BitMul<Embedding, Self>,
 {
     fn update_counters(
         &self,
-        encoder: &<Self as Wrap<Embedding>>::Wrap,
-        encoder_counter: &mut <<Self as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<
-            Self,
-            Embedding,
-        >>::MatrixBitCounterType,
-        decoder: &<Embedding as Wrap<Self>>::Wrap,
-        decoder_counter: &mut <<Embedding as Wrap<Self>>::Wrap as IncrementMatrixCounters<
-            Embedding,
-            Self,
-        >>::MatrixBitCounterType,
+        encoder: &<Embedding as WeightsMatrix<Self>>::Weights,
+        encoder_counter: &mut <<Embedding as WeightsMatrix<Self>>::Weights as IncrementMatrixCounters<Self, Embedding>>::MatrixBitCounterType,
+        decoder: &<Self as WeightsMatrix<Embedding>>::Weights,
+        decoder_counter: &mut <<Self as WeightsMatrix<Embedding>>::Weights as IncrementMatrixCounters<Embedding, Self>>::MatrixBitCounterType,
         tanh_width: u32,
     ) -> bool;
 }
 
-impl<Input: IncrementCounters + HammingDistance, Embedding: IncrementCounters>
-    AutoencoderSample<Embedding> for Input
+impl<Input: IncrementCounters + HammingDistance, Embedding: IncrementCounters> AutoencoderSample<Embedding> for Input
 where
-    Self: Wrap<Embedding> + Sized,
-    Embedding: Wrap<Self> + Sized,
-    <Self as Wrap<Embedding>>::Wrap:
-        IncrementMatrixCounters<Self, Embedding> + BitMul<Input, Embedding>,
-    <Embedding as Wrap<Self>>::Wrap:
-        IncrementMatrixCounters<Embedding, Self> + BitMul<Embedding, Self>,
+    Self: WeightsMatrix<Embedding> + Sized,
+    Embedding: WeightsMatrix<Self> + Sized,
+    <Self as WeightsMatrix<Embedding>>::Weights: IncrementMatrixCounters<Embedding, Self> + BitMul<Embedding, Self>,
+    <Embedding as WeightsMatrix<Self>>::Weights: IncrementMatrixCounters<Self, Embedding> + BitMul<Input, Embedding>,
     Embedding::BitCounterType: Default,
 {
     fn update_counters(
         &self,
-        encoder: &<Self as Wrap<Embedding>>::Wrap,
-        encoder_counter: &mut <<Self as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<
-            Self,
-            Embedding,
-        >>::MatrixBitCounterType,
-        decoder: &<Embedding as Wrap<Self>>::Wrap,
-        decoder_counter: &mut <<Embedding as Wrap<Self>>::Wrap as IncrementMatrixCounters<
-            Embedding,
-            Self,
-        >>::MatrixBitCounterType,
+        encoder: &<Embedding as WeightsMatrix<Self>>::Weights,
+        encoder_counter: &mut <<Embedding as WeightsMatrix<Self>>::Weights as IncrementMatrixCounters<Self, Embedding>>::MatrixBitCounterType,
+        decoder: &<Self as WeightsMatrix<Embedding>>::Weights,
+        decoder_counter: &mut <<Self as WeightsMatrix<Embedding>>::Weights as IncrementMatrixCounters<Embedding, Self>>::MatrixBitCounterType,
         tanh_width: u32,
     ) -> bool {
         let embedding = encoder.bit_mul(self);
         let mut embedding_counters_0 = Embedding::BitCounterType::default();
         let mut embedding_counters_1 = Embedding::BitCounterType::default();
-        decoder.backprop(
-            decoder_counter,
-            &embedding,
-            &mut embedding_counters_0,
-            &mut embedding_counters_1,
-            self,
-            tanh_width,
-        );
-        let (embedding_index, _) =
-            embedding.top1_index(&embedding_counters_0, &embedding_counters_1);
+        decoder.backprop(decoder_counter, &embedding, &mut embedding_counters_0, &mut embedding_counters_1, self, tanh_width);
+        let (embedding_index, _) = embedding.top1_index(&embedding_counters_0, &embedding_counters_1);
         if let Some(index) = embedding_index {
             encoder.lesser_backprop(encoder_counter, self, &index, &embedding, tanh_width);
             true
@@ -615,129 +524,79 @@ where
 
 trait AutoencoderMinibatch<Example>
 where
-    Example: Wrap<Self> + Sized,
-    Self: Wrap<Example> + Sized,
+    Example: WeightsMatrix<Self> + Sized,
+    Self: WeightsMatrix<Example> + Sized,
 {
-    fn minibatch(
-        encoder: &mut <Example as Wrap<Self>>::Wrap,
-        decoder: &mut <Self as Wrap<Example>>::Wrap,
-        examples: &[Example],
-        tanh_width: u32,
-    ) -> u64;
-    fn epoch(
-        encoder: &mut <Example as Wrap<Self>>::Wrap,
-        decoder: &mut <Self as Wrap<Example>>::Wrap,
-        examples: &[Example],
-        minibatch_size: usize,
-        tanh_width: u32,
-    ) {
-        let n_minibatches = examples.len() / minibatch_size;
-        dbg!(n_minibatches);
-        for i in 0..n_minibatches {
-            let n_updates = <Self as AutoencoderMinibatch<Example>>::minibatch(
-                encoder,
-                decoder,
-                &examples[(i * minibatch_size)..((i + 1) * minibatch_size)],
-                tanh_width,
-            );
-            let update_frac = n_updates as f64 / minibatch_size as f64;
-            if update_frac != 1.0 {
-                dbg!(update_frac);
-            }
-            //if i % 10 == 0 {
-            //    dbg!(avg_hd!(examples[0..1024], encoder, decoder));
-            //}
-        }
-    }
-    fn epoch_n_chunks(
-        encoder: &mut <Example as Wrap<Self>>::Wrap,
-        decoder: &mut <Self as Wrap<Example>>::Wrap,
-        examples: &[Example],
-        minibatch_size: usize,
-        tanh_width: u32,
-    ) {
+    fn minibatch(encoder: &mut <Self as WeightsMatrix<Example>>::Weights, decoder: &mut <Example as WeightsMatrix<Self>>::Weights, examples: &[Example], tanh_width: u32) -> u64;
+    fn epoch(encoder: &mut <Self as WeightsMatrix<Example>>::Weights, decoder: &mut <Example as WeightsMatrix<Self>>::Weights, examples: &[Example], minibatch_size: usize, tanh_width: u32) {
         let mut chunks = examples.chunks_exact(minibatch_size);
         let mut update_frac = 1f64;
         let mut n_minibatches = 0;
         for chunk in chunks {
             n_minibatches += 1;
-            let n_updates = <Self as AutoencoderMinibatch<Example>>::minibatch(
-                encoder,
-                decoder,
-                chunk,
-                tanh_width,
-            );
+            let n_updates = <Self as AutoencoderMinibatch<Example>>::minibatch(encoder, decoder, chunk, tanh_width);
             update_frac = n_updates as f64 / minibatch_size as f64;
-            if update_frac < 0.2 {
-                dbg!(update_frac);
-                //break
-            }
-            //if i % 10 == 0 {
-            //    dbg!(avg_hd!(examples[0..1024], encoder, decoder));
-            //}
         }
         dbg!(n_minibatches);
     }
 }
 
-impl<Example: Send + Sync + Wrap<Embedding> + IncrementCounters + HammingDistance, Embedding: Wrap<Example> + Sized + IncrementCounters>
-    AutoencoderMinibatch<Example> for Embedding
+impl<Example: Send + Sync + WeightsMatrix<Embedding> + IncrementCounters + HammingDistance, Embedding: WeightsMatrix<Example> + Sized + IncrementCounters> AutoencoderMinibatch<Example> for Embedding
 where
-    <Example as Wrap<Embedding>>::Wrap: IncrementMatrixCounters<Example, Embedding> + BitMul<Example, Embedding> + Sync,
-    <Embedding as Wrap<Example>>::Wrap: IncrementMatrixCounters<Embedding, Example> + BitMul<Embedding, Example> + Sync,
-    <<Embedding as Wrap<Example>>::Wrap as IncrementMatrixCounters<Embedding, Example>>::MatrixBitCounterType: Default + Send + ElementwiseAdd,
-    <<Example as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<Example, Embedding>>::MatrixBitCounterType: Default + Send + ElementwiseAdd,
+    <Embedding as WeightsMatrix<Example>>::Weights: IncrementMatrixCounters<Example, Embedding> + BitMul<Example, Embedding> + Sync,
+    <Example as WeightsMatrix<Embedding>>::Weights: IncrementMatrixCounters<Embedding, Example> + BitMul<Embedding, Example> + Sync,
+    <<Embedding as WeightsMatrix<Example>>::Weights as IncrementMatrixCounters<Example, Embedding>>::MatrixBitCounterType: Default + Send + ElementwiseAdd,
+    <<Example as WeightsMatrix<Embedding>>::Weights as IncrementMatrixCounters<Embedding, Example>>::MatrixBitCounterType: Default + Send + ElementwiseAdd,
     Embedding::BitCounterType: Default,
 {
-    fn minibatch(
-        encoder: &mut <Example as Wrap<Embedding>>::Wrap,
-        decoder: &mut <Embedding as Wrap<Example>>::Wrap,
-        examples: &[Example],
-        tanh_width: u32,
-    ) -> u64 {
-        let (updates, (encoder_counters, decoder_counters)) = examples.par_iter().fold(||{
-            (0u64, (<<Example as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<
-                Example,
-                Embedding,
-            >>::MatrixBitCounterType::default(),
-            <<Embedding as Wrap<Example>>::Wrap as IncrementMatrixCounters<
-                Embedding,
-                Example,
-            >>::MatrixBitCounterType::default()))
-        }, |mut counters, example|{
-            let is_update = <Example as AutoencoderSample<Embedding>>::update_counters(
-                &example,
-                &encoder,
-                &mut (counters.1).0,
-                &decoder,
-                &mut (counters.1).1,
-                tanh_width,
+    fn minibatch(encoder: &mut <Embedding as WeightsMatrix<Example>>::Weights, decoder: &mut <Example as WeightsMatrix<Embedding>>::Weights, examples: &[Example], tanh_width: u32) -> u64 {
+        let (updates, (encoder_counters, decoder_counters)) = examples
+            .par_iter()
+            .fold(
+                || {
+                    (
+                        0u64,
+                        (
+                            <<Embedding as WeightsMatrix<Example>>::Weights as IncrementMatrixCounters<Example, Embedding>>::MatrixBitCounterType::default(),
+                            <<Example as WeightsMatrix<Embedding>>::Weights as IncrementMatrixCounters<Embedding, Example>>::MatrixBitCounterType::default(),
+                        ),
+                    )
+                },
+                |mut counters, example| {
+                    let is_update = <Example as AutoencoderSample<Embedding>>::update_counters(&example, &encoder, &mut (counters.1).0, &decoder, &mut (counters.1).1, tanh_width);
+                    counters.0 += is_update as u64;
+                    counters
+                },
+            )
+            .reduce(
+                || {
+                    (
+                        0u64,
+                        (
+                            <<Embedding as WeightsMatrix<Example>>::Weights as IncrementMatrixCounters<Example, Embedding>>::MatrixBitCounterType::default(),
+                            <<Example as WeightsMatrix<Embedding>>::Weights as IncrementMatrixCounters<Embedding, Example>>::MatrixBitCounterType::default(),
+                        ),
+                    )
+                },
+                |mut a, b| {
+                    a.0 += b.0;
+                    (a.1).0.elementwise_add(&(b.1).0);
+                    (a.1).1.elementwise_add(&(b.1).1);
+                    a
+                },
             );
-            counters.0 += is_update as u64;
-            counters
-        }).reduce(||{
-            (0u64, (<<Example as Wrap<Embedding>>::Wrap as IncrementMatrixCounters<
-                Example,
-                Embedding,
-            >>::MatrixBitCounterType::default(),
-            <<Embedding as Wrap<Example>>::Wrap as IncrementMatrixCounters<
-                Embedding,
-                Example,
-            >>::MatrixBitCounterType::default()))
-        }, |mut a, b|{
-            a.0 += b.0;
-            (a.1).0.elementwise_add(&(b.1).0);
-            (a.1).1.elementwise_add(&(b.1).1);
-            a
-        });
-        let (index, _) = encoder.matrix_top1_index(&encoder_counters);
-        if let Some(index) = index {
-            encoder.flip_bit_index(&index);
+        if let (Some(index), _) = encoder.weights_top1_index(&encoder_counters) {
+            encoder.apply_wights_update(&index);
         }
-        let (index, _) = decoder.matrix_top1_index(&decoder_counters);
-        if let Some(index) = index {
-            decoder.flip_bit_index(&index);
+        //if let (Some(index), val) = <Embedding as WeightsMatrix<Example>>::Weights::bias_top1_index(&encoder_counters) {
+        //    encoder.apply_bias_update(&index);
+        //}
+        if let (Some(index), _) = decoder.weights_top1_index(&decoder_counters) {
+            decoder.apply_wights_update(&index);
         }
+        //if let (Some(index), val) = <Example as WeightsMatrix<Embedding>>::Weights::bias_top1_index(&decoder_counters) {
+        //    decoder.apply_bias_update(&index);
+        //}
         updates
     }
 }
@@ -756,9 +615,15 @@ macro_rules! avg_hd {
     }};
 }
 
-const EMBEDDING_LEN: usize = 1;
-const N_EXAMPLES: usize = 6_000;
-const N_STAGES: usize = 5;
+const EMBEDDING_LEN: usize = 4;
+//type InputPatchType = [[u8; 3]; 3];
+type InputPatchType = [u32; 25];
+type EmbeddingType = [u32; EMBEDDING_LEN];
+type EncoderType = <EmbeddingType as WeightsMatrix<InputPatchType>>::Weights;
+type DecoderType = <InputPatchType as WeightsMatrix<EmbeddingType>>::Weights;
+
+const N_EXAMPLES: usize = 60_000;
+const N_STAGES: usize = 6;
 //const MINIBATCH_SIZE: usize = 512;
 // 6.64 2m8
 // 6.09 3m34
@@ -770,61 +635,53 @@ const N_STAGES: usize = 5;
 
 // full: 5.915 1m10
 
+// fc: 105.7
+
 fn main() {
     let mut rng = Hc128Rng::seed_from_u64(0);
-    rayon::ThreadPoolBuilder::new()
-        .stack_size(2usize.pow(28))
-        .num_threads(4)
-        .build_global()
-        .unwrap();
+    rayon::ThreadPoolBuilder::new().stack_size(2usize.pow(30)).num_threads(4).build_global().unwrap();
 
-    let images = mnist::load_images_u8_unary(
-        Path::new("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"),
-        N_EXAMPLES,
-    );
+    //let images = mnist::load_images_u8_unary(Path::new("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"), N_EXAMPLES);
 
-    let mut examples: Vec<[[u8; 3]; 3]> = images
-        .par_iter()
-        .map(|image| image.patches())
-        .flatten()
-        .collect();
+    //let mut examples: Vec<InputPatchType> = images.par_iter().map(|image| image.patches()).flatten().collect();
+    let mut examples = mnist::load_images_bitpacked_u32(Path::new("/home/isaac/big/cache/datasets/mnist/train-images-idx3-ubyte"), N_EXAMPLES);
     examples.shuffle(&mut rng);
-    let mut encoder: [[[[u8; 3]; 3]; 32]; EMBEDDING_LEN] = rng.gen();
-    let mut decoder: [[[[u32; EMBEDDING_LEN]; 8]; 3]; 3] = rng.gen();
+    //let mut encoder = <[[[[u8; 3]; 3]; 32]; EMBEDDING_LEN]>::rand_weights(&mut rng);
+    //let mut decoder = <[[[[u32; EMBEDDING_LEN]; 8]; 3]; 3]>::rand_weights(&mut rng);
+
+    let mut encoder = EncoderType::rand_weights(&mut rng);
+    let mut decoder = DecoderType::rand_weights(&mut rng);
 
     dbg!(avg_hd!(examples, encoder, decoder));
     let stage_size = examples.len() / N_STAGES;
     for (i, t) in (0..N_STAGES).rev().enumerate() {
-        let minibatch_size = 2usize.pow(i as u32 + 9);
+        let minibatch_size = 2usize.pow(i as u32 + 7);
         dbg!(minibatch_size);
         let tanh_width = t as u32 + 2;
         dbg!(tanh_width);
-        <[u32; EMBEDDING_LEN] as AutoencoderMinibatch<[[u8; 3]; 3]>>::epoch_n_chunks(
-            &mut encoder,
-            &mut decoder,
-            &examples[(i * stage_size)..((i + 1) * stage_size)],
-            minibatch_size,
-            tanh_width,
-        );
-        dbg!(avg_hd!(examples, encoder, decoder));
+        for _ in 0..12 {
+            <EmbeddingType as AutoencoderMinibatch<InputPatchType>>::epoch(&mut encoder, &mut decoder, &examples, minibatch_size, tanh_width);
+            //<EmbeddingType as AutoencoderMinibatch<InputPatchType>>::epoch(&mut encoder, &mut decoder, &examples[(i * stage_size)..((i + 1) * stage_size)], minibatch_size, tanh_width);
+            dbg!(avg_hd!(examples, encoder, decoder));
+        }
     }
-    let classes = mnist::load_labels(
-        Path::new("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"),
-        N_EXAMPLES,
-    );
-    let image_index = classes
-        .iter()
-        .enumerate()
-        .find(|(_, c)| **c == 0)
-        .unwrap()
-        .0;
-    let image2: [[[u32; EMBEDDING_LEN]; 28]; 28] = encoder.conv2d(&images[image_index]);
+    //let classes = mnist::load_labels(
+    //    Path::new("/home/isaac/big/cache/datasets/mnist/train-labels-idx1-ubyte"),
+    //    N_EXAMPLES,
+    //);
+    //let image_index = classes
+    //    .iter()
+    //    .enumerate()
+    //    .find(|(_, c)| **c == 0)
+    //    .unwrap()
+    //    .0;
+    //let image2: [[[u32; EMBEDDING_LEN]; 28]; 28] = encoder.conv2d(&images[image_index]);
 
     //for w in 0..EMBEDDING_LEN {
     //    for b in 0..32 {
     //        for x in 0..3 {
     //            for y in 0..3 {
-    //                print!("{:08b} ", encoder[w][b][x][y]);
+    //                print!("{:08b} ", encoder[w][b].0[x][y]);
     //            }
     //            print!("\n");
     //        }
@@ -832,7 +689,7 @@ fn main() {
     //        for x in 0..3 {
     //            for y in 0..3 {
     //                for wb in 0..8 {
-    //                    print!("{}", if decoder[x][y][wb][w].bit(b) { 1 } else { 0 });
+    //                    print!("{}", if decoder[x][y][wb].0[w].bit(b) { 1 } else { 0 });
     //                }
     //                print!(" ");
     //            }
