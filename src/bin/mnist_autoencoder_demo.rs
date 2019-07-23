@@ -165,9 +165,7 @@ where
     <f64 as Wrap<Input>>::Wrapped: Wrap<Self>,
 {
     fn matrix_compare(
-        counters: &<(<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped) as Wrap<
-            Self,
-        >>::Wrapped,
+        counters: &<(<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped) as Wrap<Self>>::Wrapped,
         len: usize,
     ) -> <<f64 as Wrap<Input>>::Wrapped as Wrap<Self>>::Wrapped;
     fn increment_matrix_counters(
@@ -191,16 +189,15 @@ where
 
 macro_rules! impl_targetbits_for_uint {
     ($type:ty) => {
-        impl<Input: InputBits + Wrap<Self, Wrapped=[Input; <$type>::BIT_LEN]> + BitLen + HammingDistance> TargetBits<Input> for $type
+        impl<Input: InputBits + Wrap<Self, Wrapped = [Input; <$type>::BIT_LEN]> + BitLen + HammingDistance>
+            TargetBits<Input> for $type
         where
             u32: Wrap<Input>,
             f64: Wrap<Input>,
             <<f64 as Wrap<Input>>::Wrapped as Wrap<Self>>::Wrapped: Default,
         {
             fn matrix_compare(
-                counters: &<(<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped) as Wrap<
-                    Self,
-                >>::Wrapped,
+                counters: &<(<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped) as Wrap<Self>>::Wrapped,
                 len: usize,
             ) -> <<f64 as Wrap<Input>>::Wrapped as Wrap<Self>>::Wrapped {
                 let mut diffs = <<f64 as Wrap<Input>>::Wrapped as Wrap<Self>>::Wrapped::default();
@@ -236,7 +233,7 @@ macro_rules! impl_targetbits_for_uint {
                 counters_1: &mut <u32 as Wrap<Input>>::Wrapped,
                 input: &Input,
                 weights: &<Input as Wrap<$type>>::Wrapped,
-                tanh_width: u32
+                tanh_width: u32,
             ) {
                 for b in 0..<$type>::BIT_LEN {
                     let activation = weights[b].hamming_distance(&input);
@@ -271,9 +268,7 @@ macro_rules! impl_targetbits_for_array {
             <<f64 as Wrap<Input>>::Wrapped as Wrap<Self>>::Wrapped: Default,
         {
             fn matrix_compare(
-                counters: &<(<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped) as Wrap<
-                    Self,
-                >>::Wrapped,
+                counters: &<(<u32 as Wrap<Input>>::Wrapped, <u32 as Wrap<Input>>::Wrapped) as Wrap<Self>>::Wrapped,
                 len: usize,
             ) -> <<f64 as Wrap<Input>>::Wrapped as Wrap<Self>>::Wrapped {
                 let mut diffs = <<f64 as Wrap<Input>>::Wrapped as Wrap<Self>>::Wrapped::default();
@@ -299,14 +294,14 @@ macro_rules! impl_targetbits_for_array {
                 counters_1: &mut <u32 as Wrap<Input>>::Wrapped,
                 input: &Input,
                 weights: &<Input as Wrap<Self>>::Wrapped,
-                tanh_width: u32
+                tanh_width: u32,
             ) {
                 for b in 0..$len {
                     self[b].increment_input_counters(counters_0, counters_1, input, &weights[b], tanh_width);
                 }
             }
         }
-    }
+    };
 }
 
 impl_targetbits_for_array!(1);
@@ -658,10 +653,10 @@ fn main() {
                 ((70, 10), (10, 7), (70, 10)),
                 ((60, 10), (10, 7), (60, 10)),
                 ((60, 10), (10, 7), (60, 10)),
-                ((60, 10), (8,  6), (60, 10)),
-                ((60, 10), (8,  6), (60, 10)),
-                ((50, 10), (8,  5), (50, 10)),
-                ((50, 10), (7,  5), (50, 10)),
+                ((60, 10), (8, 6), (60, 10)),
+                ((60, 10), (8, 6), (60, 10)),
+                ((50, 10), (8, 5), (50, 10)),
+                ((50, 10), (7, 5), (50, 10)),
                 ((20, 8), (7, 5), (20, 8)),
                 ((20, 8), (7, 5), (20, 8)),
                 ((10, 7), (6, 4), (10, 7)),

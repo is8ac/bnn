@@ -1,95 +1,13 @@
 #![feature(const_generics)]
 
 use bitnn::datasets::cifar;
-use bitnn::ExtractPatches;
-use rand::seq::SliceRandom;
-use rand::Rng;
+use bitnn::layers::SaveLoad;
+//use bitnn::ExtractPatches;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;
 use std::path::Path;
-
-macro_rules! patch_3x3 {
-    ($input:expr, $x:expr, $y:expr) => {
-        [
-            [
-                $input[$x + 0][$y + 0],
-                $input[$x + 0][$y + 1],
-                $input[$x + 0][$y + 2],
-            ],
-            [
-                $input[$x + 1][$y + 0],
-                $input[$x + 1][$y + 1],
-                $input[$x + 1][$y + 2],
-            ],
-            [
-                $input[$x + 2][$y + 0],
-                $input[$x + 2][$y + 1],
-                $input[$x + 2][$y + 2],
-            ],
-        ]
-    };
-}
-
-trait Median {
-    fn median(&self) -> u32;
-    fn range(&self) -> (u32, u32);
-    fn count_sides(&self, pivot: u32) -> (usize, usize);
-}
-
-impl Median for u32 {
-    fn range(&self) -> (u32, u32) {
-        (*self, *self)
-    }
-    fn median(&self) -> u32 {
-        *self
-    }
-    fn count_sides(&self, pivot: u32) -> (usize, usize) {
-        ((*self < pivot) as usize, (*self >= pivot) as usize)
-    }
-}
-
-impl<T: Median, const L: usize> Median for [T; L] {
-    fn range(&self) -> (u32, u32) {
-        let mut max = 0u32;
-        let mut min = !0u32;
-        for i in 0..L {
-            let (sub_min, sub_max) = self[i].range();
-            max = max.max(sub_max);
-            min = min.min(sub_min);
-        }
-        (min, max)
-    }
-    fn median(&self) -> u32 {
-        let (mut min, mut max) = self.range();
-        loop {
-            let pivot = min + (max - min) / 2;
-            let (nlt, nget) = self.count_sides(pivot);
-            if nlt > nget {
-                max = pivot;
-            } else {
-                min = pivot;
-            }
-            if (max - min) <= 1 {
-                if nlt > nget {
-                    return max;
-                } else {
-                    return min;
-                }
-            }
-        }
-    }
-    fn count_sides(&self, pivot: u32) -> (usize, usize) {
-        let mut lt = 0usize;
-        let mut gt = 0usize;
-        for i in 0..L {
-            let (l, g) = self[i].count_sides(pivot);
-            lt += l;
-            gt += g;
-        }
-        (lt, gt)
-    }
-}
+use time::PreciseTime;
 
 pub trait Counters {
     fn elementwise_add(&mut self, other: &Self);
@@ -166,6 +84,10 @@ where
     }
 }
 
+pub trait BitOr {
+    fn bit_or(&self, other: &Self) -> Self;
+}
+
 pub trait BitLen: Sized {
     const BIT_LEN: usize;
 }
@@ -198,6 +120,11 @@ macro_rules! impl_for_uint {
     ($type:ty, $len:expr) => {
         impl BitLen for $type {
             const BIT_LEN: usize = $len;
+        }
+        impl BitOr for $type {
+            fn bit_or(&self, other: &Self) -> $type {
+                self | other
+            }
         }
         impl GetBit for $type {
             #[inline(always)]
@@ -277,20 +204,166 @@ where
     }
 }
 
-trait Conv2D<I, O> {
-    fn conv2d(&self, input: &I) -> O;
+pub trait OrPool<Output> {
+    fn or_pool(&self) -> Output;
+}
+macro_rules! impl_orpool {
+    ($x_size:expr, $y_size:expr) => {
+        impl<Pixel: BitOr + Default + Copy> OrPool<[[Pixel; $y_size / 2]; $x_size / 2]>
+            for [[Pixel; $y_size]; $x_size]
+        {
+            fn or_pool(&self) -> [[Pixel; $y_size / 2]; $x_size / 2] {
+                let mut target = [[Pixel::default(); $y_size / 2]; $x_size / 2];
+                for x in 0..$x_size / 2 {
+                    let x_index = x * 2;
+                    for y in 0..$y_size / 2 {
+                        let y_index = y * 2;
+                        target[x][y] = self[x_index + 0][y_index + 0]
+                            .bit_or(&self[x_index + 0][y_index + 1])
+                            .bit_or(&self[x_index + 1][y_index + 0])
+                            .bit_or(&self[x_index + 1][y_index + 1]);
+                    }
+                }
+                target
+            }
+        }
+    };
 }
 
-impl<I: Copy, O: Default + Copy, W: BitMul<[[I; 3]; 3], O>, const X: usize, const Y: usize>
-    Conv2D<[[I; Y]; X], [[O; Y]; X]> for W
+impl_orpool!(32, 32);
+impl_orpool!(16, 16);
+impl_orpool!(8, 8);
+
+trait NormalizeAndEncode2D<const X: usize, const Y: usize> {
+    fn normalize_and_unary_encode(&self) -> [[u32; Y]; X];
+}
+
+// slide the min to 0 but do not strech
+impl<const X: usize, const Y: usize> NormalizeAndEncode2D<{ X }, { Y }> for [[[u8; 3]; Y]; X]
 where
-    [[O; Y]; X]: Default,
+    [[u32; Y]; X]: Default,
 {
-    fn conv2d(&self, input: &[[I; Y]; X]) -> [[O; Y]; X] {
-        let mut target = <[[O; Y]; X]>::default();
-        for x in 0..X - 2 {
-            for y in 0..Y - 2 {
-                target[x + 1][y + 1] = self.bit_mul(&patch_3x3!(input, x, y));
+    fn normalize_and_unary_encode(&self) -> [[u32; Y]; X] {
+        let mut mins = [255u8; 3];
+        for x in 0..X {
+            for y in 0..Y {
+                for c in 0..3 {
+                    mins[c] = self[x][y][c].min(mins[c]);
+                }
+            }
+        }
+        let mut target = <[[u32; Y]; X]>::default();
+        for x in 0..X {
+            for y in 0..Y {
+                let mut pixel = 0b0u32;
+                for c in 0..3 {
+                    pixel |= (!0b0u32 << ((self[x][y][c] - mins[c]) / 23)) << (c * 10);
+                    pixel &= !0b0u32 >> (32 - ((c + 1) * 10));
+                }
+                // bit flip is just to make it more intuitive for humans.
+                target[x][y] = !pixel;
+            }
+        }
+        target
+    }
+}
+
+trait ExtractPatches<Patch, const NORMALIZE: bool> {
+    fn patches(&self, patches: &mut Vec<Patch>);
+}
+
+impl<P: Copy + Default, const X: usize, const Y: usize, const FX: usize, const FY: usize>
+    ExtractPatches<[[P; FY]; FX], false> for [[P; Y]; X]
+where
+    [[P; FY]; FX]: Default,
+{
+    fn patches(&self, patches: &mut Vec<[[P; FY]; FX]>) {
+        for x in 0..X - (FX - 1) {
+            for y in 0..Y - (FY - 1) {
+                let mut patch = <[[P; FY]; FX]>::default();
+                for fx in 0..FX {
+                    for fy in 0..FY {
+                        patch[fx][fy] = self[x + fx][y + fy];
+                    }
+                }
+                patches.push(patch);
+            }
+        }
+    }
+}
+
+impl<const X: usize, const Y: usize, const FX: usize, const FY: usize>
+    ExtractPatches<[[u32; FY]; FX], true> for [[[u8; 3]; Y]; X]
+where
+    [[[u8; 3]; FY]; FX]: Default + NormalizeAndEncode2D<{ FX }, { FY }>,
+{
+    fn patches(&self, patches: &mut Vec<[[u32; FY]; FX]>) {
+        for x in 0..X - (FX - 1) {
+            for y in 0..Y - (FY - 1) {
+                let mut patch = <[[[u8; 3]; FY]; FX]>::default();
+                for fx in 0..FX {
+                    for fy in 0..FY {
+                        patch[fx][fy] = self[x + fx][y + fy];
+                    }
+                }
+                patches.push(patch.normalize_and_unary_encode());
+            }
+        }
+    }
+}
+
+trait Conv2D<P, const NORMALIZE: bool, const X: usize, const Y: usize, const C: usize> {
+    fn conv2d(&self, input: &[[P; Y]; X]) -> [[[u32; C]; Y]; X];
+}
+
+impl<
+        P: HammingDistance + Copy,
+        const X: usize,
+        const Y: usize,
+        const C: usize,
+        const FX: usize,
+        const FY: usize,
+    > Conv2D<P, false, { X }, { Y }, { C }> for [[([[P; FY]; FX], u32); 32]; C]
+where
+    [[[u32; C]; Y]; X]: Default,
+    [[P; FY]; FX]: Default,
+    [[([[P; FY]; FX], u32); 32]; C]: BitMul<[[P; FY]; FX], [u32; C]>,
+{
+    fn conv2d(&self, input: &[[P; Y]; X]) -> [[[u32; C]; Y]; X] {
+        let mut target = <[[[u32; C]; Y]; X]>::default();
+        for x in 0..X - (FX - 1) {
+            for y in 0..Y - (FY - 1) {
+                let mut patch = <[[P; FY]; FX]>::default();
+                for fx in 0..FX {
+                    for fy in 0..FY {
+                        patch[fx][fy] = input[x + fx][y + fy];
+                    }
+                }
+                target[x + FX / 2][y + FY / 2] = self.bit_mul(&patch);
+            }
+        }
+        target
+    }
+}
+
+impl<const X: usize, const Y: usize, const C: usize, const FX: usize, const FY: usize>
+    Conv2D<[u8; 3], true, { X }, { Y }, { C }> for [[([[u32; FY]; FX], u32); 32]; C]
+where
+    [[[u32; C]; Y]; X]: Default,
+    [[[u8; 3]; FY]; FX]: Default + NormalizeAndEncode2D<{ FX }, { FY }>,
+    [[([[u32; FY]; FX], u32); 32]; C]: BitMul<[[u32; FY]; FX], [u32; C]>,
+{
+    fn conv2d(&self, input: &[[[u8; 3]; Y]; X]) -> [[[u32; C]; Y]; X] {
+        let mut target = <[[[u32; C]; Y]; X]>::default();
+        for x in 0..X - (FX - 1) {
+            for y in 0..Y - (FY - 1) {
+                let mut patch = <[[[u8; 3]; FY]; FX]>::default();
+                for fx in 0..FX {
+                    for fy in 0..FY {
+                        patch[fx][fy] = input[x + fx][y + fy];
+                    }
+                }
+                target[x + FX / 2][y + FY / 2] = self.bit_mul(&patch.normalize_and_unary_encode());
             }
         }
         target
@@ -301,30 +374,17 @@ trait AvgBits
 where
     Self: IncrementCounters + Sized,
 {
-    fn avg_bits(examples: &Vec<Self>) -> Self;
     fn count_bits(examples: &Vec<Self>) -> Self::BitCounterType;
-    fn split(&self, examples: &Vec<Self>) -> (Vec<Self>, Vec<Self>);
-    fn reextract(&self, examples: &Vec<Self>) -> Self;
-    // input is examples, output is features.
-    // It will generate up to `depth^2 + (depth-1)` features
-    fn recursively_extract_features(examples: &Vec<Self>, depth: usize) -> Vec<Self>;
-    fn extractive_feature_gen(examples: &Vec<Self>, n: usize) -> Vec<Self>;
     fn update_centers(example: &Vec<Self>, centers: &Vec<Self>) -> Vec<Self>;
-    fn lloyds<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<Self>, k: usize) -> Vec<Self>;
+    fn lloyds<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<Self>, k: usize) -> Vec<(Self, u32)>;
 }
 
 impl<T: IncrementCounters + Send + Sync + Copy + HammingDistance + BitLen + Eq> AvgBits for T
 where
     <Self as IncrementCounters>::BitCounterType:
-        Default + Send + Sync + Counters + Median + std::fmt::Debug,
+        Default + Send + Sync + Counters + std::fmt::Debug,
     rand::distributions::Standard: rand::distributions::Distribution<T>,
 {
-    fn avg_bits(examples: &Vec<Self>) -> Self {
-        let per_bit_counts = Self::count_bits(examples);
-        //let threshold = examples.len() as u32 / 2;
-        let threshold = per_bit_counts.median();
-        <Self>::threshold_and_bitpack(&per_bit_counts, threshold)
-    }
     fn count_bits(examples: &Vec<Self>) -> Self::BitCounterType {
         examples
             .par_iter()
@@ -343,81 +403,6 @@ where
                 },
             )
     }
-    fn split(&self, examples: &Vec<Self>) -> (Vec<Self>, Vec<Self>) {
-        let mut activations: Vec<u32> = examples
-            .par_iter()
-            .map(|x| self.hamming_distance(x))
-            .collect();
-        activations.par_sort();
-        let threshold = activations[activations.len() / 2];
-        let side_0: Vec<_> = examples
-            .par_iter()
-            .filter(|x| self.hamming_distance(x) <= threshold)
-            .cloned()
-            .collect();
-        let side_1: Vec<_> = examples
-            .par_iter()
-            .filter(|x| self.hamming_distance(x) > threshold)
-            .cloned()
-            .collect();
-        (side_0, side_1)
-    }
-    fn reextract(&self, examples: &Vec<Self>) -> Self {
-        let (side_0, side_1) = self.split(&examples);
-        let bit_counts_0 = Self::count_bits(&side_0);
-        let bit_counts_1 = Self::count_bits(&side_1);
-        Self::compare_and_bitpack(&bit_counts_0, side_0.len(), &bit_counts_1, side_1.len())
-    }
-    fn recursively_extract_features(examples: &Vec<Self>, depth: usize) -> Vec<Self> {
-        let mut filters = vec![];
-        let avg_patch = Self::avg_bits(&examples);
-
-        let split_filter = avg_patch.reextract(&examples);
-
-        if depth == 0 {
-            dbg!(examples.len());
-            filters.push(split_filter);
-        } else {
-            let (side_0_examples, side_1_examples) = split_filter.split(&examples);
-            filters.append(&mut Self::recursively_extract_features(
-                &side_0_examples,
-                depth - 1,
-            ));
-            filters.append(&mut Self::recursively_extract_features(
-                &side_1_examples,
-                depth - 1,
-            ));
-        }
-        filters
-    }
-    fn extractive_feature_gen(examples: &Vec<Self>, n: usize) -> Vec<Self> {
-        // first we need to get the average patch, that is, the patch where a bit is set iff >50% of the patches have that bit set.
-        let per_bit_counts = Self::count_bits(examples);
-        let avg_patch = <Self>::threshold_and_bitpack(&per_bit_counts, examples.len() as u32 / 2);
-
-        // then we get the examples which have less then 1/3 of hte bits wrong.
-        let near_corners: Vec<_> = examples
-            .par_iter()
-            .filter(|x| avg_patch.hamming_distance(x) < (Self::BIT_LEN as u32 / 3))
-            .cloned()
-            .collect();
-        dbg!(near_corners.len() as f64 / examples.len() as f64);
-
-        // and average them
-        let per_bit_counts = Self::count_bits(&near_corners);
-        let threshold = near_corners.len() as u32 / 2;
-        let avg_patch = <Self>::threshold_and_bitpack(&per_bit_counts, threshold);
-        let near_corners: Vec<_> = near_corners
-            .par_iter()
-            .filter(|x| avg_patch.hamming_distance(x) < 60)
-            .cloned()
-            .collect();
-        dbg!(near_corners.len());
-        dbg!(near_corners.len() as f64 / examples.len() as f64);
-
-        vec![avg_patch]
-    }
-
     fn update_centers(examples: &Vec<Self>, centers: &Vec<Self>) -> Vec<Self> {
         let counters: Vec<(usize, Self::BitCounterType)> = examples
             .par_iter()
@@ -471,79 +456,126 @@ where
             );
         counters
             .iter()
-            .map(|(i, x)| <Self>::threshold_and_bitpack(&x, *i as u32 / 2))
+            .map(|(n_examples, counters)| {
+                <Self>::threshold_and_bitpack(&counters, *n_examples as u32 / 2)
+            })
             .collect()
     }
-    fn lloyds<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<Self>, k: usize) -> Vec<Self> {
-        let mut clusters: Vec<Self> = (0..32).map(|_| rng.gen()).collect();
-        for i in 0..30 {
+    fn lloyds<RNG: rand::Rng>(rng: &mut RNG, examples: &Vec<Self>, k: usize) -> Vec<(Self, u32)> {
+        let mut centroids: Vec<Self> = (0..k).map(|_| rng.gen()).collect();
+        for i in 0..100 {
             dbg!(i);
-            let new_clusters = <Self>::update_centers(examples, &clusters);
-            if new_clusters == clusters {
+            let new_centroids = <Self>::update_centers(examples, &centroids);
+            if new_centroids == centroids {
                 break;
             }
-            clusters = new_clusters;
+            centroids = new_centroids;
         }
-        clusters
+        centroids
+            .iter()
+            .map(|centroid| {
+                let mut activations: Vec<u32> = examples
+                    .par_iter()
+                    .map(|example| example.hamming_distance(centroid))
+                    .collect();
+                activations.par_sort();
+                (*centroid, activations[examples.len() / 2])
+            })
+            .collect()
     }
 }
 
-fn print_patch(patch: &[[[u8; 3]; 3]; 3]) {
-    for x in 0..3 {
-        for y in 0..3 {
-            for c in 0..3 {
-                print!("{:08b}|", patch[x][y][c]);
-            }
-            print!(" ");
+trait Layer<InputImage, OutputImage> {
+    fn layer<RNG: rand::Rng>(
+        rng: &mut RNG,
+        examples: &Vec<InputImage>,
+        path: &Path,
+    ) -> Vec<OutputImage>;
+}
+
+fn print_patch<const X: usize, const Y: usize>(patch: &[[u32; Y]; X]) {
+    for x in 0..X {
+        for y in 0..Y {
+            print!("{:032b} | ", patch[x][y]);
         }
         print!("\n");
     }
     println!("-----------",);
 }
 
-const N_EXAMPLES: usize = 50_00;
+const N_EXAMPLES: usize = 50_000;
+const FILTER_SIZE: usize = 3;
+const N_CHANS: usize = 1;
 
 fn main() {
     let mut rng = Hc128Rng::seed_from_u64(0);
     let cifar_base_path = Path::new("/home/isaac/big/cache/datasets/cifar-10-batches-bin");
     let images: Vec<([[[u8; 3]; 32]; 32], usize)> =
         cifar::load_images_from_base(cifar_base_path, N_EXAMPLES);
-    let examples: Vec<[[[u8; 3]; 3]; 3]> = images
-        .par_iter()
-        .map(|(image, _)| image.patches())
-        .flatten()
-        .collect();
-    dbg!(examples.len());
 
-    let clusters = <[[[u8; 3]; 3]; 3]>::lloyds(&mut rng, &examples, 32);
-    for filter in &clusters {
-        print_patch(&filter);
-    }
+    let params_path = Path::new("params/lloyds_cluster/l0.prms");
+    let weights =
+        <[[([[u32; FILTER_SIZE]; FILTER_SIZE], u32); 32]; N_CHANS]>::new_from_fs(&params_path)
+            .unwrap_or_else(|| {
+                println!("no params found, training.");
+                let examples: Vec<[[u32; FILTER_SIZE]; FILTER_SIZE]> = images
+                    .par_iter()
+                    .fold(
+                        || vec![],
+                        |mut acc, (image, _)| {
+                            image.patches(&mut acc);
+                            acc
+                        },
+                    )
+                    .reduce(
+                        || vec![],
+                        |mut a, mut b| {
+                            a.append(&mut b);
+                            a
+                        },
+                );
+                dbg!(examples.len());
+                let clusters = <[[u32; FILTER_SIZE]; FILTER_SIZE]>::lloyds(&mut rng, &examples, N_CHANS * 32);
+                for &filter in &clusters {
+                    dbg!(filter.1);
+                    print_patch(&filter.0);
+                }
 
-    let mut weights = [([[[0u8; 3]; 3]; 3], 92u32); 32];
-    //let mut weights = [[[[0u8; 3]; 3]; 3]; 32];
-    for (i, filter) in clusters.iter().enumerate() {
-        weights[i].0 = *filter;
-    }
+                let mut weights = [[([[0u32; FILTER_SIZE]; FILTER_SIZE], 0u32); 32]; N_CHANS];
+                for (i, filter) in clusters.iter().enumerate() {
+                    weights[i / 32][i % 32] = *filter;
+                }
+                weights.write_to_fs(&params_path);
+                weights
+            });
 
-    let images: Vec<[[u32; 32]; 32]> = images
+    println!("got params");
+    let start = PreciseTime::now();
+    let images: Vec<[[[u32; 1]; 32]; 32]> = images
         .par_iter()
         .map(|(image, _)| weights.conv2d(image))
         .collect();
-    let examples: Vec<[[u32; 3]; 3]> = images
-        .par_iter()
-        .map(|image| image.patches())
-        .flatten()
-        .collect();
-    dbg!(examples.len());
+    println!("time: {}", start.to(PreciseTime::now()));
+    // PT2.04
 
-    for b in 0..32 {
-        for x in 0..32 {
-            for y in 0..32 {
-                print!("{}", if images[6][y][x].bit(b) { 1 } else { 0 });
-            }
-            print!("\n");
-        }
-        println!("-------------",);
-    }
+    //for b in 0..32 {
+    //    dbg!(b);
+    //    for x in 0..32 {
+    //        for y in 0..32 {
+    //            print!("{}", if images[6][y][x][0].bit(b) { 1 } else { 0 });
+    //        }
+    //        print!("\n");
+    //    }
+    //    println!("-------------",);
+    //}
+    ////for row in &images[6] {
+    ////    for pixel in row {
+    ////        println!("{:032b}", pixel[0]);
+    ////    }
+    ////}
+    //for (i, filter) in weights[0].iter().enumerate() {
+    //    dbg!(i);
+    //    dbg!(filter.1);
+    //    print_patch(&filter.0);
+    //}
 }

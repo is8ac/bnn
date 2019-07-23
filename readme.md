@@ -43,14 +43,12 @@ https://openreview.net/pdf?id=ryxfHnCctX
 
 [AdaComp : Adaptive Residual Gradient Compression for Data-Parallel Distributed Training](https://arxiv.org/abs/1712.02679)
 
+## Clustering
+- [Deep Clustering for Unsupervised Learning of Visual Features](https://arxiv.org/abs/1807.05520)
+- [Learning Feature Representations with K-means](https://www-cs.stanford.edu/~acoates/papers/coatesng_nntot2012.pdf)
+- [Convolutional Clustering for Unsupervised Learning](https://arxiv.org/abs/1511.06241)
 
 # Layerwise training
 https://arxiv.org/abs/1901.06656
 https://arxiv.org/abs/1803.09522
 https://arxiv.org/abs/1812.11446
-
-
-# Batchmode
-GPU dispatch is high overhead, so dispatch all 32 bits of a word simultaneously and collect as a batch. The 32 bits of a word are not significantly co-correlated [citation needed] and so we can therefore optimize then using naive bays.
-We still get determinism if we likewise batch the CPU sum, and hopefully, we will not harm acc too badly.
-This may also help with memory bandwidth.

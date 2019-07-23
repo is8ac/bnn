@@ -3,3 +3,4 @@
 mnist
 params/*
 remote_params
+target
