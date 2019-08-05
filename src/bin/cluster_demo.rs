@@ -251,39 +251,31 @@ impl_orpool!(32, 32);
 impl_orpool!(16, 16);
 impl_orpool!(8, 8);
 
-//trait Unary<Bits> {
-//    fn unary_encode(&self) -> Bits;
-//}
-//
-//impl Unary<u32> for [u8; 3] {
-//    fn unary_encode(&self) -> u32 {
-//        let mut bits = 0b0u32;
-//        for c in 0..3 {
-//            bits |= (!0b0u32 << (self[c] / 23)) << (c * 10);
-//            bits &= !0b0u32 >> (32 - ((c + 1) * 10));
-//        }
-//        !bits
-//    }
-//}
-
-trait Encode2D<UnaryPixelType, const UNARY: bool, const X: usize, const Y: usize> {
-    fn encode_2d(&self) -> [[UnaryPixelType; Y]; X];
+trait Unary<Bits> {
+    fn unary_encode(&self) -> Bits;
 }
 
-impl<P: Copy, const X: usize, const Y: usize> Encode2D<P, false, { X }, { Y }> for [[P; Y]; X] {
-    #[inline(always)]
-    fn encode_2d(&self) -> Self {
-        *self
+impl Unary<u32> for [u8; 3] {
+    fn unary_encode(&self) -> u32 {
+        let mut bits = 0b0u32;
+        for c in 0..3 {
+            bits |= (!0b0u32 << (self[c] / 23)) << (c * 10);
+            bits &= !0b0u32 >> (32 - ((c + 1) * 10));
+        }
+        !bits
     }
 }
 
-// slide the min to 0 but do not strech
-impl<const X: usize, const Y: usize> Encode2D<u32, true, { X }, { Y }> for [[[u8; 3]; Y]; X]
+trait Normalize2D<OutputPatch> {
+    fn normalize_2d(&self) -> OutputPatch;
+}
+
+// slide the min to 0
+impl<const X: usize, const Y: usize> Normalize2D<[[u32; Y]; X]> for [[[u8; 3]; Y]; X]
 where
     [[u32; Y]; X]: Default,
-    //[u8; 3]: Unary<UnaryPixelType>,
 {
-    fn encode_2d(&self) -> [[u32; Y]; X] {
+    fn normalize_2d(&self) -> [[u32; Y]; X] {
         let mut mins = [255u8; 3];
         for x in 0..X {
             for y in 0..Y {
@@ -307,6 +299,19 @@ where
     }
 }
 
+// extracts patches and puts them in the pixels of the output image.
+trait ExtractImagePatches<OutputImage> {
+    fn extract_image_patches(&self) -> OutputImage;
+}
+
+impl<P: Copy, O, const X: usize, const Y: usize, const FX: usize, const FY: usize>
+    ExtractImagePatches<[[[[O; FY]; FX]; Y]; X]> for [[P; Y]; X]
+where
+    [[P; FY]; FX]: Normalize2D<[[O; FY]; FX]>,
+{
+    fn extract_image_patches(&self) -> [[[[O; FY]; FX]; Y]; X] {}
+}
+
 trait ExtractPatches<Patch, const NORMALIZE: bool> {
     fn patches(&self, patches: &mut Vec<Patch>);
 }
@@ -320,8 +325,8 @@ impl<
         const FX: usize,
         const FY: usize,
     > ExtractPatches<[[O; FY]; FX], { NORMALIZE }> for [[I; Y]; X]
-where
-    [[I; FY]; FX]: Default + Encode2D<O, { NORMALIZE }, { FX }, { FY }>,
+//where
+//    [[I; FY]; FX]: Default + Encode2D<O, { NORMALIZE }, { FX }, { FY }>,
 {
     fn patches(&self, patches: &mut Vec<[[O; FY]; FX]>) {
         for x in 0..X - (FX - 1) {
@@ -338,8 +343,8 @@ where
     }
 }
 
-trait Conv2D<P, const NORMALIZE: bool, const X: usize, const Y: usize, const C: usize> {
-    fn conv2d(&self, input: &[[P; Y]; X]) -> [[[u32; C]; Y]; X];
+trait Conv2D<InputImage, OutputImage, const NORMALIZE: bool> {
+    fn conv2d(&self, input: &InputImage) -> OutputImage;
 }
 
 impl<
@@ -351,11 +356,11 @@ impl<
         const C: usize,
         const FX: usize,
         const FY: usize,
-    > Conv2D<I, { NORMALIZE }, { X }, { Y }, { C }> for [[([[O; FY]; FX], u32); 32]; C]
-where
-    [[[u32; C]; Y]; X]: Default,
-    [[([[O; FY]; FX], u32); 32]; C]: BitMul<[[O; FY]; FX], [u32; C]>,
-    [[I; FY]; FX]: Default + Encode2D<O, { NORMALIZE }, { FX }, { FY }>,
+    > Conv2D<[[I; Y]; X], [[[u32; C]; Y]; X], { NORMALIZE }> for [[([[O; FY]; FX], u32); 32]; C]
+//where
+//    [[[u32; C]; Y]; X]: Default,
+//    [[([[O; FY]; FX], u32); 32]; C]: BitMul<[[O; FY]; FX], [u32; C]>,
+//    [[I; FY]; FX]: Default + Encode2D<O, { NORMALIZE }, { FX }, { FY }>,
 {
     fn conv2d(&self, input: &[[I; Y]; X]) -> [[[u32; C]; Y]; X] {
         let mut target = <[[[u32; C]; Y]; X]>::default();
@@ -373,6 +378,42 @@ where
         target
     }
 }
+
+macro_rules! patch_2x2 {
+    ($input:expr, $x:expr, $y:expr) => {
+        [
+            [$input[$x + 0][$y + 0], $input[$x + 0][$y + 1]],
+            [$input[$x + 1][$y + 0], $input[$x + 1][$y + 1]],
+        ]
+    };
+}
+
+macro_rules! impl_strided_conv_2x2 {
+    ($x:expr, $y:expr) => {
+        impl<P: Copy, O, W: BitMul<[[P; 2]; 2], O>>
+            Conv2D<[[P; $y]; $x], [[O; $y / 2]; $x / 2], false> for W
+        where
+            [[O; $y / 2]; $x / 2]: Default,
+            [[P; 2]; 2]: Default + Encode2D<P, false, 2, 2>,
+        {
+            fn conv2d(&self, input: &[[P; $y]; $x]) -> [[O; $y / 2]; $x / 2] {
+                let mut target = <[[O; $y / 2]; $x / 2]>::default();
+                for x in 0..$x / 2 {
+                    let x_index = x * 2;
+                    for y in 0..$y / 2 {
+                        let y_index = y * 2;
+                        target[x][y] = self.bit_mul(&patch_2x2!(input, x_index, y_index));
+                    }
+                }
+                target
+            }
+        }
+    };
+}
+
+impl_strided_conv_2x2!(32, 32);
+impl_strided_conv_2x2!(16, 16);
+impl_strided_conv_2x2!(8, 8);
 
 trait Lloyds
 where
@@ -479,29 +520,29 @@ trait Layer<InputImage, OutputImage, const NORMALIZE: bool> {
 }
 
 impl<
-        P: Sync + Send,
+        //P: Sync + Send,
         W: Send + Sync,
-        const X: usize,
-        const Y: usize,
+        InputImage: Sync,
+        OutputImage: Sync + Send,
+        //const X: usize,
+        //const Y: usize,
+        const
         const C: usize,
         const FX: usize,
         const FY: usize,
         const NORMALIZE: bool,
-    > Layer<[[P; Y]; X], [[[u32; C]; Y]; X], { NORMALIZE }> for [[([[W; FY]; FX], u32); 32]; C]
-where
-    for<'de> Self: serde::Deserialize<'de>,
-    Self: Conv2D<P, { NORMALIZE }, { X }, { Y }, { C }> + Default + serde::Serialize,
-    [[W; FY]; FX]: Lloyds + Copy,
-    [[P; Y]; X]: ExtractPatches<[[W; FY]; FX], { NORMALIZE }>,
+    > Layer<InputImage, OutputImage, { NORMALIZE }> for [[([[W; FY]; FX], u32); 32]; C]
+//where
+//    for<'de> Self: serde::Deserialize<'de>,
+//    Self: Conv2D<InputImage, OutputImage, { NORMALIZE }> + Default + serde::Serialize,
+//    [[W; FY]; FX]: Lloyds + Copy,
+//    InputImage: ExtractPatches<[[W; FY]; FX], { NORMALIZE }>,
 {
     fn cluster_features<RNG: rand::Rng>(
         rng: &mut RNG,
-        images: &Vec<([[P; Y]; X], usize)>,
+        images: &Vec<(InputImage, usize)>,
         path: &Path,
-    ) -> (Vec<([[[u32; C]; Y]; X], usize)>, Self)
-    where
-        [[P; Y]; X]: ExtractPatches<[[W; FY]; FX], { NORMALIZE }>,
-    {
+    ) -> (Vec<(OutputImage, usize)>, Self) {
         let weights: Self = File::open(&path)
             .map(|f| deserialize_from(f).unwrap())
             .ok()
@@ -536,7 +577,7 @@ where
             });
         println!("got params");
         let start = PreciseTime::now();
-        let images: Vec<([[[u32; C]; Y]; X], usize)> = images
+        let images: Vec<(OutputImage, usize)> = images
             .par_iter()
             .map(|(image, class)| (weights.conv2d(image), *class))
             .collect();
@@ -632,91 +673,87 @@ fn main() {
     let images: Vec<([[[u8; 3]; 32]; 32], usize)> =
         cifar::load_images_from_base(cifar_base_path, N_EXAMPLES);
 
-    let params_path = Path::new("params/lloyds_cluster_5");
+    let params_path = Path::new("params/lloyds_cluster_6");
     create_dir_all(&params_path).unwrap();
 
     let start = PreciseTime::now();
     let (images, weights): (
         Vec<([[[u32; L1_CHANS]; 32]; 32], usize)>,
         [[([[u32; 3]; 3], u32); 32]; L1_CHANS],
-    ) = Layer::cluster_features(&mut rng, &images, &params_path.join("l0.prms"));
+    ) = Layer::cluster_features(&mut rng, &images, &params_path.join("n0.prms"));
     println!("full time: {}", start.to(PreciseTime::now()));
 
+    let (images, weights): (
+        Vec<([[[u32; 2]; 16]; 16], usize)>,
+        [[([[[u32; 1]; 2]; 2], u32); 32]; 2],
+    ) = Layer::cluster_features(&mut rng, &images, &params_path.join("t1_c2x2.prms"));
+
     //let (images, weights): (
-    //    Vec<([[[u32; 2]; 32]; 32], usize)>,
-    //    [[([[[u32; 1]; 3]; 3], u32); 32]; 2],
-    //) = Layer::cluster_features(&mut rng, &images, &params_path.join("l1.prms"));
+    //    Vec<([[[u32; L2_CHANS]; 16]; 16], usize)>,
+    //    [[([[[u32; L1_CHANS]; 3]; 3], u32); 32]; L2_CHANS],
+    //) = Layer::cluster_features(&mut rng, &images, &params_path.join("b2_l0.prms"));
 
-    let images: Vec<([[[u32; L1_CHANS]; 16]; 16], usize)> = images
-        .par_iter()
-        .map(|(image, class)| (image.or_pool(), *class))
-        .collect();
+    //let (images, weights): (
+    //    Vec<([[[u32; 4]; 8]; 8], usize)>,
+    //    [[([[[u32; 2]; 2]; 2], u32); 32]; 4],
+    //) = Layer::cluster_features(&mut rng, &images, &params_path.join("t2_c2x2.prms"));
 
-    let (images, weights): (
-        Vec<([[[u32; L2_CHANS]; 16]; 16], usize)>,
-        [[([[[u32; L1_CHANS]; 3]; 3], u32); 32]; L2_CHANS],
-    ) = Layer::cluster_features(&mut rng, &images, &params_path.join("l1.prms"));
+    //let (images, weights): (
+    //    Vec<([[[u32; L3_CHANS]; 8]; 8], usize)>,
+    //    [[([[[u32; L2_CHANS]; 3]; 3], u32); 32]; L3_CHANS],
+    //) = Layer::cluster_features(&mut rng, &images, &params_path.join("l2.prms"));
 
-    let images: Vec<([[[u32; L2_CHANS]; 8]; 8], usize)> = images
-        .par_iter()
-        .map(|(image, class)| (image.or_pool(), *class))
-        .collect();
+    //let images: Vec<([[[u32; L3_CHANS]; 4]; 4], usize)> = images
+    //    .par_iter()
+    //    .map(|(image, class)| (image.or_pool(), *class))
+    //    .collect();
 
-    let (images, weights): (
-        Vec<([[[u32; L3_CHANS]; 8]; 8], usize)>,
-        [[([[[u32; L2_CHANS]; 3]; 3], u32); 32]; L3_CHANS],
-    ) = Layer::cluster_features(&mut rng, &images, &params_path.join("l2.prms"));
+    //let (images, weights): (
+    //    Vec<([[[u32; L4_CHANS]; 4]; 4], usize)>,
+    //    [[([[[u32; L3_CHANS]; 3]; 3], u32); 32]; L4_CHANS],
+    //) = Layer::cluster_features(&mut rng, &images, &params_path.join("l3.prms"));
 
-    let images: Vec<([[[u32; L3_CHANS]; 4]; 4], usize)> = images
-        .par_iter()
-        .map(|(image, class)| (image.or_pool(), *class))
-        .collect();
+    //let fc_layer: [[[[u32; L4_CHANS]; 4]; 4]; 10] =
+    //    <[[[u32; L4_CHANS]; 4]; 4]>::naive_bayes_classify(&images);
 
-    let (images, weights): (
-        Vec<([[[u32; L4_CHANS]; 4]; 4], usize)>,
-        [[([[[u32; L3_CHANS]; 3]; 3], u32); 32]; L4_CHANS],
-    ) = Layer::cluster_features(&mut rng, &images, &params_path.join("l3.prms"));
+    //let dist: Vec<u64> = images
+    //    .par_iter()
+    //    .fold(
+    //        || vec![0u64; 10],
+    //        |mut acc, (image, _)| {
+    //            for c in 0..10 {
+    //                acc[c] += fc_layer[c].hamming_distance(image) as u64;
+    //            }
+    //            acc
+    //        },
+    //    )
+    //    .reduce(
+    //        || vec![0u64; 10],
+    //        |a, b| a.iter().zip(b.iter()).map(|(a, b)| a + b).collect(),
+    //    );
 
+    //let max_avg_act: f64 = *dist.iter().max().unwrap() as f64 / images.len() as f64;
+    //dbg!(max_avg_act);
+    //let biases: Vec<u32> = dist
+    //    .iter()
+    //    .map(|&x| (max_avg_act - (x as f64 / images.len() as f64)) as u32)
+    //    .collect();
+    //dbg!(&biases);
 
-    let fc_layer: [[[[u32; L4_CHANS]; 4]; 4]; 10] = <[[[u32; L4_CHANS]; 4]; 4]>::naive_bayes_classify(&images);
-
-    let dist: Vec<u64> = images
-        .par_iter()
-        .fold(
-            || vec![0u64; 10],
-            |mut acc, (image, _)| {
-                for c in 0..10 {
-                    acc[c] += fc_layer[c].hamming_distance(image) as u64;
-                }
-                acc
-            },
-        )
-        .reduce(
-            || vec![0u64; 10],
-            |a, b| a.iter().zip(b.iter()).map(|(a, b)| a + b).collect(),
-        );
-
-    let max_avg_act: f64 = *dist.iter().max().unwrap() as f64 / images.len() as f64;
-    dbg!(max_avg_act);
-    let biases: Vec<u32> = dist.iter().map(|&x| (max_avg_act - (x as f64 / images.len() as f64)) as u32).collect();
-    dbg!(&biases);
-
-    let n_correct: u64 = images
-        .par_iter()
-        .map(|(image, class)| {
-            let actual_class: usize = fc_layer
-            .iter()
-            .enumerate()
-            .min_by_key(|(i, filter)| filter.hamming_distance(image) + biases[*i])
-            .unwrap()
-            .0;
-            (actual_class == *class) as u64
-        })
-        .sum();
-    dbg!(n_correct as f64 / images.len() as f64);
+    //let n_correct: u64 = images
+    //    .par_iter()
+    //    .map(|(image, class)| {
+    //        let actual_class: usize = fc_layer
+    //            .iter()
+    //            .enumerate()
+    //            .min_by_key(|(i, filter)| filter.hamming_distance(image) + biases[*i])
+    //            .unwrap()
+    //            .0;
+    //        (actual_class == *class) as u64
+    //    })
+    //    .sum();
+    //dbg!(n_correct as f64 / images.len() as f64);
     // 0.235
-
-
 
     //for c in 0..2 {
     //    for b in 0..32 {

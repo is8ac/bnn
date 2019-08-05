@@ -13,4 +13,3 @@ rayon = "1.0"
 serde = "1.0.79"
 serde_derive = "1.0.76"
 bincode = { version = "1.0.1", features = ["i128"] }
-image = "0.21.0"
