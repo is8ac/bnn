@@ -729,3 +729,386 @@ pub mod image2d {
         }
     }
 }
+
+pub mod featuregen {
+    use crate::bits::{BitLen, BitMul, HammingDistance};
+    use crate::count::{Counters, IncrementCounters};
+    use crate::image2d::{ExtractPixels, PixelMap2D};
+    use bincode::{deserialize_from, serialize_into};
+    use rand::SeedableRng;
+    use rand_hc::Hc128Rng;
+    use rayon::prelude::*;
+    use std::collections::HashSet;
+    use std::fs::{create_dir_all, File};
+    use std::io::BufWriter;
+    use std::path::Path;
+    use time::PreciseTime;
+
+    trait SupervisedLayer<InputImage, OutputImage> {
+        fn supervised_cluster(
+            examples: &Vec<(InputImage, usize)>,
+            n_classes: usize,
+            path: &Path,
+        ) -> (Vec<(OutputImage, usize)>, Self);
+    }
+
+    impl<
+            P: Send + Sync + HammingDistance + Lloyds + Copy,
+            InputImage: Sync + PixelMap2D<P, [u32; C], OutputImage = OutputImage> + ExtractPixels<P>,
+            OutputImage: Sync + Send,
+            const C: usize,
+        > SupervisedLayer<InputImage, OutputImage> for [[(P, u32); 32]; C]
+    where
+        for<'de> Self: serde::Deserialize<'de>,
+        Self: BitMul<P, [u32; C]> + Default + serde::Serialize + Default,
+        P::BitCounterType: Default + Send + Counters,
+    {
+        fn supervised_cluster(
+            examples: &Vec<(InputImage, usize)>,
+            n_classes: usize,
+            path: &Path,
+        ) -> (Vec<(OutputImage, usize)>, Self) {
+            let weights: Self = File::open(&path)
+                .map(|f| deserialize_from(f).unwrap())
+                .ok()
+                .unwrap_or_else(|| {
+                    println!("no params found, training.");
+                    let counters: Vec<(usize, <P as IncrementCounters>::BitCounterType)> = examples
+                        .par_iter()
+                        .fold(
+                            || (0..n_classes).map(|_| (0, Default::default())).collect(),
+                            |mut acc: Vec<(usize, <P as IncrementCounters>::BitCounterType)>,
+                             (image, class)| {
+                                let pixels = {
+                                    let mut pixels = Vec::new();
+                                    image.extract_pixels(&mut pixels);
+                                    pixels
+                                };
+                                acc[*class].0 += pixels.len();
+                                for pixel in &pixels {
+                                    pixel.increment_counters(&mut acc[*class].1);
+                                }
+                                acc
+                            },
+                        )
+                        .reduce(
+                            || (0..n_classes).map(|_| (0, Default::default())).collect(),
+                            |mut a, b| {
+                                a.iter_mut()
+                                    .zip(b.iter())
+                                    .map(|(a, b)| {
+                                        a.0 += b.0;
+                                        (a.1).elementwise_add(&b.1);
+                                    })
+                                    .count();
+                                a
+                            },
+                        );
+
+                    let mut partitions = gen_partitions(n_classes);
+                    //partitions.sort_by_key(|x|x.len());
+                    dbg!(partitions.len());
+
+                    let filters: Vec<P> = partitions
+                        .iter()
+                        .map(|elems| filter_from_split(&counters, elems))
+                        .collect();
+                    dbg!(filters.len());
+
+                    let pixels: Vec<P> = examples
+                        .par_iter()
+                        .fold(
+                            || vec![],
+                            |mut pixels, (image, _)| {
+                                image.extract_pixels(&mut pixels);
+                                pixels
+                            },
+                        )
+                        .reduce(
+                            || vec![],
+                            |mut a, mut b| {
+                                a.append(&mut b);
+                                a
+                            },
+                        );
+
+                    let features: Vec<_> = filters
+                        .iter()
+                        .map(|filter| {
+                            let mut activations: Vec<u32> = pixels
+                                .par_iter()
+                                .map(|example| example.hamming_distance(filter))
+                                .collect();
+                            activations.par_sort();
+                            (*filter, activations[examples.len() / 2])
+                        })
+                        .collect();
+                    let mut weights = <Self>::default();
+                    for w in 0..C {
+                        for b in 0..32 {
+                            weights[w][b] = features[(w * 32) + b];
+                        }
+                    }
+                    weights
+                });
+            println!("got params");
+            let start = PreciseTime::now();
+            let examples: Vec<(OutputImage, usize)> = examples
+                .par_iter()
+                .map(|(image, class)| (image.map_2d(|x| weights.bit_mul(x)), *class))
+                .collect();
+            println!("time: {}", start.to(PreciseTime::now()));
+            (examples, weights)
+        }
+    }
+
+    trait UnsupervisedLayer<InputImage, OutputImage> {
+        fn unsupervised_cluster<RNG: rand::Rng>(
+            rng: &mut RNG,
+            examples: &Vec<InputImage>,
+            path: &Path,
+        ) -> (Vec<OutputImage>, Self);
+    }
+
+    impl<
+            P: Send + Sync + HammingDistance + Lloyds + Copy,
+            InputImage: Sync + PixelMap2D<P, [u32; C], OutputImage = OutputImage> + ExtractPixels<P>,
+            OutputImage: Sync + Send,
+            const C: usize,
+        > UnsupervisedLayer<InputImage, OutputImage> for [[(P, u32); 32]; C]
+    where
+        for<'de> Self: serde::Deserialize<'de>,
+        Self: BitMul<P, [u32; C]> + Default + serde::Serialize,
+    {
+        fn unsupervised_cluster<RNG: rand::Rng>(
+            rng: &mut RNG,
+            images: &Vec<InputImage>,
+            path: &Path,
+        ) -> (Vec<OutputImage>, Self) {
+            let weights: Self = File::open(&path)
+                .map(|f| deserialize_from(f).unwrap())
+                .ok()
+                .unwrap_or_else(|| {
+                    println!("no params found, training.");
+                    let examples: Vec<P> = images
+                        .par_iter()
+                        .fold(
+                            || vec![],
+                            |mut pixels, image| {
+                                image.extract_pixels(&mut pixels);
+                                pixels
+                            },
+                        )
+                        .reduce(
+                            || vec![],
+                            |mut a, mut b| {
+                                a.append(&mut b);
+                                a
+                            },
+                        );
+                    dbg!(examples.len());
+                    let clusters = <P>::lloyds(rng, &examples, C * 32);
+
+                    let mut weights = Self::default();
+                    for (i, filter) in clusters.iter().enumerate() {
+                        weights[i / 32][i % 32] = *filter;
+                    }
+                    let mut f = BufWriter::new(File::create(path).unwrap());
+                    serialize_into(&mut f, &weights).unwrap();
+                    weights
+                });
+            println!("got params");
+            let start = PreciseTime::now();
+            let images: Vec<OutputImage> = images
+                .par_iter()
+                .map(|image| image.map_2d(|x| weights.bit_mul(x)))
+                .collect();
+            println!("time: {}", start.to(PreciseTime::now()));
+            // PT2.04
+            (images, weights)
+        }
+    }
+
+    fn filter_from_split<T: IncrementCounters>(
+        class_counts: &Vec<(usize, T::BitCounterType)>,
+        indices: &HashSet<usize>,
+    ) -> T
+    where
+        T::BitCounterType: Default + Counters,
+    {
+        let (n_0, counters_0) = class_counts
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| indices.contains(i))
+            .fold((0usize, T::BitCounterType::default()), |mut a, (_, b)| {
+                a.0 += b.0;
+                a.1.elementwise_add(&b.1);
+                a
+            });
+        let (n_1, counters_1) = class_counts
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !indices.contains(i))
+            .fold((0usize, T::BitCounterType::default()), |mut a, (_, b)| {
+                a.0 += b.0;
+                a.1.elementwise_add(&b.1);
+                a
+            });
+        T::compare_and_bitpack(&counters_0, n_0, &counters_1, n_1)
+    }
+
+    fn gen_partitions(depth: usize) -> Vec<HashSet<usize>> {
+        assert_ne!(depth, 0);
+        if depth == 1 {
+            vec![HashSet::new()]
+        } else {
+            let a = gen_partitions(depth - 1);
+            a.iter()
+                .cloned()
+                .chain(a.iter().cloned().map(|mut x| {
+                    x.insert(depth - 1);
+                    x
+                }))
+                .collect()
+        }
+    }
+    fn gen_counters<T: IncrementCounters + Sync, const L: usize>(
+        examples: Vec<(T, usize)>,
+    ) -> Vec<(usize, T::BitCounterType)>
+    where
+        T::BitCounterType: Default + Copy + Sync + Send + Counters,
+    {
+        let counters: Vec<(usize, <T as IncrementCounters>::BitCounterType)> = examples
+            .par_iter()
+            .fold(
+                || vec![(0usize, <T as IncrementCounters>::BitCounterType::default()); L],
+                |mut acc: Vec<(usize, <T as IncrementCounters>::BitCounterType)>,
+                 (image, class)| {
+                    acc[*class].0 += 1;
+                    image.increment_counters(&mut acc[*class].1);
+                    acc
+                },
+            )
+            .reduce(
+                || vec![(0usize, <T as IncrementCounters>::BitCounterType::default()); L],
+                |mut a, b| {
+                    a.iter_mut()
+                        .zip(b.iter())
+                        .map(|(a, b)| {
+                            a.0 += b.0;
+                            (a.1).elementwise_add(&b.1);
+                        })
+                        .count();
+                    a
+                },
+            );
+        counters
+    }
+
+    trait Lloyds
+    where
+        Self: IncrementCounters + Sized,
+    {
+        fn update_centers(example: &Vec<Self>, centers: &Vec<Self>) -> Vec<Self>;
+        fn lloyds<RNG: rand::Rng>(
+            rng: &mut RNG,
+            examples: &Vec<Self>,
+            k: usize,
+        ) -> Vec<(Self, u32)>;
+    }
+
+    impl<T: IncrementCounters + Send + Sync + Copy + HammingDistance + BitLen + Eq> Lloyds for T
+    where
+        <Self as IncrementCounters>::BitCounterType:
+            Default + Send + Sync + Counters + std::fmt::Debug,
+        rand::distributions::Standard: rand::distributions::Distribution<T>,
+    {
+        fn update_centers(examples: &Vec<Self>, centers: &Vec<Self>) -> Vec<Self> {
+            let counters: Vec<(usize, Self::BitCounterType)> = examples
+                .par_iter()
+                .fold(
+                    || {
+                        centers
+                            .iter()
+                            .map(|_| {
+                                (
+                                    0usize,
+                                    <Self as IncrementCounters>::BitCounterType::default(),
+                                )
+                            })
+                            .collect()
+                    },
+                    |mut acc: Vec<(usize, Self::BitCounterType)>, example| {
+                        let cell_index = centers
+                            .iter()
+                            .map(|center| center.hamming_distance(example))
+                            .enumerate()
+                            .min_by_key(|(_, hd)| *hd)
+                            .unwrap()
+                            .0;
+                        acc[cell_index].0 += 1;
+                        example.increment_counters(&mut acc[cell_index].1);
+                        acc
+                    },
+                )
+                .reduce(
+                    || {
+                        centers
+                            .iter()
+                            .map(|_| {
+                                (
+                                    0usize,
+                                    <Self as IncrementCounters>::BitCounterType::default(),
+                                )
+                            })
+                            .collect()
+                    },
+                    |mut a, b| {
+                        a.iter_mut()
+                            .zip(b.iter())
+                            .map(|(a, b)| {
+                                a.0 += b.0;
+                                (a.1).elementwise_add(&b.1);
+                            })
+                            .count();
+                        a
+                    },
+                );
+            counters
+                .iter()
+                .map(|(n_examples, counters)| {
+                    <Self>::threshold_and_bitpack(&counters, *n_examples as u32 / 2)
+                })
+                .collect()
+        }
+        fn lloyds<RNG: rand::Rng>(
+            rng: &mut RNG,
+            examples: &Vec<Self>,
+            k: usize,
+        ) -> Vec<(Self, u32)> {
+            let mut centroids: Vec<Self> = (0..k).map(|_| rng.gen()).collect();
+            for i in 0..1000 {
+                dbg!(i);
+                let new_centroids = <Self>::update_centers(examples, &centroids);
+                if new_centroids == centroids {
+                    break;
+                }
+                centroids = new_centroids;
+            }
+            centroids
+                .iter()
+                .map(|centroid| {
+                    let mut activations: Vec<u32> = examples
+                        .par_iter()
+                        .map(|example| example.hamming_distance(centroid))
+                        .collect();
+                    activations.par_sort();
+                    (*centroid, activations[examples.len() / 2])
+                    //(*centroid, Self::BIT_LEN as u32 / 2)
+                })
+                .collect()
+        }
+    }
+}
+
+pub mod layer {}
