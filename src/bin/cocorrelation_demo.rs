@@ -159,62 +159,25 @@ where
 }
 
 // f64 values
-//trait Weights {
-//    const N: usize;
-//    fn join_map_sum<F: Fn(f64, f64) -> f64>(&self, other: &Self, map_fn: F) -> f64;
-//    fn sum(&self) -> f64;
-//    fn add_assign(&mut self, other: &Self);
-//    //fn map<F: Fn(f64) -> f64>(&self, map_fn: F) -> Self;
-//}
-//
-//impl Weights for f64 {
-//    const N: usize = 1;
-//    fn join_map_sum<F: Fn(f64, f64) -> f64>(&self, &other: &Self, map_fn: F) -> f64 {
-//        map_fn(*self, other)
-//    }
-//    fn sum(&self) -> f64 {
-//        *self
-//    }
-//    fn add_assign(&mut self, other: &Self) {
-//        *self += other;
-//    }
-//    //fn map<F: Fn(f64) -> f64>(&self, map_fn: F) -> Self {
-//    //    map_fn(*self)
-//    //}
-//}
-//
-//impl<T: Weights, const L: usize> Weights for [T; L]
-//where
-//    [T; L]: Default,
-//{
-//    const N: usize = T::N * L;
-//    fn join_map_sum<F: Fn(f64, f64) -> f64>(&self, other: &Self, map_fn: F) -> f64 {
-//        let mut sum = 0f64;
-//        for i in 0..L {
-//            sum += self[i].join_map_sum(&other[i], &map_fn);
-//        }
-//        sum
-//    }
-//    fn sum(&self) -> f64 {
-//        let mut sum = 0f64;
-//        for i in 0..L {
-//            sum += self[i].sum();
-//        }
-//        sum
-//    }
-//    fn add_assign(&mut self, other: &Self) {
-//        for i in 0..L {
-//            self[i].add_assign(&other[i]);
-//        }
-//    }
-//    //fn map<F: Fn(f64) -> f64>(&self, map_fn: F) -> Self {
-//    //    let mut target = Self::default();
-//    //    for i in 0..L {
-//    //        target[i] = self[i].map(&map_fn);
-//    //    }
-//    //    target
-//    //}
-//}
+trait Sum {
+    fn sum(&self) -> f64;
+}
+
+impl Sum for f64 {
+    fn sum(&self) -> f64 {
+        *self
+    }
+}
+
+impl<T: Sum, const L: usize> Sum for [T; L] {
+    fn sum(&self) -> f64 {
+        let mut sum = 0f64;
+        for i in 0..L {
+            sum += self[i].sum();
+        }
+        sum
+    }
+}
 
 //trait Mask {
 //    type Shape;
@@ -417,7 +380,7 @@ where
 type InputType = [u8; 3];
 type InputShape = [[(); 8]; 3];
 type MatrixShape = <InputShape as Element<InputShape>>::Array;
-//type FloatInputType = <f64 as Element<InputShape>>::Array;
+type FloatInputType = <f64 as Element<InputShape>>::Array;
 //type InputCounters = <InputType as BitWrap<u32>>::Wrap;
 //type CocorrelationCounters = <InputType as BitWrap<InputCounters>>::Wrap;
 
@@ -459,8 +422,6 @@ fn main() {
         })
     };
     dbg!(values);
-    //let magnitudes = <InputShape as Map<f64, f64>>::map(&values, |x| ((x * 2f64) - 1f64).abs());
-    //dbg!(magnitudes);
 
     let edges = <InputShape as Map<
         [(usize, <u32 as Element<InputShape>>::Array); 2],
@@ -493,52 +454,31 @@ fn main() {
         println!("]",);
     }
 
-    let ns =
-        <InputShape as Map<<f64 as Element<InputShape>>::Array, f64>>::map(&edges, |edge_set| {
-            <InputShape as Fold<f64, f64>>::fold(edge_set, 0f64, |a, b| a + b)
-        });
-    dbg!(ns);
+    let ns = <InputShape as Map<FloatInputType, f64>>::map(&edges, |edge_set| edge_set.sum());
+    //dbg!(ns);
     //let mut mask = [0b_1011_0110, 0b_0111_0101, 0b_0100_0101];
     let mut mask = [[true, true, true, false, true, false, true, false]; 3];
 
     let n = <[[(); 8]; 3]>::N;
     //let local_avgs = <[[f64; 8]; 3] as MatrixLoss<InputType>>::local_avg_val(&edges, &values);
-    let local_avgs = <InputShape as ZipMap<<f64 as Element<InputShape>>::Array, f64, f64>>::zip_map(
-        &edges,
-        &ns,
-        |edge_set, node_n| {
-            let weighted_edges =
-                <InputShape as ZipMap<f64, f64, f64>>::zip_map(&edge_set, &values, |a, b| a * b);
-            <InputShape as Fold<f64, f64>>::fold(&weighted_edges, 0f64, |a, b| a + b) / node_n
-        },
-    );
-    let avg = <InputShape as Fold<f64, f64>>::fold(&local_avgs, 0f64, |a, b| a + b) / n as f64;
-    dbg!(avg);
+    let local_avgs = InputShape::zip_map(&edges, &ns, |edge_set, node_n| {
+        <InputShape as ZipMap<f64, f64, f64>>::zip_map(&edge_set, &values, |a, b| a * b).sum()
+            / node_n
+    });
+    let avg = local_avgs.sum() / n as f64;
     let mut cur_mse = {
-        let local_counts = <InputShape as Map<<f64 as Element<InputShape>>::Array, f64>>::map(
-            &edges,
-            |edge_set| {
-                let edge_subset = <InputShape as ZipMap<f64, bool, f64>>::zip_map(
-                    &edge_set,
-                    &mask,
-                    |&edge, &mask_bit| {
-                        if mask_bit {
-                            edge
-                        } else {
-                            0f64
-                        }
-                    },
-                );
-                <InputShape as Fold<f64, f64>>::fold(&edge_subset, 0f64, |a, b| a + b)
-            },
-        );
-        let scale = avg
-            / (<InputShape as Fold<f64, f64>>::fold(&local_counts, 0f64, |a, b| a + b) / n as f64);
-        let node_mses =
-            <InputShape as ZipMap<f64, f64, f64>>::zip_map(&local_avgs, &local_counts, |a, b| {
-                (a - (b * scale)).powi(2)
-            });
-        <InputShape as Fold<f64, f64>>::fold(&node_mses, 0f64, |a, b| a + b)
+        let local_counts = InputShape::map(&edges, |edge_set| {
+            <InputShape as ZipMap<f64, bool, f64>>::zip_map(&edge_set, &mask, |&edge, &mask_bit| {
+                if mask_bit {
+                    edge
+                } else {
+                    0f64
+                }
+            })
+            .sum()
+        });
+        let scale = avg / (local_counts.sum() / n as f64);
+        InputShape::zip_map(&local_avgs, &local_counts, |a, b| (a - (b * scale)).powi(2)).sum()
     };
     dbg!(cur_mse);
     //let (flip_sums, flip_matrix) = <[[f64; 8]; 3]>::local_count_bit_flips(&edges, &mask);
