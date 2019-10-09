@@ -349,16 +349,8 @@ where
         let n = <[[(); 8]; 3]>::N as f64;
         let avg = local_avgs.sum() / n;
         let local_counts = <S as Map<<f64 as Element<S>>::Array, f64>>::map(&edges, |edge_set| {
-            <S as ZipMap<f64, bool, f64>>::zip_map(&edge_set, &mask, |&edge, &mask_bit| {
-                if mask_bit {
-                    edge
-                } else {
-                    0f64
-                }
-            })
-            .sum()
+            masked_sum::<S>(edge_set, mask)
         });
-        dbg!(local_counts.sum());
         let scale = avg / (local_counts.sum() / n);
         <S as ZipMap<f64, f64, f64>>::zip_map(&local_avgs, &local_counts, |a, b| {
             (a - (b * scale)).powi(2)
@@ -372,32 +364,21 @@ where
     ) -> <f64 as Element<S>>::Array {
         let n = <[[(); 8]; 3]>::N as f64;
         let avg = local_avgs.sum() / n;
-        let bit_flip_local_counts = <S as ZipMap<
-            <f64 as Element<S>>::Array,
-            f64,
-            <f64 as Element<S>>::Array,
-        >>::zip_map(
-            &edges,
-            &local_avgs,
-            |edge_set, local_avg| {
-                let sum =
-                    <S as ZipMap<f64, bool, f64>>::zip_map(&edge_set, &mask, |&edge, &mask_bit| {
+        let bit_flip_local_counts =
+            <S as ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>>::zip_map(
+                &edges,
+                &local_avgs,
+                |edge_set, local_avg| {
+                    let sum = masked_sum::<S>(edge_set, mask);
+                    <S as ZipMap<bool, f64, f64>>::zip_map(&mask, &edge_set, |&mask_bit, &edge| {
                         if mask_bit {
-                            edge
+                            sum - edge
                         } else {
-                            0f64
+                            sum + edge
                         }
                     })
-                    .sum();
-                <S as ZipMap<bool, f64, f64>>::zip_map(&mask, &edge_set, |&mask_bit, &edge| {
-                    if mask_bit {
-                        sum - edge
-                    } else {
-                        sum + edge
-                    }
-                })
-            },
-        );
+                },
+            );
         let bit_flip_sums = S::fold(
             &bit_flip_local_counts,
             <f64 as Element<S>>::Array::default(),
@@ -421,6 +402,29 @@ where
             |a, b| <S as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
         )
     }
+}
+
+fn masked_sum<S: Shape + ZipMap<f64, bool, f64>>(
+    edge_set: &<f64 as Element<S>>::Array,
+    mask: &<bool as Element<S>>::Array,
+) -> f64
+where
+    bool: Element<S>,
+    f64: Element<S>,
+    <f64 as Element<S>>::Array: Sum,
+{
+    <S as ZipMap<f64, bool, f64>>::zip_map(
+        &edge_set,
+        &mask,
+        |&edge, &mask_bit| {
+            if mask_bit {
+                edge
+            } else {
+                0f64
+            }
+        },
+    )
+    .sum()
 }
 
 type InputType = [u8; 3];
@@ -476,16 +480,18 @@ fn main() {
     let avg = local_avgs.sum() / n as f64;
     let mut cur_mse = InputShape::single_mse(&edges, &local_avgs, &mask);
     dbg!(cur_mse);
-    let bit_flip_mses = InputShape::bit_flip_mses(&edges, &local_avgs, &mask);
-    dbg!(mask);
-    dbg!(bit_flip_mses);
-    let (min_index, min_val) = <InputShape as Min>::min(&bit_flip_mses).unwrap();
-    dbg!(min_index);
-    dbg!(min_val);
-    if min_val < cur_mse {
-        dbg!("flipping");
-        <InputShape as FlipBool>::flip_bool(&mut mask, min_index);
-        cur_mse = min_val;
+    let mut is_optima = false;
+    while !is_optima {
+        let bit_flip_mses = InputShape::bit_flip_mses(&edges, &local_avgs, &mask);
+        let (min_index, min_val) = <InputShape as Min>::min(&bit_flip_mses).unwrap();
+        dbg!(min_val);
+        if min_val < cur_mse {
+            <InputShape as FlipBool>::flip_bool(&mut mask, min_index);
+            cur_mse = min_val;
+        } else {
+            is_optima = true;
+        }
+        let true_mse = InputShape::single_mse(&edges, &local_avgs, &mask);
     }
     dbg!(mask);
 }
