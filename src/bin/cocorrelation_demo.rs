@@ -144,6 +144,69 @@ impl<T: Sum, const L: usize> Sum for [T; L] {
     }
 }
 
+trait Min
+where
+    Self: Shape + Sized,
+    f64: Element<Self>,
+{
+    fn min(values: &<f64 as Element<Self>>::Array) -> Option<(Self::Index, f64)>;
+}
+
+impl Min for () {
+    fn min(&values: &f64) -> Option<((), f64)> {
+        Some(((), values))
+    }
+}
+
+impl<T: Min, const L: usize> Min for [T; L]
+where
+    f64: Element<T>,
+    Self: Shape<Index = (usize, T::Index)>,
+    T::Index: Copy,
+{
+    fn min(values: &[<f64 as Element<T>>::Array; L]) -> Option<((usize, T::Index), f64)> {
+        let mut cur_min: Option<((usize, T::Index), f64)> = None;
+        for i in 0..L {
+            if let Some((sub_index, sub_min)) = T::min(&values[i]) {
+                if let Some((index, min)) = cur_min {
+                    if sub_min < min {
+                        cur_min = Some(((i, sub_index), sub_min));
+                    }
+                } else {
+                    cur_min = Some(((i, sub_index), sub_min));
+                }
+            }
+        }
+        cur_min
+    }
+}
+
+trait FlipBool
+where
+    bool: Element<Self>,
+    Self: Shape + Sized,
+{
+    fn flip_bool(bools: &mut <bool as Element<Self>>::Array, index: Self::Index);
+}
+
+impl FlipBool for () {
+    fn flip_bool(bools: &mut bool, index: ()) {
+        *bools = !*bools;
+    }
+}
+
+impl<T: FlipBool + Shape, const L: usize> FlipBool for [T; L]
+where
+    bool: Element<T>,
+{
+    fn flip_bool(
+        bools: &mut [<bool as Element<T>>::Array; L],
+        (index, sub_index): (usize, T::Index),
+    ) {
+        T::flip_bool(&mut bools[index], sub_index);
+    }
+}
+
 trait IncrementCountersMatrix<T> {
     type MatrixCounterType;
     fn increment_counters_matrix(&self, counters_matrix: &mut Self::MatrixCounterType, target: &T);
@@ -226,6 +289,140 @@ where
     }
 }
 
+fn bayes_magn<S: Shape + ZipMap<u32, u32, f64>>(
+    counters: &[(usize, <u32 as Element<S>>::Array); 2],
+) -> <f64 as Element<S>>::Array
+where
+    u32: Element<S>,
+    f64: Element<S>,
+{
+    let n = (counters[0].0 + counters[1].0) as f64;
+    let na = counters[0].0 as f64;
+    let pa = na / n;
+    <S as ZipMap<u32, u32, f64>>::zip_map(&counters[0].1, &counters[1].1, |&a, &b| {
+        let pb = (a + b) as f64 / n;
+        let pba = a as f64 / na;
+        let pab = (pba * pa) / pb;
+        ((pab * 2f64) - 1f64).abs()
+    })
+}
+
+trait Mse
+where
+    Self: Shape + Sized,
+    bool: Element<Self>,
+    f64: Element<Self>,
+    <f64 as Element<Self>>::Array: Element<Self>,
+{
+    fn single_mse(
+        edges: &<<f64 as Element<Self>>::Array as Element<Self>>::Array,
+        local_avgs: &<f64 as Element<Self>>::Array,
+        mask: &<bool as Element<Self>>::Array,
+    ) -> f64;
+    fn bit_flip_mses(
+        edges: &<<f64 as Element<Self>>::Array as Element<Self>>::Array,
+        local_avgs: &<f64 as Element<Self>>::Array,
+        mask: &<bool as Element<Self>>::Array,
+    ) -> <f64 as Element<Self>>::Array;
+}
+
+impl<
+        S: Shape
+            + ZipMap<f64, bool, f64>
+            + Map<<f64 as Element<S>>::Array, f64>
+            + Map<f64, f64>
+            + ZipMap<f64, f64, f64>
+            + ZipMap<bool, f64, f64>
+            + ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>
+            + Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>,
+    > Mse for S
+where
+    bool: Element<S>,
+    f64: Element<S>,
+    <f64 as Element<S>>::Array: Element<S> + Sum + Default,
+{
+    fn single_mse(
+        edges: &<<f64 as Element<S>>::Array as Element<S>>::Array,
+        local_avgs: &<f64 as Element<S>>::Array,
+        mask: &<bool as Element<S>>::Array,
+    ) -> f64 {
+        let n = <[[(); 8]; 3]>::N as f64;
+        let avg = local_avgs.sum() / n;
+        let local_counts = <S as Map<<f64 as Element<S>>::Array, f64>>::map(&edges, |edge_set| {
+            <S as ZipMap<f64, bool, f64>>::zip_map(&edge_set, &mask, |&edge, &mask_bit| {
+                if mask_bit {
+                    edge
+                } else {
+                    0f64
+                }
+            })
+            .sum()
+        });
+        dbg!(local_counts.sum());
+        let scale = avg / (local_counts.sum() / n);
+        <S as ZipMap<f64, f64, f64>>::zip_map(&local_avgs, &local_counts, |a, b| {
+            (a - (b * scale)).powi(2)
+        })
+        .sum()
+    }
+    fn bit_flip_mses(
+        edges: &<<f64 as Element<S>>::Array as Element<S>>::Array,
+        local_avgs: &<f64 as Element<S>>::Array,
+        mask: &<bool as Element<S>>::Array,
+    ) -> <f64 as Element<S>>::Array {
+        let n = <[[(); 8]; 3]>::N as f64;
+        let avg = local_avgs.sum() / n;
+        let bit_flip_local_counts = <S as ZipMap<
+            <f64 as Element<S>>::Array,
+            f64,
+            <f64 as Element<S>>::Array,
+        >>::zip_map(
+            &edges,
+            &local_avgs,
+            |edge_set, local_avg| {
+                let sum =
+                    <S as ZipMap<f64, bool, f64>>::zip_map(&edge_set, &mask, |&edge, &mask_bit| {
+                        if mask_bit {
+                            edge
+                        } else {
+                            0f64
+                        }
+                    })
+                    .sum();
+                <S as ZipMap<bool, f64, f64>>::zip_map(&mask, &edge_set, |&mask_bit, &edge| {
+                    if mask_bit {
+                        sum - edge
+                    } else {
+                        sum + edge
+                    }
+                })
+            },
+        );
+        let bit_flip_sums = S::fold(
+            &bit_flip_local_counts,
+            <f64 as Element<S>>::Array::default(),
+            |a, b| <S as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
+        );
+        let bit_flip_scales = <S as Map<f64, f64>>::map(&bit_flip_sums, |sum| avg / (sum / n));
+        let bit_flip_local_mses = S::zip_map(
+            &bit_flip_local_counts,
+            local_avgs,
+            |local_counts, local_avg| {
+                <S as ZipMap<f64, f64, f64>>::zip_map(
+                    local_counts,
+                    &bit_flip_scales,
+                    |count, scale| (local_avg - (count * scale)).powi(2),
+                )
+            },
+        );
+        S::fold(
+            &bit_flip_local_mses,
+            <f64 as Element<S>>::Array::default(),
+            |a, b| <S as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
+        )
+    }
+}
+
 type InputType = [u8; 3];
 type InputShape = [[(); 8]; 3];
 type MatrixShape = <InputShape as Element<InputShape>>::Array;
@@ -259,54 +456,15 @@ fn main() {
         example.increment_frac_counters(&mut counters[*class]);
     }
 
-    let values = {
-        let n = (counters[0].0 + counters[1].0) as f64;
-        let na = counters[0].0 as f64;
-        let pa = na / n;
-        <InputShape as ZipMap<u32, u32, f64>>::zip_map(&counters[0].1, &counters[1].1, |&a, &b| {
-            let pb = (a + b) as f64 / n;
-            let pba = a as f64 / na;
-            let pab = (pba * pa) / pb;
-            ((pab * 2f64) - 1f64).abs()
-        })
-    };
+    let values = bayes_magn::<InputShape>(&counters);
     dbg!(values);
 
-    let edges = <InputShape as Map<
-        [(usize, <u32 as Element<InputShape>>::Array); 2],
-        <f64 as Element<InputShape>>::Array,
-    >>::map(&cocorrelation_counters, |counters| {
-        let n = (counters[0].0 + counters[1].0) as f64;
-        let na = counters[0].0 as f64;
-        let pa = na / n;
-        <InputShape as ZipMap<u32, u32, f64>>::zip_map(&counters[0].1, &counters[1].1, |&a, &b| {
-            let pb = (a + b) as f64 / n;
-            let pba = a as f64 / na;
-            let pab = (pba * pa) / pb;
-            ((pab * 2f64) - 1f64).abs()
-        })
+    let edges = InputShape::map(&cocorrelation_counters, |counters| {
+        bayes_magn::<InputShape>(&counters)
     });
-
-    for c in 0..3 {
-        println!("[",);
-        for i in 0..8 {
-            print!("[");
-            for tc in 0..3 {
-                print!("[");
-                for t in 0..8 {
-                    print!("{:.2}, ", edges[c][i][tc][t]);
-                }
-                print!("], ");
-            }
-            println!("]");
-        }
-        println!("]",);
-    }
 
     let ns = <InputShape as Map<FloatInputType, f64>>::map(&edges, |edge_set| edge_set.sum());
     //dbg!(ns);
-    //let mut mask = [0b_1011_0110, 0b_0111_0101, 0b_0100_0101];
-    //let mut mask = [[true, true, true, false, true, false, true, false]; 3];
     let mut mask = [[true; 8]; 3];
 
     let n = <[[(); 8]; 3]>::N;
@@ -316,77 +474,18 @@ fn main() {
             / node_n
     });
     let avg = local_avgs.sum() / n as f64;
-    let mut cur_mse = {
-        let local_counts = InputShape::map(&edges, |edge_set| {
-            <InputShape as ZipMap<f64, bool, f64>>::zip_map(&edge_set, &mask, |&edge, &mask_bit| {
-                if mask_bit {
-                    edge
-                } else {
-                    0f64
-                }
-            })
-            .sum()
-        });
-        dbg!(local_counts.sum());
-        let scale = avg / (local_counts.sum() / n as f64);
-        InputShape::zip_map(&local_avgs, &local_counts, |a, b| (a - (b * scale)).powi(2)).sum()
-    };
+    let mut cur_mse = InputShape::single_mse(&edges, &local_avgs, &mask);
     dbg!(cur_mse);
-    let bit_flip_local_counts =
-        <InputShape as ZipMap<FloatInputType, f64, FloatInputType>>::zip_map(
-            &edges,
-            &local_avgs,
-            |edge_set, local_avg| {
-                let sum = <InputShape as ZipMap<f64, bool, f64>>::zip_map(
-                    &edge_set,
-                    &mask,
-                    |&edge, &mask_bit| {
-                        if mask_bit {
-                            edge
-                        } else {
-                            0f64
-                        }
-                    },
-                )
-                .sum();
-                <InputShape as ZipMap<bool, f64, f64>>::zip_map(
-                    &mask,
-                    &edge_set,
-                    |&mask_bit, &edge| {
-                        if mask_bit {
-                            sum - edge
-                        } else {
-                            sum + edge
-                        }
-                    },
-                )
-            },
-        );
-    let bit_flip_sums = <InputShape as Fold<FloatInputType, FloatInputType>>::fold(
-        &bit_flip_local_counts,
-        FloatInputType::default(),
-        |a, b| <InputShape as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
-    );
-    let bit_flip_scales =
-        <InputShape as Map<f64, f64>>::map(&bit_flip_sums, |sum| avg / (sum / n as f64));
-    dbg!(bit_flip_scales);
-    let bit_flip_local_mses = <InputShape as ZipMap<FloatInputType, f64, FloatInputType>>::zip_map(
-        &bit_flip_local_counts,
-        &local_avgs,
-        |local_counts, local_avg| {
-            <InputShape as ZipMap<f64, f64, f64>>::zip_map(
-                local_counts,
-                &bit_flip_scales,
-                |count, scale| (local_avg - (count * scale)).powi(2),
-            )
-        },
-    );
-    let bit_flip_mses = <InputShape as Fold<FloatInputType, FloatInputType>>::fold(
-        &bit_flip_local_mses,
-        FloatInputType::default(),
-        |a, b| <InputShape as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
-    );
+    let bit_flip_mses = InputShape::bit_flip_mses(&edges, &local_avgs, &mask);
+    dbg!(mask);
     dbg!(bit_flip_mses);
-    let mse_diffs = <InputShape as Map<f64, f64>>::map(&bit_flip_mses, |bitflip| cur_mse - bitflip);
-    dbg!(mse_diffs);
+    let (min_index, min_val) = <InputShape as Min>::min(&bit_flip_mses).unwrap();
+    dbg!(min_index);
+    dbg!(min_val);
+    if min_val < cur_mse {
+        dbg!("flipping");
+        <InputShape as FlipBool>::flip_bool(&mut mask, min_index);
+        cur_mse = min_val;
+    }
+    dbg!(mask);
 }
