@@ -1,9 +1,9 @@
 #![feature(const_generics)]
 
-use bitnn::bits::{BitLen, FlipBit, GetBit};
-use bitnn::count::{Counters, IncrementCounters, IncrementFracCounters};
+use bitnn::bits::{BitLen, GetBit};
+//use bitnn::count::{IncrementCounters, IncrementFracCounters};
 
-trait Shape {
+pub trait Shape {
     const N: usize;
     type Index;
     const SHAPE: Self::Index;
@@ -21,7 +21,91 @@ impl<T: Shape, const L: usize> Shape for [T; L] {
     const SHAPE: Self::Index = (L, T::SHAPE);
 }
 
-trait Element<S: Shape> {
+pub trait BitShape
+where
+    Self::Shape: Shape,
+{
+    type Shape;
+}
+
+impl BitShape for u8 {
+    type Shape = [(); 8];
+}
+
+impl<T: BitShape, const L: usize> BitShape for [T; L] {
+    type Shape = [T::Shape; L];
+}
+
+pub trait Bits
+where
+    Self: Sized + BitShape,
+    bool: Element<Self::Shape>,
+    u32: Element<Self::Shape>,
+{
+    fn bitpack(values: &<bool as Element<Self::Shape>>::Array) -> Self;
+    fn increment_counters(&self, counters: &mut <u32 as Element<Self::Shape>>::Array);
+}
+
+impl Bits for u8
+where
+    u8: BitShape,
+    bool: Element<Self::Shape>,
+{
+    fn bitpack(values: &[bool; 8]) -> u8 {
+        let mut bits = 0u8;
+        for b in 0..8 {
+            bits |= (values[b] as u8) << b;
+        }
+        bits
+    }
+    fn increment_counters(&self, counters: &mut [u32; 8]) {
+        for b in 0..8 {
+            counters[b] += ((self >> b) & 1) as u32;
+        }
+    }
+}
+
+impl<T: Bits, const L: usize> Bits for [T; L]
+where
+    bool: Element<T::Shape>,
+    [T; L]: Default,
+    u32: Element<T::Shape>,
+{
+    fn bitpack(bools: &[<bool as Element<T::Shape>>::Array; L]) -> Self {
+        let mut target = <[T; L]>::default();
+        for i in 0..L {
+            target[i] = T::bitpack(&bools[i]);
+        }
+        target
+    }
+    fn increment_counters(&self, counters: &mut [<u32 as Element<T::Shape>>::Array; L]) {
+        for i in 0..L {
+            self[i].increment_counters(&mut counters[i]);
+        }
+    }
+}
+
+pub trait IncrementFracCounters
+where
+    Self: Bits + BitShape,
+    bool: Element<Self::Shape>,
+    u32: Element<Self::Shape>,
+{
+    fn increment_frac_counters(&self, counters: &mut (usize, <u32 as Element<Self::Shape>>::Array));
+}
+
+impl<B: Bits + BitShape> IncrementFracCounters for B
+where
+    bool: Element<Self::Shape>,
+    u32: Element<Self::Shape>,
+{
+    fn increment_frac_counters(&self, counters: &mut (usize, <u32 as Element<B::Shape>>::Array)) {
+        counters.0 += 1;
+        self.increment_counters(&mut counters.1);
+    }
+}
+
+pub trait Element<S: Shape> {
     type Array;
 }
 
@@ -74,7 +158,7 @@ where
 }
 
 impl<B, I: Element<(), Array = I> + Sized> Fold<B, I> for () {
-    fn fold<F: Fn(B, &I) -> B>(input: &I, mut acc: B, fold_fn: F) -> B {
+    fn fold<F: Fn(B, &I) -> B>(input: &I, acc: B, fold_fn: F) -> B {
         fold_fn(acc, input)
     }
 }
@@ -168,7 +252,7 @@ where
         let mut cur_min: Option<((usize, T::Index), f64)> = None;
         for i in 0..L {
             if let Some((sub_index, sub_min)) = T::min(&values[i]) {
-                if let Some((index, min)) = cur_min {
+                if let Some((_, min)) = cur_min {
                     if sub_min < min {
                         cur_min = Some(((i, sub_index), sub_min));
                     }
@@ -190,7 +274,7 @@ where
 }
 
 impl FlipBool for () {
-    fn flip_bool(bools: &mut bool, index: ()) {
+    fn flip_bool(bools: &mut bool, _: ()) {
         *bools = !*bools;
     }
 }
@@ -207,17 +291,29 @@ where
     }
 }
 
-trait IncrementCountersMatrix<T> {
-    type MatrixCounterType;
-    fn increment_counters_matrix(&self, counters_matrix: &mut Self::MatrixCounterType, target: &T);
-}
-
-impl<I: IncrementCounters + IncrementFracCounters> IncrementCountersMatrix<u8> for I {
-    type MatrixCounterType =
-        [[(usize, <Self as IncrementCounters>::BitCounterType); 2]; <u8>::BIT_LEN];
+trait IncrementCountersMatrix<T: BitShape>
+where
+    Self: BitShape,
+    u32: Element<Self::Shape>,
+    [(usize, <u32 as Element<Self::Shape>>::Array); 2]: Element<T::Shape>,
+{
     fn increment_counters_matrix(
         &self,
-        counters_matrix: &mut Self::MatrixCounterType,
+        counters_matrix: &mut <[(usize, <u32 as Element<Self::Shape>>::Array); 2] as Element<
+            T::Shape,
+        >>::Array,
+        target: &T,
+    );
+}
+
+impl<I: IncrementFracCounters + BitShape> IncrementCountersMatrix<u8> for I
+where
+    bool: Element<I::Shape>,
+    u32: Element<I::Shape>,
+{
+    fn increment_counters_matrix(
+        &self,
+        counters_matrix: &mut [[(usize, <u32 as Element<Self::Shape>>::Array); 2]; 8],
         target: &u8,
     ) {
         for i in 0..<u8>::BIT_LEN {
@@ -226,66 +322,21 @@ impl<I: IncrementCounters + IncrementFracCounters> IncrementCountersMatrix<u8> f
     }
 }
 
-impl<I: IncrementCountersMatrix<T>, T, const L: usize> IncrementCountersMatrix<[T; L]> for I {
-    type MatrixCounterType = [<Self as IncrementCountersMatrix<T>>::MatrixCounterType; L];
+impl<I: IncrementCountersMatrix<T> + BitShape, T: BitShape, const L: usize>
+    IncrementCountersMatrix<[T; L]> for I
+where
+    u32: Element<I::Shape>,
+    [(usize, <u32 as Element<Self::Shape>>::Array); 2]: Element<T::Shape>,
+{
     fn increment_counters_matrix(
         &self,
-        counters_matrix: &mut Self::MatrixCounterType,
+        counters_matrix: &mut [<[(usize, <u32 as Element<Self::Shape>>::Array); 2] as Element<T::Shape>>::Array;
+                 L],
         target: &[T; L],
     ) {
         for w in 0..L {
             self.increment_counters_matrix(&mut counters_matrix[w], &target[w]);
         }
-    }
-}
-
-trait MatrixCounters {
-    type FloatRatioType;
-    fn elementwise_add(&mut self, other: &Self);
-    fn bayes(&self) -> Self::FloatRatioType;
-}
-
-impl<InputCounters: Counters> MatrixCounters for [[(usize, InputCounters); 2]; 8]
-where
-    [InputCounters::FloatRatioType; 8]: Default,
-{
-    type FloatRatioType = [InputCounters::FloatRatioType; 8];
-    fn elementwise_add(&mut self, other: &Self) {
-        for b in 0..8 {
-            for c in 0..2 {
-                self[b][c].0 += other[b][c].0;
-                self[b][c].1.elementwise_add(&other[b][c].1);
-            }
-        }
-    }
-    fn bayes(&self) -> Self::FloatRatioType {
-        let mut target = <[InputCounters::FloatRatioType; 8]>::default();
-        for b in 0..8 {
-            let n = (self[b][0].0 + self[b][1].0) as f64;
-            let na = self[b][1].0 as f64;
-            let pa = na / n;
-            target[b] = self[b][1].1.bayes(na, &self[b][0].1, n, pa);
-        }
-        target
-    }
-}
-
-impl<T: MatrixCounters, const L: usize> MatrixCounters for [T; L]
-where
-    [T::FloatRatioType; L]: Default,
-{
-    type FloatRatioType = [T::FloatRatioType; L];
-    fn elementwise_add(&mut self, other: &Self) {
-        for i in 0..L {
-            self[i].elementwise_add(&other[i]);
-        }
-    }
-    fn bayes(&self) -> Self::FloatRatioType {
-        let mut target = <[T::FloatRatioType; L]>::default();
-        for i in 0..L {
-            target[i] = self[i].bayes();
-        }
-        target
     }
 }
 
@@ -328,11 +379,12 @@ where
 
 impl<
         S: Shape
-            + ZipMap<f64, bool, f64>
-            + Map<<f64 as Element<S>>::Array, f64>
             + Map<f64, f64>
+            + Map<<f64 as Element<S>>::Array, f64>
+            + Map<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>
             + ZipMap<f64, f64, f64>
             + ZipMap<bool, f64, f64>
+            + ZipMap<f64, bool, f64>
             + ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>
             + Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>,
     > Mse for S
@@ -364,21 +416,19 @@ where
     ) -> <f64 as Element<S>>::Array {
         let n = <[[(); 8]; 3]>::N as f64;
         let avg = local_avgs.sum() / n;
-        let bit_flip_local_counts =
-            <S as ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>>::zip_map(
-                &edges,
-                &local_avgs,
-                |edge_set, local_avg| {
-                    let sum = masked_sum::<S>(edge_set, mask);
-                    <S as ZipMap<bool, f64, f64>>::zip_map(&mask, &edge_set, |&mask_bit, &edge| {
-                        if mask_bit {
-                            sum - edge
-                        } else {
-                            sum + edge
-                        }
-                    })
-                },
-            );
+        let bit_flip_local_counts = <S as Map<
+            <f64 as Element<S>>::Array,
+            <f64 as Element<S>>::Array,
+        >>::map(&edges, |edge_set| {
+            let sum = masked_sum::<S>(edge_set, mask);
+            <S as ZipMap<bool, f64, f64>>::zip_map(&mask, &edge_set, |&mask_bit, &edge| {
+                if mask_bit {
+                    sum - edge
+                } else {
+                    sum + edge
+                }
+            })
+        });
         let bit_flip_sums = S::fold(
             &bit_flip_local_counts,
             <f64 as Element<S>>::Array::default(),
@@ -427,34 +477,117 @@ where
     .sum()
 }
 
+trait GenMask
+where
+    Self: IncrementCountersMatrix<Self> + Bits + BitShape,
+    bool: Element<Self::Shape>,
+    u32: Element<Self::Shape>,
+    [(usize, <u32 as Element<<Self as BitShape>::Shape>>::Array); 2]:
+        Element<<Self as BitShape>::Shape>,
+{
+    fn gen_mask(
+        matrix_counters: &<[(usize, <u32 as Element<Self::Shape>>::Array); 2] as Element<
+            Self::Shape,
+        >>::Array,
+        value_counters: [(usize, <u32 as Element<Self::Shape>>::Array); 2],
+    ) -> Self;
+}
+
+impl<B: BitShape + Bits + IncrementFracCounters + IncrementCountersMatrix<B>> GenMask for B
+where
+    B::Shape: Mse
+        + Min
+        + FlipBool
+        + ZipMap<u32, u32, f64>
+        + ZipMap<f64, f64, f64>
+        + ZipMap<<f64 as Element<<B as BitShape>::Shape>>::Array, f64, f64>
+        + Map<f64, f64>
+        + Map<<f64 as Element<B::Shape>>::Array, f64>
+        + Map<[(usize, <u32 as Element<B::Shape>>::Array); 2], <f64 as Element<B::Shape>>::Array>,
+    bool: Element<B::Shape>,
+    u32: Element<B::Shape>,
+    f64: Element<B::Shape>,
+    <f64 as Element<B::Shape>>::Array: Element<<B as BitShape>::Shape> + Sum,
+    [(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2]: Element<<B as BitShape>::Shape>,
+    (): Element<B::Shape, Array = B::Shape>,
+    B::Shape: Default + Map<(), bool>,
+{
+    fn gen_mask(
+        matrix_counters: &<[(usize, <u32 as Element<B::Shape>>::Array); 2] as Element<
+            B::Shape,
+        >>::Array,
+        value_counters: [(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2],
+    ) -> B {
+        let values = bayes_magn::<B::Shape>(&value_counters);
+
+        let edges = <B::Shape as Map<
+            [(usize, <u32 as Element<B::Shape>>::Array); 2],
+            <f64 as Element<B::Shape>>::Array,
+        >>::map(&matrix_counters, |counters| {
+            bayes_magn::<B::Shape>(&counters)
+        });
+
+        let ns =
+            <B::Shape as Map<<f64 as Element<B::Shape>>::Array, f64>>::map(&edges, |edge_set| {
+                edge_set.sum()
+            });
+        let mut mask = <B::Shape as Map<(), bool>>::map(&B::Shape::default(), |_| true);
+
+        let local_avgs = <B::Shape as ZipMap<<f64 as Element<B::Shape>>::Array, f64, f64>>::zip_map(
+            &edges,
+            &ns,
+            |edge_set, node_n| {
+                <B::Shape as ZipMap<f64, f64, f64>>::zip_map(&edge_set, &values, |a, b| a * b).sum()
+                    / node_n
+            },
+        );
+        let mut cur_mse = B::Shape::single_mse(&edges, &local_avgs, &mask);
+        let mut is_optima = false;
+        while !is_optima {
+            let bit_flip_mses = B::Shape::bit_flip_mses(&edges, &local_avgs, &mask);
+            let (min_index, min_val) = <B::Shape as Min>::min(&bit_flip_mses).unwrap();
+            if min_val < cur_mse {
+                <B::Shape as FlipBool>::flip_bool(&mut mask, min_index);
+                cur_mse = min_val;
+            } else {
+                is_optima = true;
+            }
+        }
+        <B as Bits>::bitpack(&mask)
+    }
+}
+
 type InputType = [u8; 3];
 type InputShape = [[(); 8]; 3];
-type MatrixShape = <InputShape as Element<InputShape>>::Array;
 type FloatInputType = <f64 as Element<InputShape>>::Array;
-//type InputCounters = <InputType as BitWrap<u32>>::Wrap;
-//type CocorrelationCounters = <InputType as BitWrap<InputCounters>>::Wrap;
 
 fn main() {
     let examples = vec![
-        ([0b_0000_0000, 0b_1111_0000, 0b_0000_0000], 0),
-        ([0b_0000_0000, 0b_1111_0000, 0b_0000_0000], 0),
-        ([0b_0000_0000, 0b_1111_0000, 0b_0000_0000], 0),
-        ([0b_0000_0000, 0b_0000_0000, 0b_0000_0000], 0),
+        ([0b_0010_0000, 0b_1111_1000, 0b_0000_0000], 0),
+        ([0b_0010_0000, 0b_1111_0100, 0b_0000_0000], 0),
+        ([0b_0010_0000, 0b_1101_0010, 0b_0000_0000], 0),
+        ([0b_0010_0000, 0b_0000_0001, 0b_0010_0000], 0),
         ([0b_1111_0000, 0b_0000_1111, 0b_1111_1111], 0),
         ([0b_1111_0000, 0b_0000_1111, 0b_1111_1111], 0),
         ([0b_1111_1111, 0b_0000_1111, 0b_1111_1111], 0),
-        ([0b_1111_1111, 0b_0000_1111, 0b_1111_1111], 1),
-        ([0b_1111_1111, 0b_0000_1111, 0b_1111_1111], 1),
-        ([0b_1111_1111, 0b_0000_1111, 0b_1111_1111], 1),
-        ([0b_1111_1111, 0b_1111_1111, 0b_1111_1111], 1),
-        ([0b_0000_1111, 0b_1111_0000, 0b_0000_0000], 1),
-        ([0b_0000_1111, 0b_1111_0000, 0b_0000_0000], 1),
-        ([0b_0000_0000, 0b_1111_0000, 0b_0000_0000], 1),
+        ([0b_1111_1111, 0b_0010_0111, 0b_1101_1110], 1),
+        ([0b_1111_1111, 0b_0010_1011, 0b_1101_1110], 1),
+        ([0b_1111_1111, 0b_0000_1101, 0b_1101_1110], 1),
+        ([0b_1101_1011, 0b_1111_1110, 0b_1101_1111], 1),
+        ([0b_0000_1101, 0b_1111_0000, 0b_0000_0001], 1),
+        ([0b_0000_1110, 0b_1111_0000, 0b_0000_0001], 1),
+        ([0b_0000_0000, 0b_1111_0000, 0b_0000_0001], 1),
     ];
 
-    let mut cocorrelation_counters =
-        <<InputType as IncrementCountersMatrix<InputType>>::MatrixCounterType>::default();
-    let mut counters = <[(usize, <InputType as IncrementCounters>::BitCounterType); 2]>::default();
+    let mut cocorrelation_counters = <[(
+        usize,
+        <u32 as Element<<InputType as BitShape>::Shape>>::Array,
+    ); 2] as Element<<InputType as BitShape>::Shape>>::Array::default(
+    );
+    let mut counters = <[(
+        usize,
+        <u32 as Element<<InputType as BitShape>::Shape>>::Array,
+    ); 2]>::default();
     for (example, class) in &examples {
         example.increment_counters_matrix(&mut cocorrelation_counters, example);
         example.increment_frac_counters(&mut counters[*class]);
@@ -471,13 +604,10 @@ fn main() {
     //dbg!(ns);
     let mut mask = [[true; 8]; 3];
 
-    let n = <[[(); 8]; 3]>::N;
-    //let local_avgs = <[[f64; 8]; 3] as MatrixLoss<InputType>>::local_avg_val(&edges, &values);
     let local_avgs = InputShape::zip_map(&edges, &ns, |edge_set, node_n| {
         <InputShape as ZipMap<f64, f64, f64>>::zip_map(&edge_set, &values, |a, b| a * b).sum()
             / node_n
     });
-    let avg = local_avgs.sum() / n as f64;
     let mut cur_mse = InputShape::single_mse(&edges, &local_avgs, &mask);
     dbg!(cur_mse);
     let mut is_optima = false;
@@ -491,7 +621,6 @@ fn main() {
         } else {
             is_optima = true;
         }
-        let true_mse = InputShape::single_mse(&edges, &local_avgs, &mask);
     }
     dbg!(mask);
 }
