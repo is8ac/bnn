@@ -136,7 +136,6 @@ impl<I, O> Map<I, O> for () {
 impl<S: Shape + Map<I, O>, I: Element<S>, O: Element<S>, const L: usize> Map<I, O> for [S; L]
 where
     [<O as Element<S>>::Array; L]: Default,
-    //<I as Element<S>>::Array: Map<S, I, O>,
 {
     fn map<F: Fn(&I) -> O>(
         input: &[<I as Element<S>>::Array; L],
@@ -489,7 +488,7 @@ where
         matrix_counters: &<[(usize, <u32 as Element<Self::Shape>>::Array); 2] as Element<
             Self::Shape,
         >>::Array,
-        value_counters: [(usize, <u32 as Element<Self::Shape>>::Array); 2],
+        value_counters: &[(usize, <u32 as Element<Self::Shape>>::Array); 2],
     ) -> Self;
 }
 
@@ -516,7 +515,7 @@ where
         matrix_counters: &<[(usize, <u32 as Element<B::Shape>>::Array); 2] as Element<
             B::Shape,
         >>::Array,
-        value_counters: [(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2],
+        value_counters: &[(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2],
     ) -> B {
         let values = bayes_magn::<B::Shape>(&value_counters);
 
@@ -592,35 +591,9 @@ fn main() {
         example.increment_counters_matrix(&mut cocorrelation_counters, example);
         example.increment_frac_counters(&mut counters[*class]);
     }
-
-    let values = bayes_magn::<InputShape>(&counters);
-    dbg!(values);
-
-    let edges = InputShape::map(&cocorrelation_counters, |counters| {
-        bayes_magn::<InputShape>(&counters)
-    });
-
-    let ns = <InputShape as Map<FloatInputType, f64>>::map(&edges, |edge_set| edge_set.sum());
-    //dbg!(ns);
-    let mut mask = [[true; 8]; 3];
-
-    let local_avgs = InputShape::zip_map(&edges, &ns, |edge_set, node_n| {
-        <InputShape as ZipMap<f64, f64, f64>>::zip_map(&edge_set, &values, |a, b| a * b).sum()
-            / node_n
-    });
-    let mut cur_mse = InputShape::single_mse(&edges, &local_avgs, &mask);
-    dbg!(cur_mse);
-    let mut is_optima = false;
-    while !is_optima {
-        let bit_flip_mses = InputShape::bit_flip_mses(&edges, &local_avgs, &mask);
-        let (min_index, min_val) = <InputShape as Min>::min(&bit_flip_mses).unwrap();
-        dbg!(min_val);
-        if min_val < cur_mse {
-            <InputShape as FlipBool>::flip_bool(&mut mask, min_index);
-            cur_mse = min_val;
-        } else {
-            is_optima = true;
-        }
-    }
+    let mask = <InputType as GenMask>::gen_mask(&cocorrelation_counters, &counters);
     dbg!(mask);
+    for i in 0..3 {
+        println!("{:08b}", mask[i]);
+    }
 }
