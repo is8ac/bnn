@@ -8,513 +8,636 @@ extern crate serde;
 extern crate serde_derive;
 extern crate time;
 
-pub mod datasets {
-    pub mod mnist {
-        use std::fs::File;
-        use std::io::prelude::*;
-        use std::path::Path;
-        pub fn load_labels(path: &Path, size: usize) -> Vec<usize> {
-            let path = Path::new(path);
-            let mut file = File::open(&path).expect("can't open images");
-            let mut header: [u8; 8] = [0; 8];
-            file.read_exact(&mut header).expect("can't read header");
+pub mod bits;
+pub mod datasets;
+pub mod count;
 
-            let mut byte: [u8; 1] = [0; 1];
-            let mut labels: Vec<usize> = Vec::new();
-            for _ in 0..size {
-                file.read_exact(&mut byte).expect("can't read label");
-                labels.push(byte[0] as usize);
-            }
-            labels
-        }
-        pub fn load_images_bitpacked_u32(path: &Path, size: usize) -> Vec<[u32; 25]> {
-            let path = Path::new(path);
-            let mut file = File::open(&path).expect("can't open images");
-            let mut header: [u8; 16] = [0; 16];
-            file.read_exact(&mut header).expect("can't read header");
+pub mod mask {
+    use crate::bits::{BitLen, GetBit};
 
-            let mut images_bytes: [u8; 784] = [0; 784];
-
-            let mut images: Vec<[u32; 25]> = Vec::new();
-            for _ in 0..size {
-                file.read_exact(&mut images_bytes)
-                    .expect("can't read images");
-                let mut image_words: [u32; 25] = [0; 25];
-                for (p, &pixel) in images_bytes.iter().enumerate() {
-                    let word_index = p / 32;
-                    image_words[word_index] |= ((pixel > 128) as u32) << (p % 32);
-                }
-                images.push(image_words);
-            }
-            images
-        }
-
-        pub fn load_images_u8_unary(path: &Path, size: usize) -> Vec<[[u8; 28]; 28]> {
-            let mut file = File::open(&path).expect("can't open images");
-            let mut header: [u8; 16] = [0; 16];
-            file.read_exact(&mut header).expect("can't read header");
-
-            let mut images_bytes: [u8; 784] = [0; 784];
-
-            let mut images: Vec<[[u8; 28]; 28]> = Vec::new();
-            for _ in 0..size {
-                file.read_exact(&mut images_bytes)
-                    .expect("can't read images");
-                let mut image = [[0u8; 28]; 28];
-                for p in 0..784 {
-                    image[p / 28][p % 28] = images_bytes[p];
-                }
-                images.push(image);
-            }
-            images
-        }
+    pub trait Shape {
+        const N: usize;
+        type Index;
+        const SHAPE: Self::Index;
     }
 
-    pub mod cifar {
-        use std::fs::File;
-        use std::io::prelude::*;
-        use std::path::Path;
-
-        macro_rules! to_unary {
-            ($name:ident, $type:ty, $len:expr) => {
-                fn $name(input: u8) -> $type {
-                    !((!0) << (input / (256 / $len) as u8))
-                }
-            };
-        }
-
-        to_unary!(to_3, u8, 3);
-        to_unary!(to_10, u32, 10);
-        to_unary!(to_11, u32, 11);
-        to_unary!(to_32, u32, 32);
-
-        pub trait ConvertPixel {
-            fn convert(pixel: [u8; 3]) -> Self;
-        }
-        impl ConvertPixel for [u8; 3] {
-            fn convert(pixel: [u8; 3]) -> [u8; 3] {
-                pixel
-            }
-        }
-        impl ConvertPixel for [u32; 1] {
-            fn convert(pixel: [u8; 3]) -> [u32; 1] {
-                [to_11(pixel[0]) as u32
-                    | ((to_11(pixel[1]) as u32) << 11)
-                    | ((to_10(pixel[2]) as u32) << 22)]
-            }
-        }
-        impl ConvertPixel for u32 {
-            fn convert(pixel: [u8; 3]) -> u32 {
-                to_10(pixel[0]) as u32
-                    | ((to_10(pixel[1]) as u32) << 10)
-                    | ((to_10(pixel[2]) as u32) << 20)
-            }
-        }
-        impl ConvertPixel for u8 {
-            fn convert(pixel: [u8; 3]) -> u8 {
-                to_3(pixel[0]) | ((to_3(pixel[1])) << 3) | ((to_3(pixel[2])) << 6)
-            }
-        }
-
-        impl ConvertPixel for [u32; 3] {
-            fn convert(pixel: [u8; 3]) -> [u32; 3] {
-                [to_32(pixel[0]), to_32(pixel[1]), to_32(pixel[2])]
-            }
-        }
-
-        pub fn load_images_from_base<T: Default + Copy + ConvertPixel>(
-            base_path: &Path,
-            n: usize,
-        ) -> Vec<([[T; 32]; 32], usize)> {
-            if n > 50000 {
-                panic!("n must be <= 50,000");
-            }
-            (1..6)
-                .map(|i| {
-                    let mut file = File::open(&base_path.join(format!("data_batch_{}.bin", i)))
-                        .expect("can't open data");
-
-                    let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
-                    let mut label: [u8; 1] = [0; 1];
-                    let mut images: Vec<([[T; 32]; 32], usize)> = Vec::new();
-                    for _ in 0..10000 {
-                        file.read_exact(&mut label).expect("can't read label");
-                        file.read_exact(&mut image_bytes)
-                            .expect("can't read images");
-                        let mut image = [[T::default(); 32]; 32];
-                        for x in 0..32 {
-                            for y in 0..32 {
-                                let pixel = [
-                                    image_bytes[(y * 32) + x],
-                                    image_bytes[1024 + (y * 32) + x],
-                                    image_bytes[2048 + (y * 32) + x],
-                                ];
-                                image[x][y] = T::convert(pixel);
-                            }
-                        }
-                        images.push((image, label[0] as usize));
-                    }
-                    images
-                })
-                .flatten()
-                .take(n)
-                .collect()
-        }
-    }
-}
-
-pub mod bits {
-    pub trait HammingDistance {
-        fn hamming_distance(&self, other: &Self) -> u32;
+    impl Shape for () {
+        const N: usize = 1;
+        type Index = ();
+        const SHAPE: Self::Index = ();
     }
 
-    impl<T: HammingDistance, const L: usize> HammingDistance for [T; L] {
-        fn hamming_distance(&self, other: &[T; L]) -> u32 {
-            let mut distance = 0u32;
-            for i in 0..L {
-                distance += self[i].hamming_distance(&other[i]);
-            }
-            distance
-        }
+    impl<T: Shape, const L: usize> Shape for [T; L] {
+        const N: usize = T::N * L;
+        type Index = (usize, T::Index);
+        const SHAPE: Self::Index = (L, T::SHAPE);
     }
 
-    //impl<A: HammingDistance, B: HammingDistance> HammingDistance for (A, B) {
-    //    fn hamming_distance(&self, other: &(A, B)) -> u32 {
-    //        self.0.hamming_distance(&other.0) + self.1.hamming_distance(&other.1)
-    //    }
-    //}
-
-    pub trait BitOr {
-        fn bit_or(&self, other: &Self) -> Self;
-    }
-
-    impl<T: BitOr, const L: usize> BitOr for [T; L]
+    pub trait BitShape
     where
-        [T; L]: Default,
+        Self::Shape: Shape,
     {
-        fn bit_or(&self, other: &Self) -> Self {
+        type Shape;
+    }
+
+    impl<T: BitShape, const L: usize> BitShape for [T; L] {
+        type Shape = [T::Shape; L];
+    }
+
+    pub trait Bits
+    where
+        Self: Sized + BitShape,
+        bool: Element<Self::Shape>,
+        u32: Element<Self::Shape>,
+    {
+        fn bitpack(values: &<bool as Element<Self::Shape>>::Array) -> Self;
+        fn increment_counters(&self, counters: &mut <u32 as Element<Self::Shape>>::Array);
+    }
+
+    macro_rules! for_uint {
+        ($type:ty) => {
+            impl BitShape for $type {
+                type Shape = [(); <$type>::BIT_LEN];
+            }
+
+            impl Bits for $type
+            where
+                $type: BitShape,
+                bool: Element<Self::Shape>,
+            {
+                fn bitpack(values: &[bool; <$type>::BIT_LEN]) -> $type {
+                    let mut bits = <$type>::default();
+                    for b in 0..<$type>::BIT_LEN {
+                        bits |= (values[b] as $type) << b;
+                    }
+                    bits
+                }
+                fn increment_counters(&self, counters: &mut [u32; <$type>::BIT_LEN]) {
+                    for b in 0..<$type>::BIT_LEN {
+                        counters[b] += ((self >> b) & 1) as u32
+                    }
+                }
+            }
+            impl<I: IncrementFracCounters + BitShape> IncrementCountersMatrix<$type> for I
+            where
+                bool: Element<I::Shape>,
+                u32: Element<I::Shape>,
+                I::Shape: ZipMap<u32, u32, u32>,
+            {
+                fn increment_counters_matrix(
+                    &self,
+                    counters_matrix: &mut [[(usize, <u32 as Element<Self::Shape>>::Array); 2];
+                             <$type>::BIT_LEN],
+                    target: &$type,
+                ) {
+                    for i in 0..<$type>::BIT_LEN {
+                        self.increment_frac_counters(
+                            &mut counters_matrix[i][target.bit(i) as usize],
+                        );
+                    }
+                }
+            }
+        };
+    }
+    for_uint!(u8);
+    for_uint!(u32);
+
+    impl<T: Bits, const L: usize> Bits for [T; L]
+    where
+        bool: Element<T::Shape>,
+        [T; L]: Default,
+        u32: Element<T::Shape>,
+    {
+        fn bitpack(bools: &[<bool as Element<T::Shape>>::Array; L]) -> Self {
             let mut target = <[T; L]>::default();
             for i in 0..L {
-                target[i] = self[i].bit_or(&other[i]);
+                target[i] = T::bitpack(&bools[i]);
             }
             target
         }
-    }
-
-    pub trait BitLen: Sized {
-        const BIT_LEN: usize;
-    }
-
-    impl<A: BitLen, B: BitLen> BitLen for (A, B) {
-        const BIT_LEN: usize = A::BIT_LEN + B::BIT_LEN;
-    }
-
-    macro_rules! array_bit_len {
-        ($len:expr) => {
-            impl<T: BitLen> BitLen for [T; $len] {
-                const BIT_LEN: usize = $len * T::BIT_LEN;
-            }
-        };
-    }
-
-    array_bit_len!(1);
-    array_bit_len!(2);
-    array_bit_len!(3);
-    array_bit_len!(4);
-    array_bit_len!(5);
-    array_bit_len!(6);
-    array_bit_len!(7);
-    array_bit_len!(8);
-    array_bit_len!(13);
-    array_bit_len!(16);
-    array_bit_len!(25);
-    array_bit_len!(32);
-
-    pub trait FlipBit {
-        fn flip_bit(&mut self, b: usize);
-    }
-
-    impl<T: BitLen + FlipBit, const L: usize> FlipBit for [T; L] {
-        fn flip_bit(&mut self, index: usize) {
-            self[index / T::BIT_LEN].flip_bit(index % T::BIT_LEN);
-        }
-    }
-
-    pub trait GetBit {
-        fn bit(&self, i: usize) -> bool;
-    }
-
-    impl<T: GetBit + BitLen, const L: usize> GetBit for [T; L] {
-        fn bit(&self, i: usize) -> bool {
-            self[i / T::BIT_LEN].bit(i % T::BIT_LEN)
-        }
-    }
-
-    macro_rules! impl_for_uint {
-        ($type:ty, $len:expr) => {
-            impl BitLen for $type {
-                const BIT_LEN: usize = $len;
-            }
-            impl FlipBit for $type {
-                fn flip_bit(&mut self, index: usize) {
-                    *self ^= 1 << index
-                }
-            }
-            impl BitOr for $type {
-                fn bit_or(&self, other: &Self) -> $type {
-                    self | other
-                }
-            }
-            impl GetBit for $type {
-                #[inline(always)]
-                fn bit(&self, i: usize) -> bool {
-                    ((self >> i) & 1) == 1
-                }
-            }
-            impl<I: HammingDistance + BitLen> BitMul<I, $type> for [(I, u32); $len] {
-                fn bit_mul(&self, input: &I) -> $type {
-                    let mut target = <$type>::default();
-                    for i in 0..$len {
-                        target |= ((self[i].0.hamming_distance(input) < self[i].1) as $type) << i;
-                    }
-                    target
-                }
-            }
-            //impl<I: HammingDistance + BitLen> BitMul<I, $type> for [I; $len] {
-            //    fn bit_mul(&self, input: &I) -> $type {
-            //        let mut target = <$type>::default();
-            //        for i in 0..$len {
-            //            target |= ((self[i].hamming_distance(input) < (I::BIT_LEN as u32 / 2)) as $type) << i;
-            //        }
-            //        target
-            //    }
-            //}
-            impl HammingDistance for $type {
-                #[inline(always)]
-                fn hamming_distance(&self, other: &$type) -> u32 {
-                    (self ^ other).count_ones()
-                }
-            }
-        };
-    }
-
-    impl_for_uint!(u32, 32);
-    impl_for_uint!(u16, 16);
-    //impl_for_uint!(u8, 8);
-
-    pub trait BitMul<I, O> {
-        fn bit_mul(&self, input: &I) -> O;
-    }
-
-    impl<I, O: Default + Copy, T: BitMul<I, O>, const L: usize> BitMul<I, [O; L]> for [T; L]
-    where
-        [O; L]: Default,
-    {
-        fn bit_mul(&self, input: &I) -> [O; L] {
-            let mut target = <[O; L]>::default();
+        fn increment_counters(&self, counters: &mut [<u32 as Element<T::Shape>>::Array; L]) {
             for i in 0..L {
-                target[i] = self[i].bit_mul(input);
+                self[i].increment_counters(&mut counters[i]);
             }
-            target
-        }
-    }
-}
-
-pub mod count {
-    use crate::bits::BitLen;
-
-    pub trait Counters {
-        type FloatRatioType;
-        fn elementwise_add(&mut self, other: &Self);
-        fn divide(&self, count: f64) -> Self::FloatRatioType;
-    }
-
-    impl<A: Counters, B: Counters> Counters for (A, B) {
-        type FloatRatioType = (A::FloatRatioType, B::FloatRatioType);
-        fn elementwise_add(&mut self, other: &Self) {
-            self.0.elementwise_add(&other.0);
-            self.1.elementwise_add(&other.1);
-        }
-        fn divide(&self, count: f64) -> Self::FloatRatioType {
-            (self.0.divide(count), self.1.divide(count))
-        }
-    }
-
-    impl Counters for u32 {
-        type FloatRatioType = f64;
-        fn elementwise_add(&mut self, other: &u32) {
-            *self += other;
-        }
-        fn divide(&self, count: f64) -> Self::FloatRatioType {
-            *self as f64 / count
-        }
-    }
-
-    impl<T: Counters, const L: usize> Counters for [T; L]
-    where
-        [T::FloatRatioType; L]: Default,
-    {
-        type FloatRatioType = [T::FloatRatioType; L];
-        fn elementwise_add(&mut self, other: &[T; L]) {
-            for i in 0..L {
-                self[i].elementwise_add(&other[i]);
-            }
-        }
-        fn divide(&self, count: f64) -> Self::FloatRatioType {
-            let mut target = <[T::FloatRatioType; L]>::default();
-            for b in 0..L {
-                target[b] = self[b].divide(count);
-            }
-            target
         }
     }
 
     pub trait IncrementFracCounters
     where
-        Self: IncrementCounters,
+        Self: Bits + BitShape,
+        bool: Element<Self::Shape>,
+        u32: Element<Self::Shape>,
+        Self::Shape: ZipMap<u32, u32, u32>,
     {
-        fn increment_frac_counters(&self, counters: &mut (usize, Self::BitCounterType));
-        fn add_fracs(
-            a: &(usize, Self::BitCounterType),
-            b: &(usize, Self::BitCounterType),
-        ) -> (usize, Self::BitCounterType);
-        fn add_assign_fracs(
-            a: &mut (usize, Self::BitCounterType),
-            b: &(usize, Self::BitCounterType),
+        fn increment_frac_counters(
+            &self,
+            counters: &mut (usize, <u32 as Element<Self::Shape>>::Array),
         );
+        fn add_fracs(
+            a: &(usize, <u32 as Element<Self::Shape>>::Array),
+            b: &(usize, <u32 as Element<Self::Shape>>::Array),
+        ) -> (usize, <u32 as Element<Self::Shape>>::Array);
     }
 
-    impl<T: IncrementCounters> IncrementFracCounters for T
+    impl<B: Bits + BitShape> IncrementFracCounters for B
     where
-        T::BitCounterType: Counters + Clone,
+        bool: Element<Self::Shape>,
+        u32: Element<Self::Shape>,
+        B::Shape: ZipMap<u32, u32, u32>,
     {
-        fn increment_frac_counters(&self, counters: &mut (usize, Self::BitCounterType)) {
+        fn increment_frac_counters(
+            &self,
+            counters: &mut (usize, <u32 as Element<B::Shape>>::Array),
+        ) {
             counters.0 += 1;
             self.increment_counters(&mut counters.1);
         }
         fn add_fracs(
-            a: &(usize, Self::BitCounterType),
-            b: &(usize, Self::BitCounterType),
-        ) -> (usize, Self::BitCounterType) {
-            let mut result = (*a).clone();
-            result.0 += b.0;
-            result.1.elementwise_add(&b.1);
-            result
+            a: &(usize, <u32 as Element<B::Shape>>::Array),
+            b: &(usize, <u32 as Element<B::Shape>>::Array),
+        ) -> (usize, <u32 as Element<B::Shape>>::Array) {
+            (
+                a.0 + b.0,
+                <B::Shape as ZipMap<u32, u32, u32>>::zip_map(&a.1, &b.1, |x, y| x + y),
+            )
         }
-        fn add_assign_fracs(
-            a: &mut (usize, Self::BitCounterType),
-            b: &(usize, Self::BitCounterType),
+    }
+
+    pub trait Element<S: Shape> {
+        type Array;
+    }
+
+    impl<T: Sized> Element<()> for T {
+        type Array = T;
+    }
+
+    impl<T: Element<S>, S: Shape, const L: usize> Element<[S; L]> for T {
+        type Array = [T::Array; L];
+    }
+
+    pub trait Map<I: Element<Self>, O: Element<Self>>
+    where
+        Self: Shape + Sized,
+    {
+        fn map<F: Fn(&I) -> O>(
+            input: &<I as Element<Self>>::Array,
+            map_fn: F,
+        ) -> <O as Element<Self>>::Array;
+    }
+
+    impl<I, O> Map<I, O> for () {
+        fn map<F: Fn(&I) -> O>(input: &I, map_fn: F) -> O {
+            map_fn(input)
+        }
+    }
+
+    impl<S: Shape + Map<I, O>, I: Element<S>, O: Element<S>, const L: usize> Map<I, O> for [S; L]
+    where
+        [<O as Element<S>>::Array; L]: Default,
+    {
+        fn map<F: Fn(&I) -> O>(
+            input: &[<I as Element<S>>::Array; L],
+            map_fn: F,
+        ) -> [<O as Element<S>>::Array; L] {
+            let mut target = <[<O as Element<S>>::Array; L]>::default();
+            for i in 0..L {
+                target[i] = <S as Map<I, O>>::map(&input[i], &map_fn);
+            }
+            target
+        }
+    }
+
+    trait Fold<B, I: Element<Self>>
+    where
+        Self: Shape + Sized,
+    {
+        fn fold<F: Fn(B, &I) -> B>(input: &<I as Element<Self>>::Array, acc: B, fold_fn: F) -> B;
+    }
+
+    impl<B, I: Element<(), Array = I> + Sized> Fold<B, I> for () {
+        fn fold<F: Fn(B, &I) -> B>(input: &I, acc: B, fold_fn: F) -> B {
+            fold_fn(acc, input)
+        }
+    }
+
+    impl<S: Shape + Fold<B, I>, B, I: Element<S> + Sized, const L: usize> Fold<B, I> for [S; L] {
+        fn fold<F: Fn(B, &I) -> B>(
+            input: &[<I as Element<S>>::Array; L],
+            mut acc: B,
+            fold_fn: F,
+        ) -> B {
+            for i in 0..L {
+                acc = <S as Fold<B, I>>::fold(&input[i], acc, &fold_fn);
+            }
+            acc
+        }
+    }
+
+    pub trait ZipMap<A: Element<Self>, B: Element<Self>, O: Element<Self>>
+    where
+        Self: Shape + Sized,
+    {
+        fn zip_map<F: Fn(&A, &B) -> O>(
+            a: &<A as Element<Self>>::Array,
+            b: &<B as Element<Self>>::Array,
+            map_fn: F,
+        ) -> <O as Element<Self>>::Array;
+    }
+
+    impl<A: Element<(), Array = A> + Copy, B: Element<(), Array = B> + Copy, O> ZipMap<A, B, O> for () {
+        fn zip_map<F: Fn(&A, &B) -> O>(a: &A, b: &B, map_fn: F) -> O {
+            map_fn(a, b)
+        }
+    }
+
+    impl<
+            S: Shape + ZipMap<A, B, O>,
+            A: Element<S>,
+            B: Element<S>,
+            O: Element<S>,
+            const L: usize,
+        > ZipMap<A, B, O> for [S; L]
+    where
+        <O as Element<[S; L]>>::Array: Default,
+    {
+        fn zip_map<F: Fn(&A, &B) -> O>(
+            a: &<A as Element<[S; L]>>::Array,
+            b: &<B as Element<[S; L]>>::Array,
+            map_fn: F,
+        ) -> <O as Element<[S; L]>>::Array {
+            let mut target = <[<O as Element<S>>::Array; L]>::default();
+            for i in 0..L {
+                target[i] = S::zip_map(&a[i], &b[i], &map_fn);
+            }
+            target
+        }
+    }
+
+    // f64 values
+    pub trait Sum {
+        fn sum(&self) -> f64;
+    }
+
+    impl Sum for f64 {
+        fn sum(&self) -> f64 {
+            *self
+        }
+    }
+
+    impl<T: Sum, const L: usize> Sum for [T; L] {
+        fn sum(&self) -> f64 {
+            let mut sum = 0f64;
+            for i in 0..L {
+                sum += self[i].sum();
+            }
+            sum
+        }
+    }
+
+    pub trait Min
+    where
+        Self: Shape + Sized,
+        f64: Element<Self>,
+    {
+        fn min(values: &<f64 as Element<Self>>::Array) -> Option<(Self::Index, f64)>;
+    }
+
+    impl Min for () {
+        fn min(&values: &f64) -> Option<((), f64)> {
+            Some(((), values))
+        }
+    }
+
+    impl<T: Min, const L: usize> Min for [T; L]
+    where
+        f64: Element<T>,
+        Self: Shape<Index = (usize, T::Index)>,
+        T::Index: Copy,
+    {
+        fn min(values: &[<f64 as Element<T>>::Array; L]) -> Option<((usize, T::Index), f64)> {
+            let mut cur_min: Option<((usize, T::Index), f64)> = None;
+            for i in 0..L {
+                if let Some((sub_index, sub_min)) = T::min(&values[i]) {
+                    if let Some((_, min)) = cur_min {
+                        if sub_min < min {
+                            cur_min = Some(((i, sub_index), sub_min));
+                        }
+                    } else {
+                        cur_min = Some(((i, sub_index), sub_min));
+                    }
+                }
+            }
+            cur_min
+        }
+    }
+
+    pub trait FlipBool
+    where
+        bool: Element<Self>,
+        Self: Shape + Sized,
+    {
+        fn flip_bool(bools: &mut <bool as Element<Self>>::Array, index: Self::Index);
+    }
+
+    impl FlipBool for () {
+        fn flip_bool(bools: &mut bool, _: ()) {
+            *bools = !*bools;
+        }
+    }
+
+    impl<T: FlipBool + Shape, const L: usize> FlipBool for [T; L]
+    where
+        bool: Element<T>,
+    {
+        fn flip_bool(
+            bools: &mut [<bool as Element<T>>::Array; L],
+            (index, sub_index): (usize, T::Index),
         ) {
-            a.0 += a.0;
-            a.1.elementwise_add(&b.1);
+            T::flip_bool(&mut bools[index], sub_index);
         }
     }
 
-    pub trait IncrementCounters
+    pub trait IncrementCountersMatrix<T: BitShape>
     where
-        Self: Sized,
+        Self: BitShape,
+        u32: Element<Self::Shape>,
+        [(usize, <u32 as Element<Self::Shape>>::Array); 2]: Element<T::Shape>,
     {
-        type BitCounterType;
-        fn increment_counters(&self, counters: &mut Self::BitCounterType);
-        fn threshold_and_bitpack(counters: &Self::BitCounterType, threshold: u32) -> Self;
-        fn compare_and_bitpack(
-            counters_0: &Self::BitCounterType,
-            n_0: f64,
-            counters_1: &Self::BitCounterType,
-            n_1: f64,
+        fn increment_counters_matrix(
+            &self,
+            counters_matrix: &mut <[(usize, <u32 as Element<Self::Shape>>::Array); 2] as Element<
+                T::Shape,
+            >>::Array,
+            target: &T,
+        );
+    }
+
+    impl<I: IncrementCountersMatrix<T> + BitShape, T: BitShape, const L: usize>
+        IncrementCountersMatrix<[T; L]> for I
+    where
+        u32: Element<I::Shape>,
+        [(usize, <u32 as Element<Self::Shape>>::Array); 2]: Element<T::Shape>,
+    {
+        fn increment_counters_matrix(
+            &self,
+            counters_matrix: &mut [<[(usize, <u32 as Element<Self::Shape>>::Array); 2] as Element<T::Shape>>::Array;
+                     L],
+            target: &[T; L],
+        ) {
+            for w in 0..L {
+                self.increment_counters_matrix(&mut counters_matrix[w], &target[w]);
+            }
+        }
+    }
+
+    fn bayes_magn<S: Shape + ZipMap<u32, u32, f64>>(
+        counters: &[(usize, <u32 as Element<S>>::Array); 2],
+    ) -> <f64 as Element<S>>::Array
+    where
+        u32: Element<S>,
+        f64: Element<S>,
+    {
+        let n = (counters[1].0 + counters[0].0) as f64;
+        let na = counters[1].0 as f64;
+        let pa = na / n;
+        <S as ZipMap<u32, u32, f64>>::zip_map(&counters[1].1, &counters[0].1, |&a, &b| {
+            if na == 0.0 {
+                0f64
+            } else {
+                let pb = (a + b) as f64 / n;
+                if pb == 0.0 {
+                    0f64
+                } else {
+                    let pba = a as f64 / na;
+                    let pab = (pba * pa) / pb;
+                    //dbg!(pab);
+                    ((pab * 2f64) - 1f64).abs()
+                }
+            }
+        })
+    }
+
+    pub trait Mse
+    where
+        Self: Shape + Sized,
+        bool: Element<Self>,
+        f64: Element<Self>,
+        <f64 as Element<Self>>::Array: Element<Self>,
+    {
+        fn single_mse(
+            edges: &<<f64 as Element<Self>>::Array as Element<Self>>::Array,
+            local_avgs: &<f64 as Element<Self>>::Array,
+            mask: &<bool as Element<Self>>::Array,
+        ) -> f64;
+        fn bit_flip_mses(
+            edges: &<<f64 as Element<Self>>::Array as Element<Self>>::Array,
+            local_avgs: &<f64 as Element<Self>>::Array,
+            mask: &<bool as Element<Self>>::Array,
+        ) -> <f64 as Element<Self>>::Array;
+    }
+
+    impl<
+            S: Shape
+                + Map<f64, f64>
+                + Map<<f64 as Element<S>>::Array, f64>
+                + Map<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>
+                + ZipMap<f64, f64, f64>
+                + ZipMap<bool, f64, f64>
+                + ZipMap<f64, bool, f64>
+                + ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>
+                + Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>,
+        > Mse for S
+    where
+        bool: Element<S>,
+        f64: Element<S>,
+        <f64 as Element<S>>::Array: Element<S> + Sum + Default,
+    {
+        fn single_mse(
+            edges: &<<f64 as Element<S>>::Array as Element<S>>::Array,
+            local_avgs: &<f64 as Element<S>>::Array,
+            mask: &<bool as Element<S>>::Array,
+        ) -> f64 {
+            let n = <S>::N as f64;
+            let avg = local_avgs.sum() / n;
+            let local_counts =
+                <S as Map<<f64 as Element<S>>::Array, f64>>::map(&edges, |edge_set| {
+                    masked_sum::<S>(edge_set, mask)
+                });
+            let scale = avg / (local_counts.sum() / n);
+            <S as ZipMap<f64, f64, f64>>::zip_map(&local_avgs, &local_counts, |a, b| {
+                (a - (b * scale)).powi(2)
+            })
+            .sum()
+        }
+        fn bit_flip_mses(
+            edges: &<<f64 as Element<S>>::Array as Element<S>>::Array,
+            local_avgs: &<f64 as Element<S>>::Array,
+            mask: &<bool as Element<S>>::Array,
+        ) -> <f64 as Element<S>>::Array {
+            let n = <S>::N as f64;
+            let avg = local_avgs.sum() / n;
+            let bit_flip_local_counts = <S as Map<
+                <f64 as Element<S>>::Array,
+                <f64 as Element<S>>::Array,
+            >>::map(&edges, |edge_set| {
+                let sum = masked_sum::<S>(edge_set, mask);
+                <S as ZipMap<bool, f64, f64>>::zip_map(&mask, &edge_set, |&mask_bit, &edge| {
+                    if mask_bit {
+                        sum - edge
+                    } else {
+                        sum + edge
+                    }
+                })
+            });
+            let bit_flip_sums = S::fold(
+                &bit_flip_local_counts,
+                <f64 as Element<S>>::Array::default(),
+                |a, b| <S as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
+            );
+            let bit_flip_scales = <S as Map<f64, f64>>::map(&bit_flip_sums, |sum| avg / (sum / n));
+            let bit_flip_local_mses = S::zip_map(
+                &bit_flip_local_counts,
+                local_avgs,
+                |local_counts, local_avg| {
+                    <S as ZipMap<f64, f64, f64>>::zip_map(
+                        local_counts,
+                        &bit_flip_scales,
+                        |count, scale| (local_avg - (count * scale)).powi(2),
+                    )
+                },
+            );
+            S::fold(
+                &bit_flip_local_mses,
+                <f64 as Element<S>>::Array::default(),
+                |a, b| <S as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
+            )
+        }
+    }
+
+    fn masked_sum<S: Shape + ZipMap<f64, bool, f64>>(
+        edge_set: &<f64 as Element<S>>::Array,
+        mask: &<bool as Element<S>>::Array,
+    ) -> f64
+    where
+        bool: Element<S>,
+        f64: Element<S>,
+        <f64 as Element<S>>::Array: Sum,
+    {
+        <S as ZipMap<f64, bool, f64>>::zip_map(
+            &edge_set,
+            &mask,
+            |&edge, &mask_bit| {
+                if mask_bit {
+                    edge
+                } else {
+                    0f64
+                }
+            },
+        )
+        .sum()
+    }
+
+    fn nan_to_0(i: f64) -> f64 {
+        if i.is_nan() {
+            0f64
+        } else {
+            i
+        }
+    }
+
+    pub trait GenMask
+    where
+        Self: Bits + BitShape,
+        bool: Element<Self::Shape>,
+        u32: Element<Self::Shape>,
+        [(usize, <u32 as Element<<Self as BitShape>::Shape>>::Array); 2]:
+            Element<<Self as BitShape>::Shape>,
+    {
+        fn gen_mask(
+            matrix_counters: &<[(usize, <u32 as Element<Self::Shape>>::Array); 2] as Element<
+                Self::Shape,
+            >>::Array,
+            value_counters: &[(usize, <u32 as Element<Self::Shape>>::Array); 2],
         ) -> Self;
-        fn compare_fracs_and_bitpack(
-            a: &(usize, Self::BitCounterType),
-            b: &(usize, Self::BitCounterType),
-        ) -> Self {
-            Self::compare_and_bitpack(&a.1, a.0 as f64, &b.1, b.0 as f64)
-        }
     }
 
-    impl<A: IncrementCounters, B: IncrementCounters> IncrementCounters for (A, B) {
-        type BitCounterType = (A::BitCounterType, B::BitCounterType);
-        fn increment_counters(&self, counters: &mut Self::BitCounterType) {
-            self.0.increment_counters(&mut counters.0);
-            self.1.increment_counters(&mut counters.1);
-        }
-        fn threshold_and_bitpack(counters: &Self::BitCounterType, threshold: u32) -> Self {
-            (
-                A::threshold_and_bitpack(&counters.0, threshold),
-                B::threshold_and_bitpack(&counters.1, threshold),
-            )
-        }
-        fn compare_and_bitpack(
-            counters_0: &Self::BitCounterType,
-            n_0: f64,
-            counters_1: &Self::BitCounterType,
-            n_1: f64,
-        ) -> Self {
-            (
-                A::compare_and_bitpack(&counters_0.0, n_0, &counters_1.0, n_1),
-                B::compare_and_bitpack(&counters_0.1, n_0, &counters_1.1, n_1),
-            )
-        }
-    }
-
-    impl<T: IncrementCounters, const L: usize> IncrementCounters for [T; L]
+    impl<B: BitShape + Bits> GenMask for B
     where
-        Self: Default,
+        B::Shape: Mse
+            + Min
+            + FlipBool
+            + ZipMap<u32, u32, f64>
+            + ZipMap<f64, f64, f64>
+            + ZipMap<<f64 as Element<<B as BitShape>::Shape>>::Array, f64, f64>
+            + Map<f64, f64>
+            + Map<<f64 as Element<B::Shape>>::Array, f64>
+            + Map<[(usize, <u32 as Element<B::Shape>>::Array); 2], <f64 as Element<B::Shape>>::Array>,
+        bool: Element<B::Shape>,
+        u32: Element<B::Shape>,
+        f64: Element<B::Shape>,
+        <f64 as Element<B::Shape>>::Array: Element<<B as BitShape>::Shape> + Sum + std::fmt::Debug,
+        [(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2]:
+            Element<<B as BitShape>::Shape>,
+        (): Element<B::Shape, Array = B::Shape>,
+        B::Shape: Default + Map<(), bool>,
+        <<f64 as Element<B::Shape>>::Array as Element<B::Shape>>::Array: std::fmt::Debug,
     {
-        type BitCounterType = [T::BitCounterType; L];
-        fn increment_counters(&self, counters: &mut [T::BitCounterType; L]) {
-            for i in 0..L {
-                self[i].increment_counters(&mut counters[i]);
+        fn gen_mask(
+            matrix_counters: &<[(usize, <u32 as Element<B::Shape>>::Array); 2] as Element<
+                B::Shape,
+            >>::Array,
+            value_counters: &[(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2],
+        ) -> B {
+            let values = bayes_magn::<B::Shape>(&value_counters);
+            //dbg!(&values);
+            let edges = <B::Shape as Map<
+                [(usize, <u32 as Element<B::Shape>>::Array); 2],
+                <f64 as Element<B::Shape>>::Array,
+            >>::map(&matrix_counters, |counters| {
+                bayes_magn::<B::Shape>(&counters)
+            });
+            //dbg!(&edges);
+            let ns = <B::Shape as Map<<f64 as Element<B::Shape>>::Array, f64>>::map(
+                &edges,
+                |edge_set| edge_set.sum(),
+            );
+            dbg!(&ns);
+
+            let local_avgs =
+                <B::Shape as ZipMap<<f64 as Element<B::Shape>>::Array, f64, f64>>::zip_map(
+                    &edges,
+                    &ns,
+                    |edge_set, node_n| {
+                        let avg = <B::Shape as ZipMap<f64, f64, f64>>::zip_map(
+                            &edge_set,
+                            &values,
+                            |a, b| a * b,
+                        )
+                        .sum()
+                            / node_n;
+                        nan_to_0(avg)
+                    },
+                );
+            let mut mask = <B::Shape as Map<(), bool>>::map(&B::Shape::default(), |_| true);
+            dbg!(&local_avgs);
+            let mut cur_mse = B::Shape::single_mse(&edges, &local_avgs, &mask);
+            dbg!(cur_mse);
+            let mut is_optima = false;
+            while !is_optima {
+                let bit_flip_mses = B::Shape::bit_flip_mses(&edges, &local_avgs, &mask);
+                dbg!(&bit_flip_mses);
+                let (min_index, min_val) = <B::Shape as Min>::min(&bit_flip_mses).unwrap();
+                if min_val < cur_mse {
+                    <B::Shape as FlipBool>::flip_bool(&mut mask, min_index);
+                    cur_mse = min_val;
+                    dbg!(cur_mse);
+                } else {
+                    is_optima = true;
+                }
             }
-        }
-        fn threshold_and_bitpack(counters: &Self::BitCounterType, threshold: u32) -> Self {
-            let mut target = <[T; L]>::default();
-            for i in 0..L {
-                target[i] = T::threshold_and_bitpack(&counters[i], threshold);
-            }
-            target
-        }
-        fn compare_and_bitpack(
-            counters_0: &Self::BitCounterType,
-            n_0: f64,
-            counters_1: &Self::BitCounterType,
-            n_1: f64,
-        ) -> Self {
-            let mut target = <[T; L]>::default();
-            for i in 0..L {
-                target[i] = T::compare_and_bitpack(&counters_0[i], n_0, &counters_1[i], n_1);
-            }
-            target
+            <B as Bits>::bitpack(&mask)
         }
     }
-    macro_rules! impl_for_uint {
-        ($type:ty, $len:expr) => {
-            impl IncrementCounters for $type {
-                type BitCounterType = [u32; <$type>::BIT_LEN];
-                fn increment_counters(&self, counters: &mut Self::BitCounterType) {
-                    for b in 0..<$type>::BIT_LEN {
-                        counters[b] += ((self >> b) & 1) as u32
-                    }
-                }
-                fn threshold_and_bitpack(counters: &Self::BitCounterType, threshold: u32) -> Self {
-                    let mut target = <$type>::default();
-                    for i in 0..$len {
-                        target |= (counters[i] > threshold) as $type << i;
-                    }
-                    target
-                }
-                fn compare_and_bitpack(counters_0: &Self::BitCounterType, n_0: f64, counters_1: &Self::BitCounterType, n_1: f64) -> Self {
-                    let mut target = <$type>::default();
-                    for i in 0..$len {
-                        target |= (counters_0[i] as f64 / n_0 > counters_1[i] as f64 / n_1) as $type << i;
-                    }
-                    target
-                }
-            }
-        }
-    }
-    impl_for_uint!(u32, 32);
-    impl_for_uint!(u16, 16);
-    //impl_for_uint!(u8, 8);
 }
 
 pub mod image2d {
@@ -913,11 +1036,10 @@ pub mod layer {
                         );
 
                     let mut partitions = gen_partitions(n_classes);
-                    partitions.sort_by_key(|x| x.len());
+                    //partitions.sort_by_key(|x| x.len());
                     //partitions.reverse();
                     let partitions = &partitions[0..(C * 32)];
                     println!("{:?}", partitions);
-                    dbg!(partitions.len());
 
                     let filters: Vec<P> = partitions
                         .iter()
@@ -949,23 +1071,8 @@ pub mod layer {
                                 .par_iter()
                                 .map(|pixel| pixel.hamming_distance(filter))
                                 .collect();
-                            //println!("{:?}", &activations[(examples.len() / 2 - 20)..examples.len() / 2+20]);
                             activations.par_sort();
-                            //println!("{:?}", &activations[(examples.len() / 2 - 20)..examples.len() / 2+20]);
-                            //dbg!(activations.len());
-                            //dbg!(activations[examples.len() - (examples.len() / 8)]);
-                            //dbg!(activations[examples.len() - (examples.len() / 4)]);
-                            //dbg!(activations[examples.len() - (examples.len() / 2)]);
-                            //dbg!(activations[examples.len() / 2]);
-                            //dbg!(activations[examples.len() / 4]);
-                            //dbg!(activations[examples.len() / 8]);
                             let threshold = activations[activations.len() / 2];
-                            //let n_lt: usize = activations.par_iter().filter(|&x|*x<threshold).count();
-                            //let n_gt: usize = activations.par_iter().filter(|&x|*x>=threshold).count();
-                            //dbg!(n_lt);
-                            //dbg!(n_gt);
-                            //let threshold = (P::BIT_LEN as u32)/2;
-                            dbg!(threshold);
                             (*filter, threshold)
                         })
                         .collect();
@@ -1058,7 +1165,7 @@ pub mod layer {
                 .par_iter()
                 .map(|image| image.map_2d(|x| weights.bit_mul(x)))
                 .collect();
-            println!("time: {}", start.to(PreciseTime::now()));
+            //println!("time: {}", start.to(PreciseTime::now()));
             // PT2.04
             (images, weights)
         }
@@ -1257,10 +1364,10 @@ pub mod layer {
             const K: usize,
         > GlobalPoolingBayes<Pixel, { K }> for [[Pixel; Y]; X]
     where
-        [u32; K]: Default,
+        [u32; K]: Default + std::fmt::Debug,
         Pixel::BitCounterType: Counters + Send + Sync,
         [(usize, Pixel::BitCounterType); K]: Default,
-        [(Pixel, u32); K]: Default,
+        [(Pixel, u32); K]: Default + std::fmt::Debug,
         [[Pixel; Y]; X]: Send + Sync + ExtractPixels<Pixel>,
     {
         fn global_pooling_bayes(examples: &Vec<([[Pixel; Y]; X], usize)>) -> [(Pixel, u32); K] {
@@ -1324,21 +1431,24 @@ pub mod layer {
                 .map(|&x| (max_avg_act - (x as f64 / examples.len() as f64)) as u32)
                 .collect();
 
-            let mut target = <[(Pixel, u32); K]>::default();
+            let mut weights = <[(Pixel, u32); K]>::default();
             for c in 0..K {
-                target[c] = (filters[c], biases[c]);
+                weights[c] = (filters[c], biases[c]);
             }
-
             let n_correct: usize = examples
-                .iter()
-                .map(|(image, class)| (image.infer(&target).min_index() == *class) as usize)
+                .par_iter()
+                .map(|(image, class)| {
+                    let activations = image.infer(&weights);
+                    let index = activations.min_index();
+                    (index == *class) as usize
+                })
                 .sum();
             println!(
                 "global pool: {:?}%",
                 n_correct as f64 / examples.len() as f64 * 100.0
             );
 
-            target
+            weights
         }
         fn infer(&self, filters: &[(Pixel, u32); K]) -> [u32; K] {
             {
@@ -1349,7 +1459,8 @@ pub mod layer {
             .iter()
             .fold(<[u32; K]>::default(), |mut acc, pixel| {
                 for c in 0..K {
-                    acc[c] += filters[c].0.hamming_distance(pixel) + filters[c].1;
+                    acc[c] += filters[c].0.hamming_distance(pixel);
+                    //acc[c] += filters[c].0.hamming_distance(pixel) + filters[c].1;
                 }
                 acc
             })
@@ -1401,8 +1512,7 @@ pub mod layer {
                     },
                     |mut a, b| {
                         for c in 0..K {
-                            a[c].0 += b[c].0;
-                            (a[c].1).elementwise_add(&b[c].1);
+                            T::add_assign_fracs(&mut a[c], &b[c]);
                         }
                         a
                     },
@@ -1437,6 +1547,24 @@ pub mod layer {
             for c in 0..K {
                 target[c] = (filters[c], biases[c]);
             }
+            let n_correct: u64 = examples
+                .par_iter()
+                .map(|(image, class)| {
+                    let actual_class: usize = target
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(i, (filter, bias))| filter.hamming_distance(image))
+                        //.min_by_key(|(i, (filter, bias))| filter.hamming_distance(image) + bias)
+                        .unwrap()
+                        .0;
+                    (actual_class == *class) as u64
+                })
+                .sum();
+            println!(
+                "Fully connected: {:?}%",
+                n_correct as f64 / examples.len() as f64 * 100f64
+            );
+
             target
         }
     }
