@@ -9,11 +9,12 @@ extern crate serde_derive;
 extern crate time;
 
 pub mod bits;
-pub mod datasets;
 pub mod count;
+pub mod datasets;
 
 pub mod mask {
     use crate::bits::{BitLen, GetBit};
+    use std::boxed::Box;
 
     pub trait Shape {
         const N: usize;
@@ -31,6 +32,12 @@ pub mod mask {
         const N: usize = T::N * L;
         type Index = (usize, T::Index);
         const SHAPE: Self::Index = (L, T::SHAPE);
+    }
+
+    impl<T: Shape> Shape for Box<T> {
+        const N: usize = T::N;
+        type Index = T::Index;
+        const SHAPE: Self::Index = T::SHAPE;
     }
 
     pub trait BitShape
@@ -175,6 +182,50 @@ pub mod mask {
         type Array = [T::Array; L];
     }
 
+    impl<T: Element<S>, S: Shape> Element<Box<S>> for T {
+        type Array = Box<T::Array>;
+    }
+
+    pub trait MapMut<I: Element<Self>, O: Element<Self>>
+    where
+        Self: Shape + Sized,
+    {
+        fn map_mut<F: Fn(&mut O, &I)>(
+            target: &mut <O as Element<Self>>::Array,
+            input: &<I as Element<Self>>::Array,
+            map_fn: F,
+        );
+    }
+
+    impl<I, O> MapMut<I, O> for () {
+        fn map_mut<F: Fn(&mut O, &I)>(target: &mut O, input: &I, map_fn: F) {
+            map_fn(target, input)
+        }
+    }
+
+    impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>, const L: usize> MapMut<I, O> for [S; L] {
+        fn map_mut<F: Fn(&mut O, &I)>(
+            target: &mut <O as Element<Self>>::Array,
+            input: &[<I as Element<S>>::Array; L],
+            map_fn: F,
+        ) {
+            for i in 0..L {
+                <S as MapMut<I, O>>::map_mut(&mut target[i], &input[i], &map_fn);
+            }
+        }
+    }
+
+    impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>> MapMut<I, O> for Box<S> {
+        fn map_mut<F: Fn(&mut O, &I)>(
+            target: &mut <O as Element<Self>>::Array,
+            input: &<I as Element<Self>>::Array,
+            map_fn: F,
+        ) {
+            <S as MapMut<I, O>>::map_mut(target, &input, &map_fn);
+        }
+    }
+
+
     pub trait Map<I: Element<Self>, O: Element<Self>>
     where
         Self: Shape + Sized,
@@ -185,27 +236,33 @@ pub mod mask {
         ) -> <O as Element<Self>>::Array;
     }
 
-    impl<I, O> Map<I, O> for () {
-        fn map<F: Fn(&I) -> O>(input: &I, map_fn: F) -> O {
-            map_fn(input)
-        }
-    }
-
-    impl<S: Shape + Map<I, O>, I: Element<S>, O: Element<S>, const L: usize> Map<I, O> for [S; L]
+    impl<S: MapMut<I, O> + Shape, I: Element<S>, O: Element<S>> Map<I, O> for S
     where
-        [<O as Element<S>>::Array; L]: Default,
+        <O as Element<S>>::Array: Default,
     {
         fn map<F: Fn(&I) -> O>(
-            input: &[<I as Element<S>>::Array; L],
+            input: &<I as Element<S>>::Array,
             map_fn: F,
-        ) -> [<O as Element<S>>::Array; L] {
-            let mut target = <[<O as Element<S>>::Array; L]>::default();
-            for i in 0..L {
-                target[i] = <S as Map<I, O>>::map(&input[i], &map_fn);
-            }
+        ) -> <O as Element<S>>::Array {
+            let mut target = <O as Element<S>>::Array::default();
+            S::map_mut(&mut target, input, |t, i| *t = map_fn(i));
             target
         }
     }
+
+    //impl<S: MapMut<I, O> + Shape, I: Element<S>, O: Element<S>> Map<I, O> for Box<S>
+    //where
+    //    Box<<O as Element<S>>::Array>: Default,
+    //{
+    //    fn map<F: Fn(&I) -> O>(
+    //        input: &<I as Element<S>>::Array,
+    //        map_fn: F,
+    //    ) -> Box<<O as Element<S>>::Array> {
+    //        let mut target = Box::<<O as Element<S>>::Array>::default();
+    //        S::map_mut(&mut target, input, |t, i| *t = map_fn(i));
+    //        target
+    //    }
+    //}
 
     trait Fold<B, I: Element<Self>>
     where
@@ -291,6 +348,12 @@ pub mod mask {
                 sum += self[i].sum();
             }
             sum
+        }
+    }
+
+    impl<T: Sum> Sum for Box<T> {
+        fn sum(&self) -> f64 {
+            self.sum()
         }
     }
 
