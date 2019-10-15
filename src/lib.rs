@@ -203,7 +203,9 @@ pub mod mask {
         }
     }
 
-    impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>, const L: usize> MapMut<I, O> for [S; L] {
+    impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>, const L: usize> MapMut<I, O>
+        for [S; L]
+    {
         fn map_mut<F: Fn(&mut O, &I)>(
             target: &mut <O as Element<Self>>::Array,
             input: &[<I as Element<S>>::Array; L],
@@ -224,7 +226,6 @@ pub mod mask {
             <S as MapMut<I, O>>::map_mut(target, &input, &map_fn);
         }
     }
-
 
     pub trait Map<I: Element<Self>, O: Element<Self>>
     where
@@ -290,6 +291,58 @@ pub mod mask {
         }
     }
 
+    pub trait ZipMapMut<A: Element<Self>, B: Element<Self>, O: Element<Self>>
+    where
+        Self: Shape + Sized,
+    {
+        fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
+            target: &mut <O as Element<Self>>::Array,
+            a: &<A as Element<Self>>::Array,
+            b: &<B as Element<Self>>::Array,
+            map_fn: F,
+        );
+    }
+
+    impl<A: Element<(), Array = A> + Copy, B: Element<(), Array = B> + Copy, O> ZipMapMut<A, B, O>
+        for ()
+    {
+        fn zip_map_mut<F: Fn(&mut O, &A, &B)>(target: &mut O, a: &A, b: &B, map_fn: F) {
+            map_fn(target, a, b)
+        }
+    }
+
+    impl<
+            S: Shape + ZipMapMut<A, B, O>,
+            A: Element<S>,
+            B: Element<S>,
+            O: Element<S>,
+            const L: usize,
+        > ZipMapMut<A, B, O> for [S; L]
+    {
+        fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
+            target: &mut <O as Element<Self>>::Array,
+            a: &<A as Element<[S; L]>>::Array,
+            b: &<B as Element<[S; L]>>::Array,
+            map_fn: F,
+        ) {
+            for i in 0..L {
+                S::zip_map_mut(&mut target[i], &a[i], &b[i], &map_fn);
+            }
+        }
+    }
+    impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>>
+        ZipMapMut<A, B, O> for Box<S>
+    {
+        fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
+            target: &mut <O as Element<Self>>::Array,
+            a: &<A as Element<Self>>::Array,
+            b: &<B as Element<Self>>::Array,
+            map_fn: F,
+        ) {
+            S::zip_map_mut(target, &a, &b, &map_fn);
+        }
+    }
+
     pub trait ZipMap<A: Element<Self>, B: Element<Self>, O: Element<Self>>
     where
         Self: Shape + Sized,
@@ -301,31 +354,18 @@ pub mod mask {
         ) -> <O as Element<Self>>::Array;
     }
 
-    impl<A: Element<(), Array = A> + Copy, B: Element<(), Array = B> + Copy, O> ZipMap<A, B, O> for () {
-        fn zip_map<F: Fn(&A, &B) -> O>(a: &A, b: &B, map_fn: F) -> O {
-            map_fn(a, b)
-        }
-    }
-
-    impl<
-            S: Shape + ZipMap<A, B, O>,
-            A: Element<S>,
-            B: Element<S>,
-            O: Element<S>,
-            const L: usize,
-        > ZipMap<A, B, O> for [S; L]
+    impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>> ZipMap<A, B, O>
+        for S
     where
-        <O as Element<[S; L]>>::Array: Default,
+        <O as Element<S>>::Array: Default,
     {
         fn zip_map<F: Fn(&A, &B) -> O>(
-            a: &<A as Element<[S; L]>>::Array,
-            b: &<B as Element<[S; L]>>::Array,
+            a: &<A as Element<S>>::Array,
+            b: &<B as Element<S>>::Array,
             map_fn: F,
-        ) -> <O as Element<[S; L]>>::Array {
-            let mut target = <[<O as Element<S>>::Array; L]>::default();
-            for i in 0..L {
-                target[i] = S::zip_map(&a[i], &b[i], &map_fn);
-            }
+        ) -> <O as Element<S>>::Array {
+            let mut target = <<O as Element<S>>::Array>::default();
+            S::zip_map_mut(&mut target, &a, &b, |t, x, y| *t = map_fn(x, y));
             target
         }
     }
@@ -351,11 +391,11 @@ pub mod mask {
         }
     }
 
-    impl<T: Sum> Sum for Box<T> {
-        fn sum(&self) -> f64 {
-            self.sum()
-        }
-    }
+    //impl<T: Sum> Sum for Box<T> {
+    //    fn sum(&self) -> f64 {
+    //        self.sum()
+    //    }
+    //}
 
     pub trait Min
     where
@@ -460,23 +500,15 @@ pub mod mask {
         u32: Element<S>,
         f64: Element<S>,
     {
-        let n = (counters[1].0 + counters[0].0) as f64;
-        let na = counters[1].0 as f64;
+        let n = (counters[1].0 + counters[0].0 + 4) as f64;
+        let na = (counters[1].0 + 2) as f64;
         let pa = na / n;
         <S as ZipMap<u32, u32, f64>>::zip_map(&counters[1].1, &counters[0].1, |&a, &b| {
-            if na == 0.0 {
-                0f64
-            } else {
-                let pb = (a + b) as f64 / n;
-                if pb == 0.0 {
-                    0f64
-                } else {
-                    let pba = a as f64 / na;
-                    let pab = (pba * pa) / pb;
-                    //dbg!(pab);
-                    ((pab * 2f64) - 1f64).abs()
-                }
-            }
+            let pb = (a + b + 2) as f64 / n;
+            let pba = (a + 1) as f64 / na;
+            let pab = (pba * pa) / pb;
+            //dbg!(pab);
+            ((pab * 2f64) - 1f64).abs()
         })
     }
 
@@ -493,8 +525,8 @@ pub mod mask {
             mask: &<bool as Element<Self>>::Array,
         ) -> f64;
         fn bit_flip_mses(
-            edges: &<<f64 as Element<Self>>::Array as Element<Self>>::Array,
-            local_avgs: &<f64 as Element<Self>>::Array,
+            edges: &Box<<<f64 as Element<Self>>::Array as Element<Self>>::Array>,
+            local_avgs: &Box<<f64 as Element<Self>>::Array>,
             mask: &<bool as Element<Self>>::Array,
         ) -> <f64 as Element<Self>>::Array;
     }
@@ -508,12 +540,15 @@ pub mod mask {
                 + ZipMap<bool, f64, f64>
                 + ZipMap<f64, bool, f64>
                 + ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>
-                + Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>,
+                + Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>
+                + Fold<Box<<f64 as Element<S>>::Array>, <f64 as Element<S>>::Array>,
         > Mse for S
     where
         bool: Element<S>,
         f64: Element<S>,
-        <f64 as Element<S>>::Array: Element<S> + Sum + Default,
+        <f64 as Element<S>>::Array: Element<S> + Sum + Default + std::fmt::Debug,
+        Box<S>: Map<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>
+            + ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>,
     {
         fn single_mse(
             edges: &<<f64 as Element<S>>::Array as Element<S>>::Array,
@@ -533,13 +568,14 @@ pub mod mask {
             .sum()
         }
         fn bit_flip_mses(
-            edges: &<<f64 as Element<S>>::Array as Element<S>>::Array,
-            local_avgs: &<f64 as Element<S>>::Array,
+            edges: &Box<<<f64 as Element<S>>::Array as Element<S>>::Array>,
+            local_avgs: &Box<<f64 as Element<S>>::Array>,
             mask: &<bool as Element<S>>::Array,
         ) -> <f64 as Element<S>>::Array {
-            let n = <S>::N as f64;
-            let avg = local_avgs.sum() / n;
-            let bit_flip_local_counts = <S as Map<
+            let n: f64 = S::N as f64;
+            let sum: f64 = local_avgs.sum();
+            let avg = sum / n;
+            let bit_flip_local_counts = <Box<S> as Map<
                 <f64 as Element<S>>::Array,
                 <f64 as Element<S>>::Array,
             >>::map(&edges, |edge_set| {
@@ -552,13 +588,18 @@ pub mod mask {
                     }
                 })
             });
-            let bit_flip_sums = S::fold(
-                &bit_flip_local_counts,
-                <f64 as Element<S>>::Array::default(),
-                |a, b| <S as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
-            );
+            let bit_flip_sums =
+                <S as Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>>::fold(
+                    &bit_flip_local_counts,
+                    <f64 as Element<S>>::Array::default(),
+                    |a, b| <S as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
+                );
             let bit_flip_scales = <S as Map<f64, f64>>::map(&bit_flip_sums, |sum| avg / (sum / n));
-            let bit_flip_local_mses = S::zip_map(
+            let bit_flip_local_mses = <Box<S> as ZipMap<
+                <f64 as Element<S>>::Array,
+                f64,
+                <f64 as Element<S>>::Array,
+            >>::zip_map(
                 &bit_flip_local_counts,
                 local_avgs,
                 |local_counts, local_avg| {
@@ -569,7 +610,7 @@ pub mod mask {
                     )
                 },
             );
-            S::fold(
+            <S as Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>>::fold(
                 &bit_flip_local_mses,
                 <f64 as Element<S>>::Array::default(),
                 |a, b| <S as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
@@ -600,13 +641,13 @@ pub mod mask {
         .sum()
     }
 
-    fn nan_to_0(i: f64) -> f64 {
-        if i.is_nan() {
-            0f64
-        } else {
-            i
-        }
-    }
+    //fn nan_to_0(i: f64) -> f64 {
+    //    if i.is_nan() {
+    //        0f64
+    //    } else {
+    //        i
+    //    }
+    //}
 
     pub trait GenMask
     where
@@ -617,10 +658,10 @@ pub mod mask {
             Element<<Self as BitShape>::Shape>,
     {
         fn gen_mask(
-            matrix_counters: &<[(usize, <u32 as Element<Self::Shape>>::Array); 2] as Element<
-                Self::Shape,
-            >>::Array,
-            value_counters: &[(usize, <u32 as Element<Self::Shape>>::Array); 2],
+            matrix_counters: &Box<
+                <[(usize, <u32 as Element<Self::Shape>>::Array); 2] as Element<Self::Shape>>::Array,
+            >,
+            value_counters: &Box<[(usize, <u32 as Element<Self::Shape>>::Array); 2]>,
         ) -> Self;
     }
 
@@ -644,51 +685,54 @@ pub mod mask {
         (): Element<B::Shape, Array = B::Shape>,
         B::Shape: Default + Map<(), bool>,
         <<f64 as Element<B::Shape>>::Array as Element<B::Shape>>::Array: std::fmt::Debug,
+        <B as BitShape>::Shape: MapMut<
+            [(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2],
+            <f64 as Element<<B as BitShape>::Shape>>::Array,
+        >,
+        <<f64 as Element<<B as BitShape>::Shape>>::Array as Element<<B as BitShape>::Shape>>::Array:
+            Default,
+        Box<<B as BitShape>::Shape>: Map<<f64 as Element<<B as BitShape>::Shape>>::Array, f64>
+            + ZipMap<<f64 as Element<<B as BitShape>::Shape>>::Array, f64, f64>,
     {
         fn gen_mask(
-            matrix_counters: &<[(usize, <u32 as Element<B::Shape>>::Array); 2] as Element<
-                B::Shape,
-            >>::Array,
-            value_counters: &[(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2],
+            matrix_counters: &Box<
+                <[(usize, <u32 as Element<B::Shape>>::Array); 2] as Element<B::Shape>>::Array,
+            >,
+            value_counters: &Box<[(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2]>,
         ) -> B {
             let values = bayes_magn::<B::Shape>(&value_counters);
             //dbg!(&values);
-            let edges = <B::Shape as Map<
+            let edges: Box<_> = <Box<B::Shape> as Map<
                 [(usize, <u32 as Element<B::Shape>>::Array); 2],
                 <f64 as Element<B::Shape>>::Array,
             >>::map(&matrix_counters, |counters| {
                 bayes_magn::<B::Shape>(&counters)
             });
             //dbg!(&edges);
-            let ns = <B::Shape as Map<<f64 as Element<B::Shape>>::Array, f64>>::map(
+            let ns = <Box<B::Shape> as Map<<f64 as Element<B::Shape>>::Array, f64>>::map(
                 &edges,
                 |edge_set| edge_set.sum(),
             );
-            dbg!(&ns);
 
-            let local_avgs =
-                <B::Shape as ZipMap<<f64 as Element<B::Shape>>::Array, f64, f64>>::zip_map(
-                    &edges,
-                    &ns,
-                    |edge_set, node_n| {
-                        let avg = <B::Shape as ZipMap<f64, f64, f64>>::zip_map(
-                            &edge_set,
-                            &values,
-                            |a, b| a * b,
-                        )
+            let local_avgs = <Box<B::Shape> as ZipMap<
+                <f64 as Element<B::Shape>>::Array,
+                f64,
+                f64,
+            >>::zip_map(&edges, &ns, |edge_set, node_n| {
+                let avg =
+                    <B::Shape as ZipMap<f64, f64, f64>>::zip_map(&edge_set, &values, |a, b| a * b)
                         .sum()
-                            / node_n;
-                        nan_to_0(avg)
-                    },
-                );
-            let mut mask = <B::Shape as Map<(), bool>>::map(&B::Shape::default(), |_| true);
-            dbg!(&local_avgs);
+                        / node_n;
+                //nan_to_0(avg)
+                avg
+            });
+            let mut mask = <B::Shape as Map<(), bool>>::map(&B::Shape::default(), |_| false);
             let mut cur_mse = B::Shape::single_mse(&edges, &local_avgs, &mask);
+            cur_mse = std::f64::INFINITY;
             dbg!(cur_mse);
             let mut is_optima = false;
             while !is_optima {
                 let bit_flip_mses = B::Shape::bit_flip_mses(&edges, &local_avgs, &mask);
-                dbg!(&bit_flip_mses);
                 let (min_index, min_val) = <B::Shape as Min>::min(&bit_flip_mses).unwrap();
                 if min_val < cur_mse {
                     <B::Shape as FlipBool>::flip_bool(&mut mask, min_index);

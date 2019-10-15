@@ -38,6 +38,24 @@ pub mod mnist {
         images
     }
 
+    pub fn display_mnist_u32(bits: &[u32; 25]) {
+        let bits: Vec<char> = bits
+            .iter()
+            .rev()
+            .map(|word| {
+                let chars: Vec<char> = format!("{:032b}", word).chars().collect();
+                chars
+            })
+            .flatten()
+            .rev()
+            .collect();
+        bits.chunks_exact(28).for_each(|x| {
+            let row: String = x.iter().collect();
+            println!("{}", row);
+        });
+        print!("\n");
+    }
+
     pub fn load_images_u8_unary(path: &Path, size: usize) -> Vec<[[u8; 28]; 28]> {
         let mut file = File::open(&path).expect("can't open images");
         let mut header: [u8; 16] = [0; 16];

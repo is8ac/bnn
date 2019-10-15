@@ -1,68 +1,33 @@
 use crate::bits::BitLen;
 
 pub trait Counters {
-    type FloatRatioType;
     fn elementwise_add(&mut self, other: &Self);
-    fn divide(&self, count: f64) -> Self::FloatRatioType;
-    // for each bit independently, probability that input is member of self set given bit.
-    fn bayes(&self, n_self: f64, other: &Self, n: f64, p_self: f64) -> Self::FloatRatioType;
 }
 
 impl<A: Counters, B: Counters> Counters for (A, B) {
-    type FloatRatioType = (A::FloatRatioType, B::FloatRatioType);
     fn elementwise_add(&mut self, other: &Self) {
         self.0.elementwise_add(&other.0);
         self.1.elementwise_add(&other.1);
     }
-    fn divide(&self, count: f64) -> Self::FloatRatioType {
-        (self.0.divide(count), self.1.divide(count))
-    }
-    fn bayes(&self, n_self: f64, other: &Self, n: f64, p_self: f64) -> Self::FloatRatioType {
-        (
-            self.0.bayes(n_self, &other.0, n, p_self),
-            self.1.bayes(n_self, &other.1, n, p_self),
-        )
-    }
 }
 
 impl Counters for u32 {
-    type FloatRatioType = f64;
     fn elementwise_add(&mut self, other: &u32) {
         *self += other;
     }
-    fn divide(&self, count: f64) -> Self::FloatRatioType {
-        *self as f64 / count
-    }
-    fn bayes(&self, n_self: f64, &other: &u32, n: f64, p_self: f64) -> Self::FloatRatioType {
-        let pb = (*self + other) as f64 / n;
-        let pba = *self as f64 / n_self;
-        (pba * p_self) / pb
+}
+
+impl Counters for usize {
+    fn elementwise_add(&mut self, other: &usize) {
+        *self += other;
     }
 }
 
-impl<T: Counters, const L: usize> Counters for [T; L]
-where
-    [T::FloatRatioType; L]: Default,
-{
-    type FloatRatioType = [T::FloatRatioType; L];
+impl<T: Counters, const L: usize> Counters for [T; L] {
     fn elementwise_add(&mut self, other: &[T; L]) {
         for i in 0..L {
             self[i].elementwise_add(&other[i]);
         }
-    }
-    fn divide(&self, count: f64) -> Self::FloatRatioType {
-        let mut target = <[T::FloatRatioType; L]>::default();
-        for b in 0..L {
-            target[b] = self[b].divide(count);
-        }
-        target
-    }
-    fn bayes(&self, n_self: f64, other: &Self, n: f64, p_self: f64) -> Self::FloatRatioType {
-        let mut target = <[T::FloatRatioType; L]>::default();
-        for b in 0..L {
-            target[b] = self[b].bayes(n_self, &other[b], n, p_self);
-        }
-        target
     }
 }
 
@@ -75,10 +40,7 @@ where
         a: &(usize, Self::BitCounterType),
         b: &(usize, Self::BitCounterType),
     ) -> (usize, Self::BitCounterType);
-    fn add_assign_fracs(
-        a: &mut (usize, Self::BitCounterType),
-        b: &(usize, Self::BitCounterType),
-    );
+    fn add_assign_fracs(a: &mut (usize, Self::BitCounterType), b: &(usize, Self::BitCounterType));
 }
 
 //impl<T: IncrementCounters> IncrementFracCounters for T
