@@ -1,5 +1,3 @@
-use crate::bits::BitLen;
-
 pub trait Counters {
     fn elementwise_add(&mut self, other: &Self);
 }

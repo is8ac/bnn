@@ -15,29 +15,42 @@ pub mod datasets;
 pub mod mask {
     use crate::bits::{BitLen, GetBit};
     use std::boxed::Box;
+    use std::num::Wrapping;
 
     pub trait Shape {
         const N: usize;
         type Index;
-        const SHAPE: Self::Index;
     }
 
     impl Shape for () {
         const N: usize = 1;
         type Index = ();
-        const SHAPE: Self::Index = ();
     }
 
     impl<T: Shape, const L: usize> Shape for [T; L] {
         const N: usize = T::N * L;
         type Index = (usize, T::Index);
-        const SHAPE: Self::Index = (L, T::SHAPE);
     }
 
     impl<T: Shape> Shape for Box<T> {
         const N: usize = T::N;
         type Index = T::Index;
-        const SHAPE: Self::Index = T::SHAPE;
+    }
+
+    pub trait Element<S: Shape> {
+        type Array;
+    }
+
+    impl<T: Sized> Element<()> for T {
+        type Array = T;
+    }
+
+    impl<T: Element<S>, S: Shape, const L: usize> Element<[S; L]> for T {
+        type Array = [T::Array; L];
+    }
+
+    impl<T: Element<S>, S: Shape> Element<Box<S>> for T {
+        type Array = Box<T::Array>;
     }
 
     pub trait BitShape
@@ -59,6 +72,11 @@ pub mod mask {
     {
         fn bitpack(values: &<bool as Element<Self::Shape>>::Array) -> Self;
         fn increment_counters(&self, counters: &mut <u32 as Element<Self::Shape>>::Array);
+        fn flipped_increment_counters(
+            &self,
+            sign: bool,
+            counters: &mut <u32 as Element<Self::Shape>>::Array,
+        );
     }
 
     macro_rules! for_uint {
@@ -84,7 +102,34 @@ pub mod mask {
                         counters[b] += ((self >> b) & 1) as u32
                     }
                 }
+                fn flipped_increment_counters(
+                    &self,
+                    sign: bool,
+                    counters: &mut <u32 as Element<Self::Shape>>::Array,
+                ) {
+                    let word = !(self ^ (Wrapping(0 as $type) - Wrapping(sign as $type)).0);
+                    for b in 0..<$type>::BIT_LEN {
+                        counters[b] += ((word >> b) & 1) as u32
+                    }
+                }
             }
+            impl<I: Bits + BitShape> IncrementHammingDistanceMatrix<$type> for I
+            where
+                bool: Element<I::Shape>,
+                u32: Element<I::Shape>,
+                I::Shape: ZipMap<u32, u32, u32>,
+            {
+                fn increment_hamming_distance_matrix(
+                    &self,
+                    counters_matrix: &mut [<u32 as Element<Self::Shape>>::Array; <$type>::BIT_LEN],
+                    target: &$type,
+                ) {
+                    for i in 0..<$type>::BIT_LEN {
+                        self.flipped_increment_counters(target.bit(i), &mut counters_matrix[i]);
+                    }
+                }
+            }
+
             impl<I: IncrementFracCounters + BitShape> IncrementCountersMatrix<$type> for I
             where
                 bool: Element<I::Shape>,
@@ -125,6 +170,15 @@ pub mod mask {
         fn increment_counters(&self, counters: &mut [<u32 as Element<T::Shape>>::Array; L]) {
             for i in 0..L {
                 self[i].increment_counters(&mut counters[i]);
+            }
+        }
+        fn flipped_increment_counters(
+            &self,
+            sign: bool,
+            counters: &mut [<u32 as Element<T::Shape>>::Array; L],
+        ) {
+            for i in 0..L {
+                self[i].flipped_increment_counters(sign, &mut counters[i]);
             }
         }
     }
@@ -168,22 +222,6 @@ pub mod mask {
                 <B::Shape as ZipMap<u32, u32, u32>>::zip_map(&a.1, &b.1, |x, y| x + y),
             )
         }
-    }
-
-    pub trait Element<S: Shape> {
-        type Array;
-    }
-
-    impl<T: Sized> Element<()> for T {
-        type Array = T;
-    }
-
-    impl<T: Element<S>, S: Shape, const L: usize> Element<[S; L]> for T {
-        type Array = [T::Array; L];
-    }
-
-    impl<T: Element<S>, S: Shape> Element<Box<S>> for T {
-        type Array = Box<T::Array>;
     }
 
     pub trait MapMut<I: Element<Self>, O: Element<Self>>
@@ -265,7 +303,7 @@ pub mod mask {
     //    }
     //}
 
-    trait Fold<B, I: Element<Self>>
+    pub trait Fold<B, I: Element<Self>>
     where
         Self: Shape + Sized,
     {
@@ -460,6 +498,37 @@ pub mod mask {
         }
     }
 
+    pub trait IncrementHammingDistanceMatrix<T: BitShape>
+    where
+        Self: BitShape,
+        u32: Element<Self::Shape>,
+        <u32 as Element<Self::Shape>>::Array: Element<T::Shape>,
+    {
+        fn increment_hamming_distance_matrix(
+            &self,
+            counters_matrix: &mut <<u32 as Element<Self::Shape>>::Array as Element<T::Shape>>::Array,
+            target: &T,
+        );
+    }
+
+    impl<I: IncrementHammingDistanceMatrix<T> + BitShape, T: BitShape, const L: usize>
+        IncrementHammingDistanceMatrix<[T; L]> for I
+    where
+        u32: Element<I::Shape>,
+        <u32 as Element<Self::Shape>>::Array: Element<T::Shape>,
+    {
+        fn increment_hamming_distance_matrix(
+            &self,
+            counters_matrix: &mut [<<u32 as Element<Self::Shape>>::Array as Element<T::Shape>>::Array;
+                     L],
+            target: &[T; L],
+        ) {
+            for w in 0..L {
+                self.increment_hamming_distance_matrix(&mut counters_matrix[w], &target[w]);
+            }
+        }
+    }
+
     pub trait IncrementCountersMatrix<T: BitShape>
     where
         Self: BitShape,
@@ -500,10 +569,10 @@ pub mod mask {
         u32: Element<S>,
         f64: Element<S>,
     {
-        let n = (counters[1].0 + counters[0].0 + 4) as f64;
-        let na = (counters[1].0 + 2) as f64;
+        let n = (counters[0].0 + counters[1].0 + 4) as f64;
+        let na = (counters[0].0 + 2) as f64;
         let pa = na / n;
-        <S as ZipMap<u32, u32, f64>>::zip_map(&counters[1].1, &counters[0].1, |&a, &b| {
+        <S as ZipMap<u32, u32, f64>>::zip_map(&counters[0].1, &counters[1].1, |&a, &b| {
             let pb = (a + b + 2) as f64 / n;
             let pba = (a + 1) as f64 / na;
             let pab = (pba * pa) / pb;
@@ -519,11 +588,6 @@ pub mod mask {
         f64: Element<Self>,
         <f64 as Element<Self>>::Array: Element<Self>,
     {
-        fn single_mse(
-            edges: &<<f64 as Element<Self>>::Array as Element<Self>>::Array,
-            local_avgs: &<f64 as Element<Self>>::Array,
-            mask: &<bool as Element<Self>>::Array,
-        ) -> f64;
         fn bit_flip_mses(
             edges: &Box<<<f64 as Element<Self>>::Array as Element<Self>>::Array>,
             local_avgs: &Box<<f64 as Element<Self>>::Array>,
@@ -550,23 +614,6 @@ pub mod mask {
         Box<S>: Map<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>
             + ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>,
     {
-        fn single_mse(
-            edges: &<<f64 as Element<S>>::Array as Element<S>>::Array,
-            local_avgs: &<f64 as Element<S>>::Array,
-            mask: &<bool as Element<S>>::Array,
-        ) -> f64 {
-            let n = <S>::N as f64;
-            let avg = local_avgs.sum() / n;
-            let local_counts =
-                <S as Map<<f64 as Element<S>>::Array, f64>>::map(&edges, |edge_set| {
-                    masked_sum::<S>(edge_set, mask)
-                });
-            let scale = avg / (local_counts.sum() / n);
-            <S as ZipMap<f64, f64, f64>>::zip_map(&local_avgs, &local_counts, |a, b| {
-                (a - (b * scale)).powi(2)
-            })
-            .sum()
-        }
         fn bit_flip_mses(
             edges: &Box<<<f64 as Element<S>>::Array as Element<S>>::Array>,
             local_avgs: &Box<<f64 as Element<S>>::Array>,
@@ -575,19 +622,18 @@ pub mod mask {
             let n: f64 = S::N as f64;
             let sum: f64 = local_avgs.sum();
             let avg = sum / n;
-            let bit_flip_local_counts = <Box<S> as Map<
-                <f64 as Element<S>>::Array,
-                <f64 as Element<S>>::Array,
-            >>::map(&edges, |edge_set| {
-                let sum = masked_sum::<S>(edge_set, mask);
-                <S as ZipMap<bool, f64, f64>>::zip_map(&mask, &edge_set, |&mask_bit, &edge| {
-                    if mask_bit {
-                        sum - edge
-                    } else {
-                        sum + edge
-                    }
-                })
-            });
+            let bit_flip_local_counts =
+                <Box<S> as Map<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>>::map(
+                    &edges,
+                    |edge_set| {
+                        let sum = masked_sum::<S>(edge_set, mask);
+                        <S as ZipMap<bool, f64, f64>>::zip_map(
+                            &mask,
+                            &edge_set,
+                            |&mask_bit, &edge| if mask_bit { sum - edge } else { sum + edge },
+                        )
+                    },
+                );
             let bit_flip_sums =
                 <S as Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>>::fold(
                     &bit_flip_local_counts,
@@ -630,37 +676,23 @@ pub mod mask {
         <S as ZipMap<f64, bool, f64>>::zip_map(
             &edge_set,
             &mask,
-            |&edge, &mask_bit| {
-                if mask_bit {
-                    edge
-                } else {
-                    0f64
-                }
-            },
+            |&edge, &mask_bit| if mask_bit { edge } else { 0f64 },
         )
         .sum()
     }
-
-    //fn nan_to_0(i: f64) -> f64 {
-    //    if i.is_nan() {
-    //        0f64
-    //    } else {
-    //        i
-    //    }
-    //}
 
     pub trait GenMask
     where
         Self: Bits + BitShape,
         bool: Element<Self::Shape>,
         u32: Element<Self::Shape>,
-        [(usize, <u32 as Element<<Self as BitShape>::Shape>>::Array); 2]:
-            Element<<Self as BitShape>::Shape>,
+        <u32 as Element<<Self as BitShape>::Shape>>::Array: Element<<Self as BitShape>::Shape>,
     {
         fn gen_mask(
-            matrix_counters: &Box<
-                <[(usize, <u32 as Element<Self::Shape>>::Array); 2] as Element<Self::Shape>>::Array,
+            dist_matrix_counters: &Box<
+                <<u32 as Element<Self::Shape>>::Array as Element<Self::Shape>>::Array,
             >,
+            n: usize,
             value_counters: &Box<[(usize, <u32 as Element<Self::Shape>>::Array); 2]>,
         ) -> Self;
     }
@@ -670,69 +702,50 @@ pub mod mask {
         B::Shape: Mse
             + Min
             + FlipBool
+            + Map<u32, f64>
             + ZipMap<u32, u32, f64>
-            + ZipMap<f64, f64, f64>
-            + ZipMap<<f64 as Element<<B as BitShape>::Shape>>::Array, f64, f64>
-            + Map<f64, f64>
-            + Map<<f64 as Element<B::Shape>>::Array, f64>
-            + Map<[(usize, <u32 as Element<B::Shape>>::Array); 2], <f64 as Element<B::Shape>>::Array>,
-        bool: Element<B::Shape>,
-        u32: Element<B::Shape>,
-        f64: Element<B::Shape>,
+            + Element<<B as BitShape>::Shape>
+            + Map<(), bool>
+            + Default,
+        Box<B::Shape>: Map<<u32 as Element<B::Shape>>::Array, <f64 as Element<B::Shape>>::Array>,
+        <B::Shape as Element<<B as BitShape>::Shape>>::Array: Shape,
+        u32: Element<B::Shape> + Element<<B::Shape as Element<B::Shape>>::Array>,
+        f64: Element<B::Shape> + Element<<B::Shape as Element<B::Shape>>::Array>,
+        <u32 as Element<B::Shape>>::Array: Element<<B as BitShape>::Shape>,
         <f64 as Element<B::Shape>>::Array: Element<<B as BitShape>::Shape> + Sum + std::fmt::Debug,
-        [(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2]:
-            Element<<B as BitShape>::Shape>,
+        <<f64 as Element<B::Shape>>::Array as Element<B::Shape>>::Array: Default + std::fmt::Debug,
+        bool: Element<B::Shape>,
         (): Element<B::Shape, Array = B::Shape>,
-        B::Shape: Default + Map<(), bool>,
-        <<f64 as Element<B::Shape>>::Array as Element<B::Shape>>::Array: std::fmt::Debug,
-        <B as BitShape>::Shape: MapMut<
-            [(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2],
-            <f64 as Element<<B as BitShape>::Shape>>::Array,
-        >,
-        <<f64 as Element<<B as BitShape>::Shape>>::Array as Element<<B as BitShape>::Shape>>::Array:
-            Default,
-        Box<<B as BitShape>::Shape>: Map<<f64 as Element<<B as BitShape>::Shape>>::Array, f64>
-            + ZipMap<<f64 as Element<<B as BitShape>::Shape>>::Array, f64, f64>,
     {
         fn gen_mask(
-            matrix_counters: &Box<
-                <[(usize, <u32 as Element<B::Shape>>::Array); 2] as Element<B::Shape>>::Array,
+            dist_matrix_counters: &Box<
+                <<u32 as Element<B::Shape>>::Array as Element<B::Shape>>::Array,
             >,
+            n_examples: usize,
             value_counters: &Box<[(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2]>,
         ) -> B {
-            let values = bayes_magn::<B::Shape>(&value_counters);
-            //dbg!(&values);
-            let edges: Box<_> = <Box<B::Shape> as Map<
-                [(usize, <u32 as Element<B::Shape>>::Array); 2],
-                <f64 as Element<B::Shape>>::Array,
-            >>::map(&matrix_counters, |counters| {
-                bayes_magn::<B::Shape>(&counters)
-            });
-            //dbg!(&edges);
-            let ns = <Box<B::Shape> as Map<<f64 as Element<B::Shape>>::Array, f64>>::map(
-                &edges,
-                |edge_set| edge_set.sum(),
+            println!(
+                "mask for type: {} of shape {}",
+                std::any::type_name::<B>(),
+                std::any::type_name::<B::Shape>()
             );
-
-            let local_avgs = <Box<B::Shape> as ZipMap<
+            let values = Box::new(bayes_magn::<B::Shape>(&value_counters));
+            dbg!(&values);
+            let n_examples = n_examples as f64;
+            let edges = <Box<B::Shape> as Map<
+                <u32 as Element<B::Shape>>::Array,
                 <f64 as Element<B::Shape>>::Array,
-                f64,
-                f64,
-            >>::zip_map(&edges, &ns, |edge_set, node_n| {
-                let avg =
-                    <B::Shape as ZipMap<f64, f64, f64>>::zip_map(&edge_set, &values, |a, b| a * b)
-                        .sum()
-                        / node_n;
-                //nan_to_0(avg)
-                avg
+            >>::map(dist_matrix_counters, |row| {
+                <B::Shape as Map<u32, f64>>::map(row, |&count| {
+                    ((count as f64 / n_examples) * 2f64 - 1f64).abs()
+                })
             });
             let mut mask = <B::Shape as Map<(), bool>>::map(&B::Shape::default(), |_| false);
-            let mut cur_mse = B::Shape::single_mse(&edges, &local_avgs, &mask);
-            cur_mse = std::f64::INFINITY;
+            let mut cur_mse = std::f64::INFINITY;
             dbg!(cur_mse);
             let mut is_optima = false;
             while !is_optima {
-                let bit_flip_mses = B::Shape::bit_flip_mses(&edges, &local_avgs, &mask);
+                let bit_flip_mses = B::Shape::bit_flip_mses(&edges, &values, &mask);
                 let (min_index, min_val) = <B::Shape as Min>::min(&bit_flip_mses).unwrap();
                 if min_val < cur_mse {
                     <B::Shape as FlipBool>::flip_bool(&mut mask, min_index);
@@ -1069,7 +1082,7 @@ mod tests {
 pub mod layer {
     use crate::bits::{BitLen, BitMul, HammingDistance};
     use crate::count::{Counters, IncrementCounters, IncrementFracCounters};
-    use crate::image2d::{ExtractPixels, PixelFold2D, PixelMap2D};
+    use crate::image2d::{ExtractPixels, PixelMap2D};
     use bincode::{deserialize_from, serialize_into};
     use rayon::prelude::*;
     use std::collections::HashSet;
@@ -1142,7 +1155,7 @@ pub mod layer {
                             },
                         );
 
-                    let mut partitions = gen_partitions(n_classes);
+                    let partitions = gen_partitions(n_classes);
                     //partitions.sort_by_key(|x| x.len());
                     //partitions.reverse();
                     let partitions = &partitions[0..(C * 32)];
@@ -1267,7 +1280,7 @@ pub mod layer {
                     weights
                 });
             println!("got params");
-            let start = PreciseTime::now();
+            //let start = PreciseTime::now();
             let images: Vec<OutputImage> = images
                 .par_iter()
                 .map(|image| image.map_2d(|x| weights.bit_mul(x)))
@@ -1660,7 +1673,7 @@ pub mod layer {
                     let actual_class: usize = target
                         .iter()
                         .enumerate()
-                        .min_by_key(|(i, (filter, bias))| filter.hamming_distance(image))
+                        .min_by_key(|(_i, (filter, _bias))| filter.hamming_distance(image))
                         //.min_by_key(|(i, (filter, bias))| filter.hamming_distance(image) + bias)
                         .unwrap()
                         .0;
