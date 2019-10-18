@@ -107,7 +107,7 @@ pub mod mask {
                     sign: bool,
                     counters: &mut <u32 as Element<Self::Shape>>::Array,
                 ) {
-                    let word = !(self ^ (Wrapping(0 as $type) - Wrapping(sign as $type)).0);
+                    let word = self ^ (Wrapping(0 as $type) - Wrapping(sign as $type)).0;
                     for b in 0..<$type>::BIT_LEN {
                         counters[b] += ((word >> b) & 1) as u32
                     }
@@ -460,7 +460,7 @@ pub mod mask {
             for i in 0..L {
                 if let Some((sub_index, sub_min)) = T::min(&values[i]) {
                     if let Some((_, min)) = cur_min {
-                        if sub_min < min {
+                        if !(sub_min >= min) {
                             cur_min = Some(((i, sub_index), sub_min));
                         }
                     } else {
@@ -613,14 +613,15 @@ pub mod mask {
         <f64 as Element<S>>::Array: Element<S> + Sum + Default + std::fmt::Debug,
         Box<S>: Map<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>
             + ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>,
+        Box<<<f64 as Element<S>>::Array as Element<S>>::Array>: std::fmt::Debug,
     {
         fn bit_flip_mses(
             edges: &Box<<<f64 as Element<S>>::Array as Element<S>>::Array>,
-            local_avgs: &Box<<f64 as Element<S>>::Array>,
+            values: &Box<<f64 as Element<S>>::Array>,
             mask: &<bool as Element<S>>::Array,
         ) -> <f64 as Element<S>>::Array {
             let n: f64 = S::N as f64;
-            let sum: f64 = local_avgs.sum();
+            let sum: f64 = values.sum();
             let avg = sum / n;
             let bit_flip_local_counts =
                 <Box<S> as Map<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>>::map(
@@ -634,20 +635,23 @@ pub mod mask {
                         )
                     },
                 );
+            //dbg!(&bit_flip_local_counts);
             let bit_flip_sums =
                 <S as Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>>::fold(
                     &bit_flip_local_counts,
                     <f64 as Element<S>>::Array::default(),
                     |a, b| <S as ZipMap<f64, f64, f64>>::zip_map(&a, b, |x, y| x + y),
                 );
+            //dbg!(&bit_flip_local_counts);
             let bit_flip_scales = <S as Map<f64, f64>>::map(&bit_flip_sums, |sum| avg / (sum / n));
+            //dbg!(&bit_flip_scales);
             let bit_flip_local_mses = <Box<S> as ZipMap<
                 <f64 as Element<S>>::Array,
                 f64,
                 <f64 as Element<S>>::Array,
             >>::zip_map(
                 &bit_flip_local_counts,
-                local_avgs,
+                values,
                 |local_counts, local_avg| {
                     <S as ZipMap<f64, f64, f64>>::zip_map(
                         local_counts,
@@ -656,6 +660,7 @@ pub mod mask {
                     )
                 },
             );
+            //dbg!(&bit_flip_local_mses);
             <S as Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>>::fold(
                 &bit_flip_local_mses,
                 <f64 as Element<S>>::Array::default(),
@@ -716,6 +721,7 @@ pub mod mask {
         <<f64 as Element<B::Shape>>::Array as Element<B::Shape>>::Array: Default + std::fmt::Debug,
         bool: Element<B::Shape>,
         (): Element<B::Shape, Array = B::Shape>,
+        <B::Shape as Shape>::Index: std::fmt::Debug,
     {
         fn gen_mask(
             dist_matrix_counters: &Box<
@@ -724,13 +730,8 @@ pub mod mask {
             n_examples: usize,
             value_counters: &Box<[(usize, <u32 as Element<<B as BitShape>::Shape>>::Array); 2]>,
         ) -> B {
-            println!(
-                "mask for type: {} of shape {}",
-                std::any::type_name::<B>(),
-                std::any::type_name::<B::Shape>()
-            );
             let values = Box::new(bayes_magn::<B::Shape>(&value_counters));
-            dbg!(&values);
+            //dbg!(&values);
             let n_examples = n_examples as f64;
             let edges = <Box<B::Shape> as Map<
                 <u32 as Element<B::Shape>>::Array,
@@ -742,19 +743,21 @@ pub mod mask {
             });
             let mut mask = <B::Shape as Map<(), bool>>::map(&B::Shape::default(), |_| false);
             let mut cur_mse = std::f64::INFINITY;
-            dbg!(cur_mse);
             let mut is_optima = false;
+            let mut n_updates = 0;
             while !is_optima {
                 let bit_flip_mses = B::Shape::bit_flip_mses(&edges, &values, &mask);
                 let (min_index, min_val) = <B::Shape as Min>::min(&bit_flip_mses).unwrap();
                 if min_val < cur_mse {
                     <B::Shape as FlipBool>::flip_bool(&mut mask, min_index);
                     cur_mse = min_val;
-                    dbg!(cur_mse);
+                    n_updates += 1;
                 } else {
                     is_optima = true;
                 }
             }
+            dbg!(cur_mse);
+            //dbg!(n_updates);
             <B as Bits>::bitpack(&mask)
         }
     }

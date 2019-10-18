@@ -6,7 +6,8 @@ extern crate rayon;
 use bitnn::count::Counters;
 use bitnn::datasets::mnist;
 use bitnn::mask::{
-    BitShape, Element, GenMask, IncrementCountersMatrix, IncrementFracCounters, Map, MapMut, ZipMap,
+    BitShape, Element, GenMask, IncrementCountersMatrix, IncrementFracCounters,
+    IncrementHammingDistanceMatrix, Map, MapMut, ZipMap,
 };
 use rayon::prelude::*;
 use std::boxed::Box;
@@ -17,13 +18,14 @@ use std::path::Path;
 use std::thread;
 use time::PreciseTime;
 
-const N_EXAMPLES: usize = 60_00;
+const N_EXAMPLES: usize = 60_000;
 const N_CLASSES: usize = 10;
 type InputType = [u32; 25];
 type InputCountersShape = <InputType as BitShape>::Shape;
 type FracCounters = (usize, <u32 as Element<InputCountersShape>>::Array);
 type ValueCountersType = [FracCounters; N_CLASSES];
-type MatrixCountersType = <[FracCounters; 2] as Element<InputCountersShape>>::Array;
+type MatrixCountersType =
+    <<u32 as Element<InputCountersShape>>::Array as Element<InputCountersShape>>::Array;
 
 fn gen_partitions(depth: usize) -> Vec<HashSet<usize>> {
     assert_ne!(depth, 0);
@@ -42,6 +44,10 @@ fn gen_partitions(depth: usize) -> Vec<HashSet<usize>> {
 }
 
 fn main() {
+    println!(
+        "MatrixCountersType: {}",
+        std::any::type_name::<MatrixCountersType>()
+    );
     rayon::ThreadPoolBuilder::new()
         .stack_size(2usize.pow(28))
         //.num_threads(2)
@@ -73,7 +79,7 @@ fn main() {
                     ),
                     |mut acc, (image, class)| {
                         image.increment_frac_counters(&mut acc.0[*class]);
-                        image.increment_counters_matrix(&mut *acc.1, image);
+                        image.increment_hamming_distance_matrix(&mut *acc.1, image);
                         acc
                     },
                 )
@@ -93,24 +99,24 @@ fn main() {
                 },
             );
 
-    let part_index = 50;
+    let part_index = 2;
     let partitions = gen_partitions(10);
     //dbg!(&partitions);
     dbg!(partitions.len());
     dbg!(&partitions[part_index]);
-    let splits: Vec<Box<[(usize, _); 2]>> = partitions
-        .iter()
+    let masks: Vec<_> = partitions
+        .par_iter()
         .map(|partition| {
             let mut split_counters = Box::<[(usize, [[u32; 32]; 25]); 2]>::default();
             for (class, class_counter) in value_counters.iter().enumerate() {
                 split_counters[partition.contains(&class) as usize].elementwise_add(class_counter);
             }
-            split_counters
+            let mask =
+                <InputType as GenMask>::gen_mask(&matrix_counters, examples.len(), &split_counters);
+            println!("{:?}", partition);
+            mnist::display_mnist_u32(&mask);
+            mask
         })
         .collect();
-    dbg!(splits.len());
-    let mask = <InputType as GenMask>::gen_mask(&matrix_counters, &splits[part_index]);
-    mnist::display_mnist_u32(&mask);
-    dbg!(&partitions[part_index]);
-    mnist::display_mnist_u32(&images[1]);
+    dbg!(masks.len());
 }
