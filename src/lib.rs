@@ -429,12 +429,6 @@ pub mod mask {
         }
     }
 
-    //impl<T: Sum> Sum for Box<T> {
-    //    fn sum(&self) -> f64 {
-    //        self.sum()
-    //    }
-    //}
-
     pub trait Min
     where
         Self: Shape + Sized,
@@ -569,6 +563,19 @@ pub mod mask {
         u32: Element<S>,
         f64: Element<S>,
     {
+        <S as ZipMap<u32, u32, f64>>::zip_map(&counters[0].1, &counters[1].1, |&a, &b| {
+            let pab = (a + 1) as f64 / (a + b + 2) as f64;
+            ((pab * 2f64) - 1f64).abs()
+        })
+    }
+
+    fn bayes_magn2<S: Shape + ZipMap<u32, u32, f64>>(
+        counters: &[(usize, <u32 as Element<S>>::Array); 2],
+    ) -> <f64 as Element<S>>::Array
+    where
+        u32: Element<S>,
+        f64: Element<S>,
+    {
         let n = (counters[0].0 + counters[1].0 + 4) as f64;
         let na = (counters[0].0 + 2) as f64;
         let pa = na / n;
@@ -598,12 +605,9 @@ pub mod mask {
     impl<
             S: Shape
                 + Map<f64, f64>
-                + Map<<f64 as Element<S>>::Array, f64>
-                + Map<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>
                 + ZipMap<f64, f64, f64>
                 + ZipMap<bool, f64, f64>
                 + ZipMap<f64, bool, f64>
-                + ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>
                 + Fold<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>
                 + Fold<Box<<f64 as Element<S>>::Array>, <f64 as Element<S>>::Array>,
         > Mse for S

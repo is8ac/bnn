@@ -6,7 +6,7 @@ extern crate rayon;
 use bitnn::count::Counters;
 use bitnn::datasets::mnist;
 use bitnn::mask::{
-    BitShape, Element, GenMask, IncrementCountersMatrix, IncrementFracCounters,
+    BitShape, Bits, Element, GenMask, IncrementCountersMatrix, IncrementFracCounters,
     IncrementHammingDistanceMatrix, Map, MapMut, ZipMap,
 };
 use rayon::prelude::*;
@@ -18,7 +18,7 @@ use std::path::Path;
 use std::thread;
 use time::PreciseTime;
 
-const N_EXAMPLES: usize = 60_000;
+const N_EXAMPLES: usize = 60_00;
 const N_CLASSES: usize = 10;
 type InputType = [u32; 25];
 type InputCountersShape = <InputType as BitShape>::Shape;
@@ -99,24 +99,41 @@ fn main() {
                 },
             );
 
-    let part_index = 2;
-    let partitions = gen_partitions(10);
+    //let partitions = gen_partitions(10);
+    let partitions: Vec<HashSet<usize>> = (0..N_CLASSES)
+        .map(|c| {
+            let mut set = HashSet::new();
+            set.insert(c);
+            set
+        })
+        .collect();
     //dbg!(&partitions);
     dbg!(partitions.len());
-    dbg!(&partitions[part_index]);
-    let masks: Vec<_> = partitions
+    let weights: Vec<_> = partitions
         .par_iter()
         .map(|partition| {
             let mut split_counters = Box::<[(usize, [[u32; 32]; 25]); 2]>::default();
             for (class, class_counter) in value_counters.iter().enumerate() {
                 split_counters[partition.contains(&class) as usize].elementwise_add(class_counter);
             }
-            let mask =
+            let sign_bools = <<InputType as BitShape>::Shape as ZipMap<u32, u32, bool>>::zip_map(
+                &split_counters[0].1,
+                &split_counters[1].1,
+                |&a, &b| ((a + 1) as f64 / (a + b + 2) as f64) > 0.5,
+            );
+            let sign_bits = <InputType as Bits>::bitpack(&sign_bools);
+            let mask_bits =
                 <InputType as GenMask>::gen_mask(&matrix_counters, examples.len(), &split_counters);
             println!("{:?}", partition);
-            mnist::display_mnist_u32(&mask);
-            mask
+            mnist::display_mnist_u32(&sign_bits);
+            mnist::display_mnist_u32(&mask_bits);
+            <[(); 25] as ZipMap<u32, u32, (u32, u32)>>::zip_map(
+                &sign_bits,
+                &mask_bits,
+                |&sign_word, &mask_word| (sign_word, mask_word),
+            )
         })
         .collect();
-    dbg!(masks.len());
+    dbg!(weights.len());
+    //dbg!(weights);
 }
