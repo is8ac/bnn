@@ -11,47 +11,14 @@ extern crate time;
 pub mod bits;
 pub mod count;
 pub mod datasets;
+pub mod shape;
 
 pub mod mask {
     use crate::bits::{BitLen, GetBit};
+    use crate::shape::{Array, Element, Fold, Map, MapMut, Shape, ZipMap};
     use std::boxed::Box;
     use std::num::Wrapping;
-
-    pub trait Shape {
-        const N: usize;
-        type Index;
-    }
-
-    impl Shape for () {
-        const N: usize = 1;
-        type Index = ();
-    }
-
-    impl<T: Shape, const L: usize> Shape for [T; L] {
-        const N: usize = T::N * L;
-        type Index = (usize, T::Index);
-    }
-
-    impl<T: Shape> Shape for Box<T> {
-        const N: usize = T::N;
-        type Index = T::Index;
-    }
-
-    pub trait Element<S: Shape> {
-        type Array;
-    }
-
-    impl<T: Sized> Element<()> for T {
-        type Array = T;
-    }
-
-    impl<T: Element<S>, S: Shape, const L: usize> Element<[S; L]> for T {
-        type Array = [T::Array; L];
-    }
-
-    impl<T: Element<S>, S: Shape> Element<Box<S>> for T {
-        type Array = Box<T::Array>;
-    }
+    use std::ops::AddAssign;
 
     pub trait BitShape
     where
@@ -224,204 +191,25 @@ pub mod mask {
         }
     }
 
-    pub trait MapMut<I: Element<Self>, O: Element<Self>>
-    where
-        Self: Shape + Sized,
-    {
-        fn map_mut<F: Fn(&mut O, &I)>(
-            target: &mut <O as Element<Self>>::Array,
-            input: &<I as Element<Self>>::Array,
-            map_fn: F,
-        );
-    }
-
-    impl<I, O> MapMut<I, O> for () {
-        fn map_mut<F: Fn(&mut O, &I)>(target: &mut O, input: &I, map_fn: F) {
-            map_fn(target, input)
-        }
-    }
-
-    impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>, const L: usize> MapMut<I, O>
-        for [S; L]
-    {
-        fn map_mut<F: Fn(&mut O, &I)>(
-            target: &mut <O as Element<Self>>::Array,
-            input: &[<I as Element<S>>::Array; L],
-            map_fn: F,
-        ) {
-            for i in 0..L {
-                <S as MapMut<I, O>>::map_mut(&mut target[i], &input[i], &map_fn);
-            }
-        }
-    }
-
-    impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>> MapMut<I, O> for Box<S> {
-        fn map_mut<F: Fn(&mut O, &I)>(
-            target: &mut <O as Element<Self>>::Array,
-            input: &<I as Element<Self>>::Array,
-            map_fn: F,
-        ) {
-            <S as MapMut<I, O>>::map_mut(target, &input, &map_fn);
-        }
-    }
-
-    pub trait Map<I: Element<Self>, O: Element<Self>>
-    where
-        Self: Shape + Sized,
-    {
-        fn map<F: Fn(&I) -> O>(
-            input: &<I as Element<Self>>::Array,
-            map_fn: F,
-        ) -> <O as Element<Self>>::Array;
-    }
-
-    impl<S: MapMut<I, O> + Shape, I: Element<S>, O: Element<S>> Map<I, O> for S
-    where
-        <O as Element<S>>::Array: Default,
-    {
-        fn map<F: Fn(&I) -> O>(
-            input: &<I as Element<S>>::Array,
-            map_fn: F,
-        ) -> <O as Element<S>>::Array {
-            let mut target = <O as Element<S>>::Array::default();
-            S::map_mut(&mut target, input, |t, i| *t = map_fn(i));
-            target
-        }
-    }
-
-    //impl<S: MapMut<I, O> + Shape, I: Element<S>, O: Element<S>> Map<I, O> for Box<S>
-    //where
-    //    Box<<O as Element<S>>::Array>: Default,
-    //{
-    //    fn map<F: Fn(&I) -> O>(
-    //        input: &<I as Element<S>>::Array,
-    //        map_fn: F,
-    //    ) -> Box<<O as Element<S>>::Array> {
-    //        let mut target = Box::<<O as Element<S>>::Array>::default();
-    //        S::map_mut(&mut target, input, |t, i| *t = map_fn(i));
-    //        target
-    //    }
-    //}
-
-    pub trait Fold<B, I: Element<Self>>
-    where
-        Self: Shape + Sized,
-    {
-        fn fold<F: Fn(B, &I) -> B>(input: &<I as Element<Self>>::Array, acc: B, fold_fn: F) -> B;
-    }
-
-    impl<B, I: Element<(), Array = I> + Sized> Fold<B, I> for () {
-        fn fold<F: Fn(B, &I) -> B>(input: &I, acc: B, fold_fn: F) -> B {
-            fold_fn(acc, input)
-        }
-    }
-
-    impl<S: Shape + Fold<B, I>, B, I: Element<S> + Sized, const L: usize> Fold<B, I> for [S; L] {
-        fn fold<F: Fn(B, &I) -> B>(
-            input: &[<I as Element<S>>::Array; L],
-            mut acc: B,
-            fold_fn: F,
-        ) -> B {
-            for i in 0..L {
-                acc = <S as Fold<B, I>>::fold(&input[i], acc, &fold_fn);
-            }
-            acc
-        }
-    }
-
-    pub trait ZipMapMut<A: Element<Self>, B: Element<Self>, O: Element<Self>>
-    where
-        Self: Shape + Sized,
-    {
-        fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
-            target: &mut <O as Element<Self>>::Array,
-            a: &<A as Element<Self>>::Array,
-            b: &<B as Element<Self>>::Array,
-            map_fn: F,
-        );
-    }
-
-    impl<A: Element<(), Array = A> + Copy, B: Element<(), Array = B> + Copy, O> ZipMapMut<A, B, O>
-        for ()
-    {
-        fn zip_map_mut<F: Fn(&mut O, &A, &B)>(target: &mut O, a: &A, b: &B, map_fn: F) {
-            map_fn(target, a, b)
-        }
-    }
-
-    impl<
-            S: Shape + ZipMapMut<A, B, O>,
-            A: Element<S>,
-            B: Element<S>,
-            O: Element<S>,
-            const L: usize,
-        > ZipMapMut<A, B, O> for [S; L]
-    {
-        fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
-            target: &mut <O as Element<Self>>::Array,
-            a: &<A as Element<[S; L]>>::Array,
-            b: &<B as Element<[S; L]>>::Array,
-            map_fn: F,
-        ) {
-            for i in 0..L {
-                S::zip_map_mut(&mut target[i], &a[i], &b[i], &map_fn);
-            }
-        }
-    }
-    impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>>
-        ZipMapMut<A, B, O> for Box<S>
-    {
-        fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
-            target: &mut <O as Element<Self>>::Array,
-            a: &<A as Element<Self>>::Array,
-            b: &<B as Element<Self>>::Array,
-            map_fn: F,
-        ) {
-            S::zip_map_mut(target, &a, &b, &map_fn);
-        }
-    }
-
-    pub trait ZipMap<A: Element<Self>, B: Element<Self>, O: Element<Self>>
-    where
-        Self: Shape + Sized,
-    {
-        fn zip_map<F: Fn(&A, &B) -> O>(
-            a: &<A as Element<Self>>::Array,
-            b: &<B as Element<Self>>::Array,
-            map_fn: F,
-        ) -> <O as Element<Self>>::Array;
-    }
-
-    impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>> ZipMap<A, B, O>
-        for S
-    where
-        <O as Element<S>>::Array: Default,
-    {
-        fn zip_map<F: Fn(&A, &B) -> O>(
-            a: &<A as Element<S>>::Array,
-            b: &<B as Element<S>>::Array,
-            map_fn: F,
-        ) -> <O as Element<S>>::Array {
-            let mut target = <<O as Element<S>>::Array>::default();
-            S::zip_map_mut(&mut target, &a, &b, |t, x, y| *t = map_fn(x, y));
-            target
-        }
-    }
-
     // f64 values
-    pub trait Sum {
-        fn sum(&self) -> f64;
+    pub trait Sum<T> {
+        fn sum(&self) -> T;
     }
 
-    impl Sum for f64 {
+    impl Sum<f64> for f64 {
         fn sum(&self) -> f64 {
             *self
         }
     }
+    impl Sum<u32> for u32 {
+        fn sum(&self) -> u32 {
+            *self
+        }
+    }
 
-    impl<T: Sum, const L: usize> Sum for [T; L] {
-        fn sum(&self) -> f64 {
-            let mut sum = 0f64;
+    impl<T: Sum<E>, E: AddAssign + Default, const L: usize> Sum<E> for [T; L] {
+        fn sum(&self) -> E {
+            let mut sum = E::default();
             for i in 0..L {
                 sum += self[i].sum();
             }
@@ -614,7 +402,7 @@ pub mod mask {
     where
         bool: Element<S>,
         f64: Element<S>,
-        <f64 as Element<S>>::Array: Element<S> + Sum + Default + std::fmt::Debug,
+        <f64 as Element<S>>::Array: Element<S> + Sum<f64> + Default + std::fmt::Debug,
         Box<S>: Map<<f64 as Element<S>>::Array, <f64 as Element<S>>::Array>
             + ZipMap<<f64 as Element<S>>::Array, f64, <f64 as Element<S>>::Array>,
         Box<<<f64 as Element<S>>::Array as Element<S>>::Array>: std::fmt::Debug,
@@ -680,7 +468,7 @@ pub mod mask {
     where
         bool: Element<S>,
         f64: Element<S>,
-        <f64 as Element<S>>::Array: Sum,
+        <f64 as Element<S>>::Array: Sum<f64>,
     {
         <S as ZipMap<f64, bool, f64>>::zip_map(
             &edge_set,
@@ -721,7 +509,8 @@ pub mod mask {
         u32: Element<B::Shape> + Element<<B::Shape as Element<B::Shape>>::Array>,
         f64: Element<B::Shape> + Element<<B::Shape as Element<B::Shape>>::Array>,
         <u32 as Element<B::Shape>>::Array: Element<<B as BitShape>::Shape>,
-        <f64 as Element<B::Shape>>::Array: Element<<B as BitShape>::Shape> + Sum + std::fmt::Debug,
+        <f64 as Element<B::Shape>>::Array:
+            Element<<B as BitShape>::Shape> + Sum<f64> + std::fmt::Debug,
         <<f64 as Element<B::Shape>>::Array as Element<B::Shape>>::Array: Default + std::fmt::Debug,
         bool: Element<B::Shape>,
         (): Element<B::Shape, Array = B::Shape>,
@@ -745,7 +534,9 @@ pub mod mask {
                     ((count as f64 / n_examples) * 2f64 - 1f64).abs()
                 })
             });
-            let mut mask = <B::Shape as Map<(), bool>>::map(&B::Shape::default(), |_| false);
+            let mut mask = <B::Shape as Map<(), bool>>::map(&B::Shape::default(), |_| true);
+            // false: 30.5%
+            // true:  33.6%
             let mut cur_mse = std::f64::INFINITY;
             let mut is_optima = false;
             let mut n_updates = 0;
@@ -761,7 +552,7 @@ pub mod mask {
                 }
             }
             dbg!(cur_mse);
-            //dbg!(n_updates);
+            dbg!(n_updates);
             <B as Bits>::bitpack(&mask)
         }
     }
