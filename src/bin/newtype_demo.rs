@@ -21,67 +21,50 @@ where
     }
 }
 
-trait BitArray<W: BitWord + Element<Self>>
+trait BitArray
 where
-    Self: Shape + Sized,
-    u32: Element<W::BitShape>,
-    bool: Element<W::BitShape>,
-    <bool as Element<W::BitShape>>::Array: Element<Self>,
-    <u32 as Element<W::BitShape>>::Array: Element<Self>,
+    Self::BitShape: Shape,
+    u32: Element<Self::BitShape>,
+    bool: Element<Self::BitShape>,
 {
-    fn bitpack(
-        bools: &<<bool as Element<W::BitShape>>::Array as Element<Self>>::Array,
-    ) -> <W as Element<Self>>::Array;
-    fn array_increment_counters(
-        &self,
-        words: &<W as Element<Self>>::Array,
-        counters: &mut <<u32 as Element<W::BitShape>>::Array as Element<Self>>::Array,
-    );
+    type BitShape;
+    fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self;
+    fn array_increment_counters(&self, counters: &mut <u32 as Element<Self::BitShape>>::Array);
     fn array_flipped_increment_counters(
         &self,
         sign: bool,
-        words: &<W as Element<Self>>::Array,
-        counters: &mut <<u32 as Element<W::BitShape>>::Array as Element<Self>>::Array,
+        counters: &mut <u32 as Element<Self::BitShape>>::Array,
     );
 }
 
-impl<
-        S: Shape
-            + Map<<bool as Element<W::BitShape>>::Array, W>
-            + MapMut<W, <u32 as Element<W::BitShape>>::Array>
-            + ZipFold<u32, W, W>,
-        W: BitWord + Element<S> + Copy,
-    > BitArray<W> for S
+impl<T: BitArray, const L: usize> BitArray for [T; L]
 where
-    Self: Shape + Sized,
-    u32: Element<W::BitShape>,
-    bool: Element<W::BitShape>,
-    <bool as Element<W::BitShape>>::Array: Element<Self>,
-    <u32 as Element<W::BitShape>>::Array: Element<Self>,
+    [T; L]: Default,
+    T::BitShape: Shape,
+    u32: Element<T::BitShape>,
+    bool: Element<T::BitShape>,
 {
-    fn bitpack(
-        bools: &<<bool as Element<W::BitShape>>::Array as Element<Self>>::Array,
-    ) -> <W as Element<Self>>::Array {
-        S::map(bools, |word_bools| W::bitpack(word_bools))
+    type BitShape = [T::BitShape; L];
+    fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self {
+        let mut target = Self::default();
+        for i in 0..L {
+            target[i] = T::bitpack(&bools[i]);
+        }
+        target
     }
-    fn array_increment_counters(
-        &self,
-        words: &<W as Element<Self>>::Array,
-        counters: &mut <<u32 as Element<W::BitShape>>::Array as Element<Self>>::Array,
-    ) {
-        S::map_mut(counters, words, |word_counters, word| {
-            word.increment_counters(word_counters)
-        })
+    fn array_increment_counters(&self, counters: &mut <u32 as Element<Self::BitShape>>::Array) {
+        for i in 0..L {
+            self[i].array_increment_counters(&mut counters[i]);
+        }
     }
     fn array_flipped_increment_counters(
         &self,
         sign: bool,
-        words: &<W as Element<Self>>::Array,
-        counters: &mut <<u32 as Element<W::BitShape>>::Array as Element<Self>>::Array,
+        counters: &mut <u32 as Element<Self::BitShape>>::Array,
     ) {
-        S::map_mut(counters, words, |word_counters, word| {
-            word.flipped_increment_counters(sign, word_counters)
-        })
+        for i in 0..L {
+            self[i].array_flipped_increment_counters(sign, &mut counters[i]);
+        }
     }
 }
 
