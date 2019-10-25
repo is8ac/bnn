@@ -3,25 +3,21 @@ extern crate bitnn;
 extern crate num_cpus;
 extern crate rayon;
 
+use bitnn::bits::{b32, BitArray, IncrementFracCounters, IncrementHammingDistanceMatrix};
 use bitnn::count::Counters;
 use bitnn::datasets::mnist;
-use bitnn::mask::{
-    BitShape, Bits, Element, GenMask, IncrementCountersMatrix, IncrementFracCounters,
-    IncrementHammingDistanceMatrix, Map, MapMut, ZipMap,
-};
+use bitnn::mask::{GenMask, Sum};
+use bitnn::shape::{Element, ZipMap};
 use rayon::prelude::*;
 use std::boxed::Box;
 use std::collections::HashSet;
-use std::fs;
 use std::iter::Iterator;
 use std::path::Path;
-use std::thread;
-use time::PreciseTime;
 
 const N_EXAMPLES: usize = 60_00;
 const N_CLASSES: usize = 10;
-type InputType = [u32; 25];
-type InputCountersShape = <InputType as BitShape>::Shape;
+type InputType = [b32; 25];
+type InputCountersShape = <InputType as BitArray>::BitShape;
 type FracCounters = (usize, <u32 as Element<InputCountersShape>>::Array);
 type ValueCountersType = [FracCounters; N_CLASSES];
 type MatrixCountersType =
@@ -116,18 +112,23 @@ fn main() {
             for (class, class_counter) in value_counters.iter().enumerate() {
                 split_counters[partition.contains(&class) as usize].elementwise_add(class_counter);
             }
-            let sign_bools = <<InputType as BitShape>::Shape as ZipMap<u32, u32, bool>>::zip_map(
+            let an = (split_counters[0].0 + 1) as f64;
+            let bn = (split_counters[1].0 + 1) as f64;
+            let sign_bools = <<InputType as BitArray>::BitShape as ZipMap<u32, u32, bool>>::zip_map(
                 &split_counters[0].1,
                 &split_counters[1].1,
-                |&a, &b| ((a + 1) as f64 / (a + b + 2) as f64) > 0.5,
+                |&a, &b| {
+                    //((a + 1) as f64 / (a + b + 2) as f64) > 0.5
+                    ((a + 1) as f64 / an) > ((b + 1) as f64 / bn)
+                },
             );
-            let sign_bits = <InputType as Bits>::bitpack(&sign_bools);
+            let sign_bits = InputType::bitpack(&sign_bools);
             let mask_bits =
                 <InputType as GenMask>::gen_mask(&matrix_counters, examples.len(), &split_counters);
             println!("{:?}", partition);
-            mnist::display_mnist_u32(&sign_bits);
-            mnist::display_mnist_u32(&mask_bits);
-            <[(); 25] as ZipMap<u32, u32, (u32, u32)>>::zip_map(
+            mnist::display_mnist_b32(&sign_bits);
+            mnist::display_mnist_b32(&mask_bits);
+            <[(); 25] as ZipMap<b32, b32, (b32, b32)>>::zip_map(
                 &sign_bits,
                 &mask_bits,
                 |&sign_word, &mask_word| (sign_word, mask_word),
@@ -136,4 +137,32 @@ fn main() {
         .collect();
     dbg!(weights.len());
     //dbg!(weights);
+    let n_correct: u64 = examples
+        .par_iter()
+        .map(|(image, class)| {
+            let activations: Vec<_> = weights
+                .iter()
+                .map(|class_weights| {
+                    <[(); 25] as ZipMap<b32, (b32, b32), u32>>::zip_map(
+                        &image,
+                        &class_weights,
+                        |&input_word, &(sign_word, mask_word)| {
+                            ((input_word ^ sign_word) & mask_word).count_ones()
+                        },
+                    )
+                    .sum()
+                })
+                .collect();
+            dbg!(class);
+            dbg!(&activations);
+            let max_act_index = activations
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, x)| *x)
+                .unwrap()
+                .0;
+            (max_act_index == *class) as u64
+        })
+        .sum();
+    println!("acc: {}%", (n_correct as f64 / N_EXAMPLES as f64) * 100f64);
 }

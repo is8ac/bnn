@@ -1,4 +1,5 @@
 pub mod mnist {
+    use crate::bits::b32;
     use std::fs::File;
     use std::io::prelude::*;
     use std::path::Path;
@@ -16,7 +17,7 @@ pub mod mnist {
         }
         labels
     }
-    pub fn load_images_bitpacked_u32(path: &Path, size: usize) -> Vec<[u32; 25]> {
+    pub fn load_images_bitpacked_u32(path: &Path, size: usize) -> Vec<[b32; 25]> {
         let path = Path::new(path);
         let mut file = File::open(&path).expect("can't open images");
         let mut header: [u8; 16] = [0; 16];
@@ -24,26 +25,26 @@ pub mod mnist {
 
         let mut images_bytes: [u8; 784] = [0; 784];
 
-        let mut images: Vec<[u32; 25]> = Vec::new();
+        let mut images: Vec<[b32; 25]> = Vec::new();
         for _ in 0..size {
             file.read_exact(&mut images_bytes)
                 .expect("can't read images");
-            let mut image_words: [u32; 25] = [0; 25];
+            let mut image_words = <[b32; 25]>::default();
             for (p, &pixel) in images_bytes.iter().enumerate() {
                 let word_index = p / 32;
-                image_words[word_index] |= ((pixel > 128) as u32) << (p % 32);
+                image_words[word_index] |= b32(((pixel > 128) as u32) << (p % 32));
             }
             images.push(image_words);
         }
         images
     }
 
-    pub fn display_mnist_u32(bits: &[u32; 25]) {
+    pub fn display_mnist_b32(bits: &[b32; 25]) {
         let bits: Vec<char> = bits
             .iter()
             .rev()
             .map(|word| {
-                let chars: Vec<char> = format!("{:032b}", word).chars().collect();
+                let chars: Vec<char> = format!("{}", word).chars().collect();
                 chars
             })
             .flatten()

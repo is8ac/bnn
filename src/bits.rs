@@ -1,140 +1,47 @@
-pub trait HammingDistance {
-    fn hamming_distance(&self, other: &Self) -> u32;
-}
+use crate::shape::{Element, Shape};
+use std::fmt;
+use std::num::Wrapping;
+use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 
-impl<T: HammingDistance, const L: usize> HammingDistance for [T; L] {
-    fn hamming_distance(&self, other: &[T; L]) -> u32 {
-        let mut distance = 0u32;
-        for i in 0..L {
-            distance += self[i].hamming_distance(&other[i]);
-        }
-        distance
-    }
-}
-
-//impl<A: HammingDistance, B: HammingDistance> HammingDistance for (A, B) {
-//    fn hamming_distance(&self, other: &(A, B)) -> u32 {
-//        self.0.hamming_distance(&other.0) + self.1.hamming_distance(&other.1)
-//    }
-//}
-
-pub trait BitOr {
-    fn bit_or(&self, other: &Self) -> Self;
-}
-
-impl<T: BitOr, const L: usize> BitOr for [T; L]
+pub trait IncrementHammingDistanceMatrix<T: BitArray>
 where
+    Self: BitArray,
+    bool: Element<Self::BitShape>,
+    u32: Element<Self::BitShape>,
+    <u32 as Element<Self::BitShape>>::Array: Element<T::BitShape>,
+    bool: Element<T::BitShape>,
+    u32: Element<T::BitShape>,
+{
+    fn increment_hamming_distance_matrix(
+        &self,
+        counters_matrix: &mut <<u32 as Element<Self::BitShape>>::Array as Element<
+            T::BitShape,
+        >>::Array,
+        target: &T,
+    );
+}
+
+impl<I: IncrementHammingDistanceMatrix<T> + BitArray, T: BitArray, const L: usize>
+    IncrementHammingDistanceMatrix<[T; L]> for I
+where
+    bool: Element<T::BitShape>,
+    u32: Element<T::BitShape>,
+    bool: Element<I::BitShape>,
+    u32: Element<I::BitShape>,
+    <u32 as Element<Self::BitShape>>::Array: Element<T::BitShape>,
     [T; L]: Default,
 {
-    fn bit_or(&self, other: &Self) -> Self {
-        let mut target = <[T; L]>::default();
-        for i in 0..L {
-            target[i] = self[i].bit_or(&other[i]);
+    fn increment_hamming_distance_matrix(
+        &self,
+        counters_matrix: &mut [<<u32 as Element<Self::BitShape>>::Array as Element<T::BitShape>>::Array;
+                 L],
+        target: &[T; L],
+    ) {
+        for w in 0..L {
+            self.increment_hamming_distance_matrix(&mut counters_matrix[w], &target[w]);
         }
-        target
     }
 }
-
-pub trait BitLen: Sized {
-    const BIT_LEN: usize;
-}
-
-impl<A: BitLen, B: BitLen> BitLen for (A, B) {
-    const BIT_LEN: usize = A::BIT_LEN + B::BIT_LEN;
-}
-
-macro_rules! array_bit_len {
-    ($len:expr) => {
-        impl<T: BitLen> BitLen for [T; $len] {
-            const BIT_LEN: usize = $len * T::BIT_LEN;
-        }
-    };
-}
-
-array_bit_len!(1);
-array_bit_len!(2);
-array_bit_len!(3);
-array_bit_len!(4);
-array_bit_len!(5);
-array_bit_len!(6);
-array_bit_len!(7);
-array_bit_len!(8);
-array_bit_len!(13);
-array_bit_len!(16);
-array_bit_len!(25);
-array_bit_len!(32);
-
-pub trait FlipBit {
-    fn flip_bit(&mut self, b: usize);
-}
-
-impl<T: BitLen + FlipBit, const L: usize> FlipBit for [T; L] {
-    fn flip_bit(&mut self, index: usize) {
-        self[index / T::BIT_LEN].flip_bit(index % T::BIT_LEN);
-    }
-}
-
-pub trait GetBit {
-    fn bit(&self, i: usize) -> bool;
-}
-
-impl<T: GetBit + BitLen, const L: usize> GetBit for [T; L] {
-    fn bit(&self, i: usize) -> bool {
-        self[i / T::BIT_LEN].bit(i % T::BIT_LEN)
-    }
-}
-
-macro_rules! impl_for_uint {
-    ($type:ty, $len:expr) => {
-        impl BitLen for $type {
-            const BIT_LEN: usize = $len;
-        }
-        impl FlipBit for $type {
-            fn flip_bit(&mut self, index: usize) {
-                *self ^= 1 << index
-            }
-        }
-        impl BitOr for $type {
-            fn bit_or(&self, other: &Self) -> $type {
-                self | other
-            }
-        }
-        impl GetBit for $type {
-            #[inline(always)]
-            fn bit(&self, i: usize) -> bool {
-                ((self >> i) & 1) == 1
-            }
-        }
-        impl<I: HammingDistance + BitLen> BitMul<I, $type> for [(I, u32); $len] {
-            fn bit_mul(&self, input: &I) -> $type {
-                let mut target = <$type>::default();
-                for i in 0..$len {
-                    target |= ((self[i].0.hamming_distance(input) < self[i].1) as $type) << i;
-                }
-                target
-            }
-        }
-        //impl<I: HammingDistance + BitLen> BitMul<I, $type> for [I; $len] {
-        //    fn bit_mul(&self, input: &I) -> $type {
-        //        let mut target = <$type>::default();
-        //        for i in 0..$len {
-        //            target |= ((self[i].hamming_distance(input) < (I::BIT_LEN as u32 / 2)) as $type) << i;
-        //        }
-        //        target
-        //    }
-        //}
-        impl HammingDistance for $type {
-            #[inline(always)]
-            fn hamming_distance(&self, other: &$type) -> u32 {
-                (self ^ other).count_ones()
-            }
-        }
-    };
-}
-
-impl_for_uint!(u32, 32);
-impl_for_uint!(u16, 16);
-impl_for_uint!(u8, 8);
 
 pub trait BitMul<I, O> {
     fn bit_mul(&self, input: &I) -> O;
@@ -152,3 +59,227 @@ where
         target
     }
 }
+
+// A collection of bits which has a shape.
+pub trait BitArray
+where
+    Self::BitShape: Shape,
+    u32: Element<Self::BitShape>,
+    bool: Element<Self::BitShape>,
+{
+    type BitShape;
+    fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self;
+    fn increment_counters(&self, counters: &mut <u32 as Element<Self::BitShape>>::Array);
+    fn flipped_increment_counters(
+        &self,
+        sign: bool,
+        counters: &mut <u32 as Element<Self::BitShape>>::Array,
+    );
+}
+
+impl<T: BitArray, const L: usize> BitArray for [T; L]
+where
+    [T; L]: Default,
+    T::BitShape: Shape,
+    u32: Element<T::BitShape>,
+    bool: Element<T::BitShape>,
+{
+    type BitShape = [T::BitShape; L];
+    fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self {
+        let mut target = Self::default();
+        for i in 0..L {
+            target[i] = T::bitpack(&bools[i]);
+        }
+        target
+    }
+    fn increment_counters(&self, counters: &mut <u32 as Element<Self::BitShape>>::Array) {
+        for i in 0..L {
+            self[i].increment_counters(&mut counters[i]);
+        }
+    }
+    fn flipped_increment_counters(
+        &self,
+        sign: bool,
+        counters: &mut <u32 as Element<Self::BitShape>>::Array,
+    ) {
+        for i in 0..L {
+            self[i].flipped_increment_counters(sign, &mut counters[i]);
+        }
+    }
+}
+pub trait IncrementFracCounters
+where
+    Self: BitArray,
+    bool: Element<Self::BitShape>,
+    u32: Element<Self::BitShape>,
+{
+    fn increment_frac_counters(
+        &self,
+        counters: &mut (usize, <u32 as Element<Self::BitShape>>::Array),
+    );
+}
+
+impl<B: BitArray> IncrementFracCounters for B
+where
+    bool: Element<Self::BitShape>,
+    u32: Element<Self::BitShape>,
+{
+    fn increment_frac_counters(
+        &self,
+        counters: &mut (usize, <u32 as Element<B::BitShape>>::Array),
+    ) {
+        counters.0 += 1;
+        self.increment_counters(&mut counters.1);
+    }
+}
+
+// A collection of bits which does not need to have a shape
+pub trait HammingDistance {
+    fn hamming_distance(&self, rhs: &Self) -> u32;
+}
+
+impl<T: HammingDistance, const L: usize> HammingDistance for [T; L] {
+    fn hamming_distance(&self, rhs: &Self) -> u32 {
+        let mut sum = 0u32;
+        for i in 0..L {
+            sum += self[i].hamming_distance(&rhs[i]);
+        }
+        sum
+    }
+}
+
+pub trait BitWord {
+    const BIT_LEN: usize;
+    fn splat(sign: bool) -> Self;
+    fn bit(&self, i: usize) -> bool;
+}
+
+macro_rules! for_uints {
+    ($b_type:ident, $u_type:ty, $len:expr, $format_string:expr) => {
+        #[allow(non_camel_case_types)]
+        #[derive(Copy, Clone)]
+        pub struct $b_type(pub $u_type);
+
+        impl $b_type {
+            pub fn count_ones(self) -> u32 {
+                self.0.count_ones()
+            }
+        }
+
+        impl BitWord for $b_type {
+            const BIT_LEN: usize = $len;
+            fn splat(sign: bool) -> Self {
+                $b_type((Wrapping(0 as $u_type) - Wrapping(sign as $u_type)).0)
+            }
+            fn bit(&self, i: usize) -> bool {
+                ((self.0 >> i) & 1) == 1
+            }
+        }
+        impl BitArray for $b_type {
+            type BitShape = [(); $len];
+            fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self {
+                let mut bits = <$u_type>::default();
+                for b in 0..$len {
+                    bits |= (bools[b] as $u_type) << b;
+                }
+                $b_type(bits)
+            }
+            fn increment_counters(&self, counters: &mut [u32; $len]) {
+                for b in 0..$len {
+                    counters[b] += ((self.0 >> b) & 1) as u32
+                }
+            }
+            fn flipped_increment_counters(
+                &self,
+                sign: bool,
+                counters: &mut <u32 as Element<Self::BitShape>>::Array,
+            ) {
+                let word = *self ^ Self::splat(sign);
+                word.increment_counters(counters);
+            }
+        }
+        impl HammingDistance for $b_type {
+            fn hamming_distance(&self, rhs: &$b_type) -> u32 {
+                (self.0 ^ rhs.0).count_ones()
+            }
+        }
+        impl<I: HammingDistance> BitMul<I, $b_type> for [(I, u32); $len] {
+            fn bit_mul(&self, input: &I) -> $b_type {
+                let mut target = $b_type(0);
+                for b in 0..$len {
+                    target |=
+                        $b_type(((self[b].0.hamming_distance(input) < self[b].1) as $u_type) << b);
+                }
+                target
+            }
+        }
+        impl Default for $b_type {
+            fn default() -> Self {
+                $b_type(0)
+            }
+        }
+        impl BitXor for $b_type {
+            type Output = Self;
+            fn bitxor(self, rhs: Self) -> Self::Output {
+                $b_type(self.0 ^ rhs.0)
+            }
+        }
+        impl BitXorAssign for $b_type {
+            fn bitxor_assign(&mut self, rhs: Self) {
+                self.0 ^= rhs.0;
+            }
+        }
+        impl BitOr for $b_type {
+            type Output = Self;
+            fn bitor(self, rhs: Self) -> Self {
+                $b_type(self.0 | rhs.0)
+            }
+        }
+        impl BitOrAssign for $b_type {
+            fn bitor_assign(&mut self, rhs: Self) {
+                self.0 |= rhs.0;
+            }
+        }
+        impl BitAnd for $b_type {
+            type Output = Self;
+            fn bitand(self, rhs: Self) -> Self::Output {
+                $b_type(self.0 & rhs.0)
+            }
+        }
+        impl BitAndAssign for $b_type {
+            fn bitand_assign(&mut self, rhs: Self) {
+                self.0 &= rhs.0;
+            }
+        }
+        impl fmt::Display for $b_type {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, $format_string, self.0)
+            }
+        }
+
+        impl fmt::Debug for $b_type {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, $format_string, self.0)
+            }
+        }
+        impl<I: BitArray> IncrementHammingDistanceMatrix<$b_type> for I
+        where
+            bool: Element<I::BitShape>,
+            u32: Element<I::BitShape>,
+        {
+            fn increment_hamming_distance_matrix(
+                &self,
+                counters_matrix: &mut [<u32 as Element<Self::BitShape>>::Array; <$b_type>::BIT_LEN],
+                target: &$b_type,
+            ) {
+                for i in 0..<$b_type>::BIT_LEN {
+                    self.flipped_increment_counters(target.bit(i), &mut counters_matrix[i]);
+                }
+            }
+        }
+    };
+}
+
+for_uints!(b8, u8, 8, "{:08b}");
+for_uints!(b16, u16, 16, "{:016b}");
+for_uints!(b32, u32, 32, "{:032b}");
