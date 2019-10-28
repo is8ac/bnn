@@ -1,8 +1,11 @@
+/// the bits mod contains traits to manipulate words of bits
+/// and arrays of bits.
 use crate::shape::{Element, Shape};
 use std::fmt;
 use std::num::Wrapping;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 
+/// Increment the elements of a matrix of counters to count the number of times that the bits are different.
 pub trait IncrementHammingDistanceMatrix<T: BitArray>
 where
     Self: BitArray,
@@ -60,16 +63,22 @@ where
     }
 }
 
-// A collection of bits which has a shape.
+/// A collection of bits which has a shape.
 pub trait BitArray
 where
     Self::BitShape: Shape,
     u32: Element<Self::BitShape>,
     bool: Element<Self::BitShape>,
 {
+    /// The shape of the bits.
+    /// Note that this is not the shape of the array with word as elements,
+    /// but rather the shape of the array with bits as elements.
     type BitShape;
+    /// bitpacks some bools into a `Self` of the same BitShape.
     fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self;
+    /// For each bit that is set, increment the corresponding counter.
     fn increment_counters(&self, counters: &mut <u32 as Element<Self::BitShape>>::Array);
+    /// For each bit that is the value of `sign`, increment the corresponding counter.
     fn flipped_increment_counters(
         &self,
         sign: bool,
@@ -133,8 +142,9 @@ where
     }
 }
 
-// A collection of bits which does not need to have a shape
+/// Hamming distance betwene two collections of bits of the same shape.
 pub trait HammingDistance {
+    /// Returns the number of bits that are different
     fn hamming_distance(&self, rhs: &Self) -> u32;
 }
 
@@ -148,9 +158,13 @@ impl<T: HammingDistance, const L: usize> HammingDistance for [T; L] {
     }
 }
 
+/// A single word of bits.
 pub trait BitWord {
+    /// The number of bits in the word.
     const BIT_LEN: usize;
+    /// Returns a word where all bits of set to the value of sign.
     fn splat(sign: bool) -> Self;
+    /// Returns the value of the `i`th bit in `self`.
     fn bit(&self, i: usize) -> bool;
 }
 
@@ -283,3 +297,5 @@ macro_rules! for_uints {
 for_uints!(b8, u8, 8, "{:08b}");
 for_uints!(b16, u16, 16, "{:016b}");
 for_uints!(b32, u32, 32, "{:032b}");
+for_uints!(b64, u64, 64, "{:064b}");
+for_uints!(b128, u128, 128, "{:0128b}");

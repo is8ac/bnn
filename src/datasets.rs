@@ -57,7 +57,7 @@ pub mod mnist {
         print!("\n");
     }
 
-    pub fn load_images_u8_unary(path: &Path, size: usize) -> Vec<[[u8; 28]; 28]> {
+    pub fn load_images_u8(path: &Path, size: usize) -> Vec<[[u8; 28]; 28]> {
         let mut file = File::open(&path).expect("can't open images");
         let mut header: [u8; 16] = [0; 16];
         file.read_exact(&mut header).expect("can't read header");

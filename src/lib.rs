@@ -12,7 +12,7 @@ pub mod bits;
 pub mod count;
 pub mod datasets;
 pub mod shape;
-pub mod mask;
+pub mod weight;
 
 pub mod image2d {
     //use crate::bits::BitOr;

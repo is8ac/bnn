@@ -1,7 +1,10 @@
-//#![feature(const_generics)]
-
+/// A shape.
+/// This trait has no concept of what it contians, just the shape.
+/// It is implemented for nested arrays and pairs.
 pub trait Shape {
+    /// The number of elements in the shape.
     const N: usize;
+    /// The type used to index into the shape.
     type Index;
 }
 
@@ -20,6 +23,11 @@ impl<T: Shape> Shape for Box<T> {
     type Index = T::Index;
 }
 
+/// If a `Shape` contains a pair at some level, what is the index type?
+/// It must fork.
+/// This is the purpose of the `SplitIndex` enum.
+///
+/// You should never need to interact directly with it.
 pub enum SplitIndex<A, B> {
     A(A),
     B(B),
@@ -30,11 +38,19 @@ impl<A: Shape, B: Shape> Shape for (A, B) {
     type Index = SplitIndex<A, B>;
 }
 
-// Given an element and a shape, get the array.
+/// Given an element and a shape, get the array.
+///
+/// # Example
+///
+/// ```
+/// type Counters = <u32 as Element<MyShape>>::Array
+/// ```
+///
 pub trait Element<S: Shape>
 where
     Self: Sized,
 {
+    /// The type of the Shape `S` when filled with `Element`s of `Self`.
     type Array;
 }
 
@@ -56,30 +72,6 @@ where
     E: Element<B>,
 {
     type Array = (<E as Element<A>>::Array, <E as Element<B>>::Array);
-}
-
-// Given an array and a shape, get the element.
-pub trait Array<S: Shape>
-where
-    Self::Element: Element<S>,
-{
-    type Element;
-}
-
-impl<E: Element<(), Array = E>> Array<()> for E {
-    type Element = E;
-}
-
-impl<S: Shape, T: Array<S>, const L: usize> Array<[S; L]> for [T; L] {
-    type Element = T::Element;
-}
-
-impl<SA: Shape, SB: Shape, AA: Array<SA, Element = <AB as Array<SB>>::Element>, AB: Array<SB>>
-    Array<(SA, SB)> for (AA, AB)
-where
-    <AB as Array<SB>>::Element: Element<SA>,
-{
-    type Element = <AA as Array<SA>>::Element;
 }
 
 pub trait MapMut<I: Element<Self>, O: Element<Self>>
