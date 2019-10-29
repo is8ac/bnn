@@ -66,7 +66,10 @@ where
 /// A collection of bits which has a shape.
 pub trait BitArray
 where
+    Self: Sized,
     Self::BitShape: Shape,
+    Self::WordShape: Shape,
+    Self::WordType: Element<Self::WordShape, Array = Self>,
     u32: Element<Self::BitShape>,
     bool: Element<Self::BitShape>,
 {
@@ -74,6 +77,10 @@ where
     /// Note that this is not the shape of the array with word as elements,
     /// but rather the shape of the array with bits as elements.
     type BitShape;
+    /// The type of the bitword inside the shape.
+    type WordType;
+    /// The shape where words are elements.
+    type WordShape;
     /// bitpacks some bools into a `Self` of the same BitShape.
     fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self;
     /// For each bit that is set, increment the corresponding counter.
@@ -94,6 +101,8 @@ where
     bool: Element<T::BitShape>,
 {
     type BitShape = [T::BitShape; L];
+    type WordType = T::WordType;
+    type WordShape = [T::WordShape; L];
     fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self {
         let mut target = Self::default();
         for i in 0..L {
@@ -191,6 +200,8 @@ macro_rules! for_uints {
         }
         impl BitArray for $b_type {
             type BitShape = [(); $len];
+            type WordType = $b_type;
+            type WordShape = ();
             fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self {
                 let mut bits = <$u_type>::default();
                 for b in 0..$len {

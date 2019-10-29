@@ -237,34 +237,44 @@ where
     .sum()
 }
 
-pub trait GenMask
+pub trait GenWeights
 where
     Self: BitArray + Sized,
     bool: Element<Self::BitShape>,
     u32: Element<Self::BitShape>,
     <u32 as Element<<Self as BitArray>::BitShape>>::Array: Element<<Self as BitArray>::BitShape>,
+    (Self::WordType, Self::WordType): Element<Self::WordShape>,
 {
-    fn gen_mask(
+    /// Generate sign and mask bits from counters for a binary classification.
+    ///
+    /// dist_matrix_counters is a 2d square symetrical matrix.
+    /// The `x`th by `y`th entry is the number of examples in which the xth and yth bit were the same.
+    ///
+    /// value_counters is the number of time that each bit was set in each of the two classes.
+    fn gen_weights(
         dist_matrix_counters: &Box<
             <<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array,
         >,
         n: usize,
         value_counters: &Box<[(usize, <u32 as Element<Self::BitShape>>::Array); 2]>,
-    ) -> (Self, Self);
+    ) -> <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array;
 }
 
-impl<B: BitArray> GenMask for B
+impl<B: BitArray> GenWeights for B
 where
     B::BitShape: Mse
         + Min
         + FlipBool
+        + Map<(), bool>
         + Map<u32, f32>
-        + ZipMap<u32, u32, f32>
         + ZipMap<bool, u32, f32>
+        + ZipMap<u32, u32, f32>
         + ZipMap<u32, u32, bool>
         + Element<<B as BitArray>::BitShape>
-        + Map<(), bool>
         + Default,
+    B::WordType: Copy,
+    B::WordShape: ZipMap<B::WordType, B::WordType, (B::WordType, B::WordType)>,
+    (Self::WordType, Self::WordType): Element<Self::WordShape>,
     Box<B::BitShape>: Map<<u32 as Element<B::BitShape>>::Array, <f32 as Element<B::BitShape>>::Array>
         + ZipMap<bool, <u32 as Element<B::BitShape>>::Array, <f32 as Element<B::BitShape>>::Array>,
     <B::BitShape as Element<<B as BitArray>::BitShape>>::Array: Shape,
@@ -282,13 +292,13 @@ where
     rand::distributions::Standard:
         rand::distributions::Distribution<<bool as Element<<B as BitArray>::BitShape>>::Array>,
 {
-    fn gen_mask(
+    fn gen_weights(
         dist_matrix_counters: &Box<
             <<u32 as Element<B::BitShape>>::Array as Element<B::BitShape>>::Array,
         >,
         n_examples: usize,
         value_counters: &Box<[(usize, <u32 as Element<<B as BitArray>::BitShape>>::Array); 2]>,
-    ) -> (B, B) {
+    ) -> <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array {
         let na = (value_counters[0].0 + 1) as f32;
         let nb = (value_counters[1].0 + 1) as f32;
         let sign_bools = Box::new(
@@ -326,7 +336,7 @@ where
                 &sign_bools,
                 row,
                 |inner_sign, &count| {
-                    if (outer_sign ^ inner_sign) {
+                    if outer_sign ^ inner_sign {
                         count as f32 / n_examples as f32
                     } else {
                         (n_examples - count as usize) as f32 / n_examples as f32
@@ -354,6 +364,10 @@ where
         }
         dbg!(cur_mse);
         dbg!(n_updates);
-        (B::bitpack(&sign_bools), B::bitpack(&mask))
+        <B::WordShape as ZipMap<B::WordType, B::WordType, (B::WordType, B::WordType)>>::zip_map(
+            &B::bitpack(&sign_bools),
+            &B::bitpack(&mask),
+            |&sign_word, &mask_word| (sign_word, mask_word),
+        )
     }
 }

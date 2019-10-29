@@ -1,5 +1,5 @@
 /// A shape.
-/// This trait has no concept of what it contians, just the shape.
+/// This trait has no concept of what it contains, just the shape.
 /// It is implemented for nested arrays and pairs.
 pub trait Shape {
     /// The number of elements in the shape.
@@ -276,5 +276,58 @@ where
         let mut target = <<O as Element<S>>::Array>::default();
         S::zip_map_mut(&mut target, &a, &b, |t, x, y| *t = map_fn(x, y));
         target
+    }
+}
+
+trait Flatten<T: Copy + Element<Self>>
+where
+    Self: Shape + Sized,
+{
+    fn from_vec(slice: &[T]) -> <T as Element<Self>>::Array;
+    fn to_vec(array: &<T as Element<Self>>::Array, slice: &mut [T]);
+}
+
+impl<T: Copy + Element<(), Array = T>> Flatten<T> for () {
+    fn from_vec(slice: &[T]) -> T {
+        assert_eq!(slice.len(), 1);
+        slice[0]
+    }
+    fn to_vec(&array: &T, slice: &mut [T]) {
+        assert_eq!(slice.len(), 1);
+        slice[0] = array;
+    }
+}
+
+impl<S: Shape + Flatten<T>, T: Element<S> + Copy, const L: usize> Flatten<T> for [S; L]
+where
+    [<T as Element<S>>::Array; L]: Default,
+{
+    fn from_vec(slice: &[T]) -> [<T as Element<S>>::Array; L] {
+        assert_eq!(slice.len(), S::N * L);
+        let mut target = <[<T as Element<S>>::Array; L]>::default();
+        for i in 0..L {
+            target[i] = S::from_vec(&slice[S::N * i..S::N * (i + 1)]);
+        }
+        target
+    }
+    fn to_vec(array: &<T as Element<Self>>::Array, slice: &mut [T]) {
+        assert_eq!(slice.len(), S::N * L);
+        for i in 0..L {
+            S::to_vec(&array[i], &mut slice[S::N * i..S::N * (i + 1)]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{Flatten, Shape};
+    type TestShape = [[(); 2]; 3];
+    #[test]
+    fn from_vec() {
+        let array1 = [[0u8, 1], [2, 3], [4, 5]];
+        let mut flat = vec![0u8; TestShape::N];
+        TestShape::to_vec(&array1, &mut flat);
+        let array2 = TestShape::from_vec(&flat);
+        assert_eq!(array1, array2);
     }
 }

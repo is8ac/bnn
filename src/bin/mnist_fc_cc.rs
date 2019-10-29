@@ -8,7 +8,7 @@ use bitnn::count::Counters;
 use bitnn::datasets::mnist;
 use bitnn::image2d::PixelMap2D;
 use bitnn::shape::{Element, ZipMap};
-use bitnn::weight::{GenMask, Sum};
+use bitnn::weight::{GenWeights, Sum};
 use rayon::prelude::*;
 use std::boxed::Box;
 use std::collections::HashSet;
@@ -92,7 +92,6 @@ fn main() {
             })
             .reduce(
                 || {
-                    dbg!();
                     (
                         Box::<ValueCountersType>::default(),
                         Box::<MatrixCountersType>::default(),
@@ -123,19 +122,16 @@ fn main() {
             for (class, class_counter) in value_counters.iter().enumerate() {
                 split_counters[partition.contains(&class) as usize].elementwise_add(class_counter);
             }
-            let (sign_bits, mask_bits) =
-                <InputType as GenMask>::gen_mask(&matrix_counters, examples.len(), &split_counters);
+            let weight_bits = <InputType as GenWeights>::gen_weights(
+                &matrix_counters,
+                examples.len(),
+                &split_counters,
+            );
             println!("{:?}", partition);
             //mnist::display_mnist_b32(&sign_bits);
-            mnist::display_mnist_b32(&mask_bits);
+            //mnist::display_mnist_b32(&mask_bits);
             //dbg!(&sign_bits);
-            <InputWordShape as ZipMap<
-                InputWordType,
-                InputWordType,
-                (InputWordType, InputWordType),
-            >>::zip_map(&sign_bits, &mask_bits, |&sign_word, &mask_word| {
-                (sign_word, mask_word)
-            })
+            weight_bits
         })
         .collect();
     dbg!(weights.len());
