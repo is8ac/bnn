@@ -3,12 +3,12 @@ extern crate bitnn;
 extern crate num_cpus;
 extern crate rayon;
 
-use bitnn::bits::{b32, b8, BitArray};
+use bitnn::bits::{b32, b8, BitArray, Distance};
 use bitnn::count::{CountBits, Counters};
 use bitnn::datasets::mnist;
 use bitnn::image2d::PixelMap2D;
 use bitnn::shape::{Element, ZipMap};
-use bitnn::weight::{GenParamClasses, GenWeights, Sum};
+use bitnn::weight::{GenParamClasses, GenParamSet, Sum};
 use rayon::prelude::*;
 use std::boxed::Box;
 use std::collections::HashSet;
@@ -77,27 +77,24 @@ fn main() {
     let (value_counters, matrix_counters): (Box<ValueCountersType>, Box<MatrixCountersType>) =
         InputType::count_bits(&examples);
 
-    let weights: [_; 10] =
-        InputType::gen_parm_classes(examples.len(), &value_counters, &matrix_counters);
+    //let layer_weights = <InputType as GenParamSet<[b32; 1], [(); N_CLASSES]>>::gen_parm_set(
+    //    examples.len(),
+    //    &value_counters,
+    //    &matrix_counters,
+    //);
+    //let foo: u8 = layer_weights;
+    let weights = <InputType as GenParamClasses<[(); N_CLASSES]>>::gen_parm_classes(
+        examples.len(),
+        &value_counters,
+        &matrix_counters,
+    );
+
     let n_correct: u64 = examples
         .par_iter()
         .map(|(image, class)| {
             let activations: Vec<_> = weights
                 .iter()
-                .map(|class_weights| {
-                    <InputWordShape as ZipMap<
-                            InputWordType,
-                            (InputWordType, InputWordType),
-                            u32,
-                        >>::zip_map(
-                            &image,
-                            &class_weights,
-                            |&input_word, &(sign_word, mask_word)| {
-                                ((input_word ^ sign_word) & mask_word).count_ones()
-                            },
-                        )
-                        .sum()
-                })
+                .map(|(class_weights, threshold)| class_weights.distance(image) as i32 - *threshold as i32)
                 .collect();
             //dbg!(class);
             //dbg!(&activations);

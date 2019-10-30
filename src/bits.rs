@@ -46,15 +46,15 @@ where
     }
 }
 
-pub trait BitMul<I, O> {
-    fn bit_mul(&self, input: &I) -> O;
+pub trait BitMul<I: Distance, O> {
+    fn bit_mul(&self, input: &I::Rhs) -> O;
 }
 
-impl<I, O: Default + Copy, T: BitMul<I, O>, const L: usize> BitMul<I, [O; L]> for [T; L]
+impl<I: Distance, O: Default + Copy, T: BitMul<I, O>, const L: usize> BitMul<I, [O; L]> for [T; L]
 where
     [O; L]: Default,
 {
-    fn bit_mul(&self, input: &I) -> [O; L] {
+    fn bit_mul(&self, input: &I::Rhs) -> [O; L] {
         let mut target = <[O; L]>::default();
         for i in 0..L {
             target[i] = self[i].bit_mul(input);
@@ -152,16 +152,18 @@ where
 }
 
 /// Hamming distance betwene two collections of bits of the same shape.
-pub trait HammingDistance {
+pub trait Distance {
+    type Rhs;
     /// Returns the number of bits that are different
-    fn hamming_distance(&self, rhs: &Self) -> u32;
+    fn distance(&self, rhs: &Self::Rhs) -> u32;
 }
 
-impl<T: HammingDistance, const L: usize> HammingDistance for [T; L] {
-    fn hamming_distance(&self, rhs: &Self) -> u32 {
+impl<T: Distance, const L: usize> Distance for [T; L] {
+    type Rhs = [T::Rhs; L];
+    fn distance(&self, rhs: &Self::Rhs) -> u32 {
         let mut sum = 0u32;
         for i in 0..L {
-            sum += self[i].hamming_distance(&rhs[i]);
+            sum += self[i].distance(&rhs[i]);
         }
         sum
     }
@@ -223,17 +225,23 @@ macro_rules! for_uints {
                 word.increment_counters(counters);
             }
         }
-        impl HammingDistance for $b_type {
-            fn hamming_distance(&self, rhs: &$b_type) -> u32 {
+        impl Distance for $b_type {
+            type Rhs = $b_type;
+            fn distance(&self, rhs: &Self::Rhs) -> u32 {
                 (self.0 ^ rhs.0).count_ones()
             }
         }
-        impl<I: HammingDistance> BitMul<I, $b_type> for [(I, u32); $len] {
-            fn bit_mul(&self, input: &I) -> $b_type {
+        impl Distance for ($b_type, $b_type) {
+            type Rhs = $b_type;
+            fn distance(&self, &rhs: &Self::Rhs) -> u32 {
+                ((self.0 ^ rhs) & self.1).count_ones()
+            }
+        }
+        impl<I: Distance> BitMul<I, $b_type> for [(I, u32); $len] {
+            fn bit_mul(&self, input: &I::Rhs) -> $b_type {
                 let mut target = $b_type(0);
                 for b in 0..$len {
-                    target |=
-                        $b_type(((self[b].0.hamming_distance(input) < self[b].1) as $u_type) << b);
+                    target |= $b_type(((self[b].0.distance(input) < self[b].1) as $u_type) << b);
                 }
                 target
             }

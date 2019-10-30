@@ -1,4 +1,4 @@
-use crate::bits::BitArray;
+use crate::bits::{BitArray, Distance};
 use crate::count::Counters;
 use crate::shape::{Element, Flatten, Fold, Map, Shape, ZipMap};
 use std::boxed::Box;
@@ -260,7 +260,10 @@ where
         >,
         n: usize,
         value_counters: &Box<[(usize, <u32 as Element<Self::BitShape>>::Array); 2]>,
-    ) -> <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array;
+    ) -> (
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    );
 }
 
 impl<B: BitArray> GenWeights for B
@@ -275,7 +278,7 @@ where
         + ZipMap<u32, u32, bool>
         + Element<<B as BitArray>::BitShape>
         + Default,
-    B::WordType: Copy,
+    B::WordType: Copy + Element<B::WordShape, Array = B>,
     B::WordShape: ZipMap<B::WordType, B::WordType, (B::WordType, B::WordType)>,
     (Self::WordType, Self::WordType): Element<Self::WordShape>,
     Box<B::BitShape>: Map<<u32 as Element<B::BitShape>>::Array, <f32 as Element<B::BitShape>>::Array>
@@ -292,8 +295,7 @@ where
     (): Element<B::BitShape, Array = B::BitShape>,
     <B::BitShape as Shape>::Index: std::fmt::Debug,
     <bool as Element<B::BitShape>>::Array: std::fmt::Debug,
-    rand::distributions::Standard:
-        rand::distributions::Distribution<<bool as Element<<B as BitArray>::BitShape>>::Array>,
+    <(B::WordType, B::WordType) as Element<B::WordShape>>::Array: Distance<Rhs = B>,
 {
     fn gen_weights(
         dist_matrix_counters: &Box<
@@ -301,7 +303,10 @@ where
         >,
         n_examples: usize,
         value_counters: &Box<[(usize, <u32 as Element<<B as BitArray>::BitShape>>::Array); 2]>,
-    ) -> <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array {
+    ) -> (
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    ) {
         let na = (value_counters[0].0 + 1) as f32;
         let nb = (value_counters[1].0 + 1) as f32;
         let sign_bools = Box::new(
@@ -367,11 +372,29 @@ where
         }
         dbg!(cur_mse);
         dbg!(n_updates);
-        <B::WordShape as ZipMap<B::WordType, B::WordType, (B::WordType, B::WordType)>>::zip_map(
+        let avg_input = {
+            let threshold = ((value_counters[1].0 + value_counters[0].0) / 2) as u32;
+            let avg_bools = Box::new(
+                <<B as BitArray>::BitShape as ZipMap<u32, u32, bool>>::zip_map(
+                    &value_counters[0].1,
+                    &value_counters[1].1,
+                    |&a, &b| (a + b) > threshold,
+                ),
+            );
+            B::bitpack(&avg_bools)
+        };
+        let weights = <B::WordShape as ZipMap<
+            B::WordType,
+            B::WordType,
+            (B::WordType, B::WordType),
+        >>::zip_map(
             &B::bitpack(&sign_bools),
             &B::bitpack(&mask),
             |&sign_word, &mask_word| (sign_word, mask_word),
-        )
+        );
+        // the activation of the average input.
+        let avg_act = weights.distance(&avg_input);
+        (weights, avg_act)
     }
 }
 
@@ -391,7 +414,7 @@ fn gen_partitions(depth: usize) -> Vec<HashSet<usize>> {
     }
 }
 
-trait GenWeightsVec<const C: usize>
+trait GenWeightsVec<C: Shape>
 where
     Self: BitArray,
     Self: BitArray,
@@ -399,18 +422,24 @@ where
     u32: Element<Self::BitShape>,
     <u32 as Element<Self::BitShape>>::Array: Element<Self::BitShape>,
     (Self::WordType, Self::WordType): Element<Self::WordShape>,
+    (usize, <u32 as Element<Self::BitShape>>::Array): Element<C>,
 {
     fn gen_weights_vec(
         n_examples: usize,
-        value_counters: &Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>,
+        value_counters: &Box<
+            <(usize, <u32 as Element<Self::BitShape>>::Array) as Element<C>>::Array,
+        >,
         hamming_matrix_counters: &Box<
             <<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array,
         >,
         partitions: &[HashSet<usize>],
-    ) -> Vec<<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array>;
+    ) -> Vec<(
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    )>;
 }
 
-impl<I: BitArray + GenWeights, const C: usize> GenWeightsVec<{ C }> for I
+impl<I: BitArray + GenWeights, const C: usize> GenWeightsVec<[(); C]> for I
 where
     bool: Element<I::BitShape>,
     u32: Element<I::BitShape>,
@@ -423,12 +452,17 @@ where
 {
     fn gen_weights_vec(
         n_examples: usize,
-        value_counters: &Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>,
+        value_counters: &Box<
+            <(usize, <u32 as Element<Self::BitShape>>::Array) as Element<[(); C]>>::Array,
+        >,
         hamming_matrix_counters: &Box<
             <<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array,
         >,
         partitions: &[HashSet<usize>],
-    ) -> Vec<<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array> {
+    ) -> Vec<(
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    )> {
         partitions
             .par_iter()
             .map(|partition| {
@@ -438,50 +472,73 @@ where
                     split_counters[partition.contains(&class) as usize]
                         .elementwise_add(class_counter);
                 }
-                let weight_bits = <I as GenWeights>::gen_weights(
+                <I as GenWeights>::gen_weights(
                     &hamming_matrix_counters,
                     n_examples,
                     &split_counters,
-                );
-                weight_bits
+                )
             })
             .collect()
     }
 }
 
-pub trait GenParamClasses<const C: usize>
+pub trait GenParamClasses<C: Shape>
 where
     Self: BitArray,
     bool: Element<Self::BitShape>,
     u32: Element<Self::BitShape>,
     <u32 as Element<Self::BitShape>>::Array: Element<Self::BitShape>,
     (Self::WordType, Self::WordType): Element<Self::WordShape>,
+    (usize, <u32 as Element<Self::BitShape>>::Array): Element<C>,
+    (
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    ): Element<C>,
 {
     fn gen_parm_classes(
         n_examples: usize,
-        value_counters: &Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>,
+        value_counters: &Box<
+            <(usize, <u32 as Element<Self::BitShape>>::Array) as Element<C>>::Array,
+        >,
         hamming_matrix_counters: &Box<
             <<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array,
         >,
-    ) -> [<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array; C];
+    ) -> <(
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    ) as Element<C>>::Array;
 }
 
-impl<I: BitArray + GenWeightsVec<{ C }> + Copy, const C: usize> GenParamClasses<{ C }> for I
+impl<I: BitArray + GenWeightsVec<[(); C]> + Copy, const C: usize> GenParamClasses<[(); C]> for I
 where
+    [(); C]: Shape,
     bool: Element<I::BitShape>,
     u32: Element<I::BitShape>,
     <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
     (I::WordType, I::WordType): Element<I::WordShape>,
-    [(); C]: Flatten<<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array>,
+    [(); C]: Flatten<(
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    )>,
     <(I::WordType, I::WordType) as Element<I::WordShape>>::Array: Copy,
+    (usize, <u32 as Element<Self::BitShape>>::Array): Element<[(); C]>,
+    (
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    ): Element<[(); C]>,
 {
     fn gen_parm_classes(
         n_examples: usize,
-        value_counters: &Box<[(usize, <u32 as Element<I::BitShape>>::Array); C]>,
+        value_counters: &Box<
+            <(usize, <u32 as Element<Self::BitShape>>::Array) as Element<[(); C]>>::Array,
+        >,
         hamming_matrix_counters: &Box<
             <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array,
         >,
-    ) -> [<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array; C] {
+    ) -> <(
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    ) as Element<[(); C]>>::Array {
         let partitions: Vec<HashSet<usize>> = (0..C)
             .map(|c| {
                 let mut set = HashSet::new();
@@ -495,13 +552,14 @@ where
             hamming_matrix_counters,
             &partitions,
         );
-        <[(); C] as Flatten<
+        <[(); C] as Flatten<(
             <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
-        >>::from_vec(&weights)
+            u32,
+        )>>::from_vec(&weights)
     }
 }
 
-trait GenParamSet<O: BitArray, const C: usize>
+pub trait GenParamSet<O: BitArray, C: Shape>
 where
     Self: BitArray,
     bool: Element<O::BitShape>,
@@ -510,34 +568,46 @@ where
     u32: Element<Self::BitShape>,
     <u32 as Element<Self::BitShape>>::Array: Element<Self::BitShape>,
     (Self::WordType, Self::WordType): Element<Self::WordShape>,
-    <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array: Element<O::BitShape>,
+    (
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    ): Element<O::BitShape>,
+    (usize, <u32 as Element<Self::BitShape>>::Array): Element<C>,
 {
     fn gen_parm_set(
         n_examples: usize,
-        value_counters: &Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>,
+        value_counters: &Box<
+            <(usize, <u32 as Element<Self::BitShape>>::Array) as Element<C>>::Array,
+        >,
         hamming_matrix_counters: &Box<
             <<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array,
         >,
-    ) -> <<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array as Element<
-        O::BitShape,
-    >>::Array;
+    ) -> <(
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    ) as Element<O::BitShape>>::Array;
 }
 
 impl<
-        I: BitArray + Element<O::BitShape> + GenWeightsVec<{ C }> + Copy,
+        I: BitArray + Element<O::BitShape> + GenWeightsVec<[(); C]> + Copy,
         O: BitArray,
         const C: usize,
-    > GenParamSet<O, { C }> for I
+    > GenParamSet<O, [(); C]> for I
 where
     bool: Element<O::BitShape>,
     u32: Element<O::BitShape>,
     bool: Element<I::BitShape>,
     u32: Element<I::BitShape>,
-    O::BitShape: Flatten<<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array>,
+    O::BitShape: Flatten<(
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    )>,
     <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
     (I::WordType, I::WordType): Element<I::WordShape>,
-    <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array:
-        Element<O::BitShape> + Copy,
+    (
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    ): Element<O::BitShape> + Copy,
 {
     fn gen_parm_set(
         n_examples: usize,
@@ -545,9 +615,10 @@ where
         hamming_matrix_counters: &Box<
             <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array,
         >,
-    ) -> <<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array as Element<
-        O::BitShape,
-    >>::Array {
+    ) -> <(
+        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
+        u32,
+    ) as Element<O::BitShape>>::Array {
         let partitions = gen_partitions(C);
         let partitions = &partitions[0..O::BitShape::N];
         let weights = I::gen_weights_vec(
