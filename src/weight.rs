@@ -416,11 +416,9 @@ where
     u32: Element<I::BitShape>,
     <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array: Send + Sync,
     <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
-    (I::WordType, I::WordType): Element<I::WordShape>,
     Box<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>: Default,
     (usize, <u32 as Element<I::BitShape>>::Array): Counters + Send + Sync,
     (Self::WordType, Self::WordType): Element<Self::WordShape>,
-    [(); C]: Flatten<<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array>,
     <(I::WordType, I::WordType) as Element<I::WordShape>>::Array: Copy + Send + Sync,
 {
     fn gen_weights_vec(
@@ -472,14 +470,10 @@ impl<I: BitArray + GenWeightsVec<{ C }> + Copy, const C: usize> GenParamClasses<
 where
     bool: Element<I::BitShape>,
     u32: Element<I::BitShape>,
-    <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array: Send + Sync,
     <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
     (I::WordType, I::WordType): Element<I::WordShape>,
-    Box<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>: Default,
-    (usize, <u32 as Element<I::BitShape>>::Array): Counters + Send + Sync,
-    (Self::WordType, Self::WordType): Element<Self::WordShape>,
     [(); C]: Flatten<<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array>,
-    <(I::WordType, I::WordType) as Element<I::WordShape>>::Array: Copy + Send + Sync,
+    <(I::WordType, I::WordType) as Element<I::WordShape>>::Array: Copy,
 {
     fn gen_parm_classes(
         n_examples: usize,
@@ -540,15 +534,10 @@ where
     bool: Element<I::BitShape>,
     u32: Element<I::BitShape>,
     O::BitShape: Flatten<<(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array>,
-    <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array: Element<O::BitShape>,
-    <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array: Send + Sync,
     <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
     (I::WordType, I::WordType): Element<I::WordShape>,
-    Box<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>: Default,
-    (usize, <u32 as Element<I::BitShape>>::Array): Counters + Send + Sync,
-    (Self::WordType, Self::WordType): Element<Self::WordShape>,
     <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array:
-        Element<O::BitShape> + Send + Sync + Copy,
+        Element<O::BitShape> + Copy,
 {
     fn gen_parm_set(
         n_examples: usize,
