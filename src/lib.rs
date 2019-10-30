@@ -334,17 +334,16 @@ mod tests {
 }
 
 pub mod layer {
-    use crate::bits::{BitMul, BitWord, HammingDistance};
-    use crate::count::{Counters};
-    use crate::image2d::{ExtractPixels, PixelMap2D};
-    use bincode::{deserialize_from, serialize_into};
-    use rayon::prelude::*;
+    //use crate::bits::{BitMul, BitWord, HammingDistance};
+    //use crate::count::Counters;
+    //use crate::image2d::{ExtractPixels, PixelMap2D};
+    //use bincode::{deserialize_from, serialize_into};
+    //use rayon::prelude::*;
     use std::collections::HashSet;
-    use std::fs::File;
-    use std::io::BufWriter;
-    use std::path::Path;
-    use time::PreciseTime;
-
+    //use std::fs::File;
+    //use std::io::BufWriter;
+    //use std::path::Path;
+    //use time::PreciseTime;
 
     fn gen_partitions(depth: usize) -> Vec<HashSet<usize>> {
         assert_ne!(depth, 0);

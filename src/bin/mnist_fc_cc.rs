@@ -3,12 +3,12 @@ extern crate bitnn;
 extern crate num_cpus;
 extern crate rayon;
 
-use bitnn::bits::{b32, b8, BitArray, IncrementFracCounters, IncrementHammingDistanceMatrix};
-use bitnn::count::Counters;
+use bitnn::bits::{b32, b8, BitArray};
+use bitnn::count::{CountBits, Counters};
 use bitnn::datasets::mnist;
 use bitnn::image2d::PixelMap2D;
 use bitnn::shape::{Element, ZipMap};
-use bitnn::weight::{GenWeights, Sum};
+use bitnn::weight::{GenParamClasses, GenWeights, Sum};
 use rayon::prelude::*;
 use std::boxed::Box;
 use std::collections::HashSet;
@@ -75,67 +75,10 @@ fn main() {
         .collect();
 
     let (value_counters, matrix_counters): (Box<ValueCountersType>, Box<MatrixCountersType>) =
-        examples
-            .par_chunks(examples.len() / num_cpus::get_physical())
-            .map(|chunk| {
-                chunk.iter().fold(
-                    (
-                        Box::<ValueCountersType>::default(),
-                        Box::<MatrixCountersType>::default(),
-                    ),
-                    |mut acc, (image, class)| {
-                        image.increment_frac_counters(&mut acc.0[*class]);
-                        image.increment_hamming_distance_matrix(&mut *acc.1, image);
-                        acc
-                    },
-                )
-            })
-            .reduce(
-                || {
-                    (
-                        Box::<ValueCountersType>::default(),
-                        Box::<MatrixCountersType>::default(),
-                    )
-                },
-                |mut a, b| {
-                    (a.0).elementwise_add(&b.0);
-                    (a.1).elementwise_add(&b.1);
-                    a
-                },
-            );
+        InputType::count_bits(&examples);
 
-    //let partitions = gen_partitions(10);
-    //let partitions = &partitions[0..32];
-    let partitions: Vec<HashSet<usize>> = (0..N_CLASSES)
-        .map(|c| {
-            let mut set = HashSet::new();
-            set.insert(c);
-            set
-        })
-        .collect();
-    dbg!(&partitions);
-    dbg!(partitions.len());
-    let weights: Vec<_> = partitions
-        .par_iter()
-        .map(|partition| {
-            let mut split_counters = Box::<[FracCounters; 2]>::default();
-            for (class, class_counter) in value_counters.iter().enumerate() {
-                split_counters[partition.contains(&class) as usize].elementwise_add(class_counter);
-            }
-            let weight_bits = <InputType as GenWeights>::gen_weights(
-                &matrix_counters,
-                examples.len(),
-                &split_counters,
-            );
-            println!("{:?}", partition);
-            //mnist::display_mnist_b32(&sign_bits);
-            //mnist::display_mnist_b32(&mask_bits);
-            //dbg!(&sign_bits);
-            weight_bits
-        })
-        .collect();
-    dbg!(weights.len());
-    //dbg!(weights);
+    let weights: [_; 10] =
+        InputType::gen_parm_classes(examples.len(), &value_counters, &matrix_counters);
     let n_correct: u64 = examples
         .par_iter()
         .map(|(image, class)| {

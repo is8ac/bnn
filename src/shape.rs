@@ -279,7 +279,7 @@ where
     }
 }
 
-trait Flatten<T: Copy + Element<Self>>
+pub trait Flatten<T: Copy + Element<Self>>
 where
     Self: Shape + Sized,
 {
