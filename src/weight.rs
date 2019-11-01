@@ -1,13 +1,10 @@
-use crate::bits::{BitArray, Distance};
+use crate::bits::{BitArray, BitArrayOPs, Distance};
 use crate::count::Counters;
 use crate::shape::{Element, Flatten, Fold, Map, Shape, ZipMap};
 use std::boxed::Box;
 use std::ops::AddAssign;
 extern crate rand;
 extern crate rand_hc;
-use rand::Rng;
-use rand::SeedableRng;
-use rand_hc::Hc128Rng;
 use rayon::prelude::*;
 use std::collections::HashSet;
 
@@ -102,19 +99,6 @@ where
     }
 }
 
-fn bayes_magn<S: Shape + ZipMap<u32, u32, f32>>(
-    counters: &[(usize, <u32 as Element<S>>::Array); 2],
-) -> <f32 as Element<S>>::Array
-where
-    u32: Element<S>,
-    f32: Element<S>,
-{
-    <S as ZipMap<u32, u32, f32>>::zip_map(&counters[0].1, &counters[1].1, |&a, &b| {
-        let pab = (a + 1) as f32 / (a + b + 2) as f32;
-        ((pab * 2f32) - 1f32).abs()
-    })
-}
-
 pub trait Mse
 where
     Self: Shape + Sized,
@@ -178,26 +162,6 @@ where
             //dbg!(&bit_flip_local_counts);
             <S as Map<f32, f32>>::map(&bit_flip_sums, |sum| values_sum / sum)
         };
-        //let bit_flip_scales = {
-        //    let bit_flip_sub_scales = <S as ZipMap<
-        //        f32,
-        //        <f32 as Element<S>>::Array,
-        //        <f32 as Element<S>>::Array,
-        //    >>::zip_map(
-        //        values,
-        //        &bit_flip_local_counts,
-        //        |value, counts| <S as Map<f32, f32>>::map(counts, |count| value / count),
-        //    );
-        //    let bit_flip_scale_sums =
-        //        <S as Fold<<f32 as Element<S>>::Array, <f32 as Element<S>>::Array>>::fold(
-        //            &bit_flip_local_counts,
-        //            <f32 as Element<S>>::Array::default(),
-        //            |a, b| <S as ZipMap<f32, f32, f32>>::zip_map(&a, b, |x, y| x + y),
-        //        );
-        //    //dbg!(&bit_flip_local_counts);
-        //    <S as Map<f32, f32>>::map(&bit_flip_scale_sums, |sum| sum / (n * n))
-        //};
-        //dbg!(&bit_flip_scales);
         let bit_flip_local_mses = <Box<S> as ZipMap<
             <f32 as Element<S>>::Array,
             f32,
@@ -243,7 +207,6 @@ where
 pub trait GenWeights
 where
     Self: BitArray + Sized,
-    bool: Element<Self::BitShape>,
     u32: Element<Self::BitShape>,
     <u32 as Element<<Self as BitArray>::BitShape>>::Array: Element<<Self as BitArray>::BitShape>,
     (Self::WordType, Self::WordType): Element<Self::WordShape>,
@@ -266,7 +229,7 @@ where
     );
 }
 
-impl<B: BitArray> GenWeights for B
+impl<B: BitArray + BitArrayOPs> GenWeights for B
 where
     B::BitShape: Mse
         + Min
@@ -357,21 +320,18 @@ where
         // true:  49.566666%
         let mut cur_mse = std::f32::INFINITY;
         let mut is_optima = false;
-        let mut n_updates = 0;
         while !is_optima {
             let bit_flip_mses = B::BitShape::bit_flip_mses(&edges, &values, &mask);
             let (min_index, min_val) = <B::BitShape as Min>::min(&bit_flip_mses).unwrap();
             if min_val < cur_mse {
                 <B::BitShape as FlipBool>::flip_bool(&mut mask, min_index);
                 cur_mse = min_val;
-                //dbg!(cur_mse);
-                n_updates += 1;
             } else {
                 is_optima = true;
             }
         }
-        dbg!(cur_mse);
-        dbg!(n_updates);
+        //dbg!(cur_mse);
+        //dbg!(n_updates);
         let avg_input = {
             let threshold = ((value_counters[1].0 + value_counters[0].0) / 2) as u32;
             let avg_bools = Box::new(
@@ -414,7 +374,7 @@ fn gen_partitions(depth: usize) -> Vec<HashSet<usize>> {
     }
 }
 
-trait GenWeightsVec<C: Shape>
+pub trait GenWeightsVec<C: Shape>
 where
     Self: BitArray,
     Self: BitArray,
@@ -552,6 +512,11 @@ where
             hamming_matrix_counters,
             &partitions,
         );
+        let max_act: u32 = *weights.iter().map(|(_, t)| t).max().unwrap();
+        let weights: Vec<_> = weights
+            .iter()
+            .map(|(weights, threshold)| (*weights, max_act - threshold))
+            .collect();
         <[(); C] as Flatten<(
             <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
             u32,
@@ -604,6 +569,7 @@ where
     )>,
     <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
     (I::WordType, I::WordType): Element<I::WordShape>,
+    <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array: Copy,
     (
         <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
         u32,

@@ -9,10 +9,8 @@ use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 pub trait IncrementHammingDistanceMatrix<T: BitArray>
 where
     Self: BitArray,
-    bool: Element<Self::BitShape>,
     u32: Element<Self::BitShape>,
     <u32 as Element<Self::BitShape>>::Array: Element<T::BitShape>,
-    bool: Element<T::BitShape>,
     u32: Element<T::BitShape>,
 {
     fn increment_hamming_distance_matrix(
@@ -24,8 +22,11 @@ where
     );
 }
 
-impl<I: IncrementHammingDistanceMatrix<T> + BitArray, T: BitArray, const L: usize>
-    IncrementHammingDistanceMatrix<[T; L]> for I
+impl<
+        I: IncrementHammingDistanceMatrix<T> + BitArray,
+        T: BitArray + BitArrayOPs,
+        const L: usize,
+    > IncrementHammingDistanceMatrix<[T; L]> for I
 where
     bool: Element<T::BitShape>,
     u32: Element<T::BitShape>,
@@ -67,11 +68,9 @@ where
 pub trait BitArray
 where
     Self: Sized,
-    Self::BitShape: Shape,
     Self::WordShape: Shape,
+    Self::BitShape: Shape,
     Self::WordType: Element<Self::WordShape, Array = Self>,
-    u32: Element<Self::BitShape>,
-    bool: Element<Self::BitShape>,
 {
     /// The shape of the bits.
     /// Note that this is not the shape of the array with word as elements,
@@ -81,6 +80,21 @@ where
     type WordType;
     /// The shape where words are elements.
     type WordShape;
+}
+
+impl<T: BitArray, const L: usize> BitArray for [T; L] {
+    type BitShape = [T::BitShape; L];
+    type WordType = T::WordType;
+    type WordShape = [T::WordShape; L];
+}
+
+/// A collection of bits which has a shape.
+pub trait BitArrayOPs
+where
+    Self: Sized + BitArray,
+    u32: Element<Self::BitShape>,
+    bool: Element<Self::BitShape>,
+{
     /// bitpacks some bools into a `Self` of the same BitShape.
     fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self;
     /// For each bit that is set, increment the corresponding counter.
@@ -93,24 +107,21 @@ where
     );
 }
 
-impl<T: BitArray, const L: usize> BitArray for [T; L]
+impl<T: BitArrayOPs + BitArray, const L: usize> BitArrayOPs for [T; L]
 where
-    [T; L]: Default,
     T::BitShape: Shape,
     u32: Element<T::BitShape>,
     bool: Element<T::BitShape>,
+    [T; L]: Default + BitArray<BitShape = [T::BitShape; L]>,
 {
-    type BitShape = [T::BitShape; L];
-    type WordType = T::WordType;
-    type WordShape = [T::WordShape; L];
-    fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self {
+    fn bitpack(bools: &[<bool as Element<T::BitShape>>::Array; L]) -> Self {
         let mut target = Self::default();
         for i in 0..L {
             target[i] = T::bitpack(&bools[i]);
         }
         target
     }
-    fn increment_counters(&self, counters: &mut <u32 as Element<Self::BitShape>>::Array) {
+    fn increment_counters(&self, counters: &mut [<u32 as Element<T::BitShape>>::Array; L]) {
         for i in 0..L {
             self[i].increment_counters(&mut counters[i]);
         }
@@ -118,17 +129,17 @@ where
     fn flipped_increment_counters(
         &self,
         sign: bool,
-        counters: &mut <u32 as Element<Self::BitShape>>::Array,
+        counters: &mut [<u32 as Element<T::BitShape>>::Array; L],
     ) {
         for i in 0..L {
             self[i].flipped_increment_counters(sign, &mut counters[i]);
         }
     }
 }
+
 pub trait IncrementFracCounters
 where
     Self: BitArray,
-    bool: Element<Self::BitShape>,
     u32: Element<Self::BitShape>,
 {
     fn increment_frac_counters(
@@ -137,7 +148,7 @@ where
     );
 }
 
-impl<B: BitArray> IncrementFracCounters for B
+impl<B: BitArray + BitArrayOPs> IncrementFracCounters for B
 where
     bool: Element<Self::BitShape>,
     u32: Element<Self::BitShape>,
@@ -204,6 +215,8 @@ macro_rules! for_uints {
             type BitShape = [(); $len];
             type WordType = $b_type;
             type WordShape = ();
+        }
+        impl BitArrayOPs for $b_type {
             fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self {
                 let mut bits = <$u_type>::default();
                 for b in 0..$len {
@@ -295,7 +308,7 @@ macro_rules! for_uints {
                 write!(f, $format_string, self.0)
             }
         }
-        impl<I: BitArray> IncrementHammingDistanceMatrix<$b_type> for I
+        impl<I: BitArray + BitArrayOPs> IncrementHammingDistanceMatrix<$b_type> for I
         where
             bool: Element<I::BitShape>,
             u32: Element<I::BitShape>,
