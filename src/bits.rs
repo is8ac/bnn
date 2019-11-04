@@ -47,15 +47,57 @@ where
     }
 }
 
-pub trait BitMul<I: Distance, O> {
-    fn bit_mul(&self, input: &I::Rhs) -> O;
+pub trait Classify
+where
+    u32: Element<Self::ClassesShape>,
+    Self::ClassesShape: Shape,
+{
+    type Input;
+    const N_CLASSES: usize;
+    type ClassesShape;
+    fn activations(&self, input: &Self::Input) -> <u32 as Element<Self::ClassesShape>>::Array;
+    fn max_class(&self, input: &Self::Input) -> usize;
 }
 
-impl<I: Distance, O: Default + Copy, T: BitMul<I, O>, const L: usize> BitMul<I, [O; L]> for [T; L]
+impl<I: Distance, const C: usize> Classify for [(I, u32); C]
+where
+    [u32; C]: Default,
+{
+    type Input = I::Rhs;
+    const N_CLASSES: usize = C;
+    type ClassesShape = [(); C];
+    fn activations(&self, input: &I::Rhs) -> [u32; C] {
+        let mut target = <[u32; C]>::default();
+        for c in 0..C {
+            target[c] = self[c].0.distance(input) + self[c].1;
+        }
+        target
+    }
+    fn max_class(&self, input: &I::Rhs) -> usize {
+        let mut max_act = 0u32;
+        let mut max_class = 0usize;
+        for c in 0..C {
+            let act = self[c].0.distance(input) + self[c].1;
+            if act >= max_act {
+                max_act = act;
+                max_class = c;
+            }
+        }
+        max_class
+    }
+}
+
+pub trait BitMul<O> {
+    type Input;
+    fn bit_mul(&self, input: &Self::Input) -> O;
+}
+
+impl<O: Default + Copy, T: BitMul<O>, const L: usize> BitMul<[O; L]> for [T; L]
 where
     [O; L]: Default,
 {
-    fn bit_mul(&self, input: &I::Rhs) -> [O; L] {
+    type Input = T::Input;
+    fn bit_mul(&self, input: &Self::Input) -> [O; L] {
         let mut target = <[O; L]>::default();
         for i in 0..L {
             target[i] = self[i].bit_mul(input);
@@ -162,6 +204,23 @@ where
     }
 }
 
+pub trait ArrayBitOr {
+    fn bit_or(&self, rhs: &Self) -> Self;
+}
+
+impl<T: ArrayBitOr, const L: usize> ArrayBitOr for [T; L]
+where
+    [T; L]: Default,
+{
+    fn bit_or(&self, rhs: &Self) -> Self {
+        let mut target = <[T; L]>::default();
+        for i in 0..L {
+            target[i] = self[i].bit_or(&rhs[i]);
+        }
+        target
+    }
+}
+
 /// Hamming distance betwene two collections of bits of the same shape.
 pub trait Distance {
     type Rhs;
@@ -250,13 +309,19 @@ macro_rules! for_uints {
                 ((self.0 ^ rhs) & self.1).count_ones()
             }
         }
-        impl<I: Distance> BitMul<I, $b_type> for [(I, u32); $len] {
+        impl<I: Distance> BitMul<$b_type> for [(I, u32); $len] {
+            type Input = I::Rhs;
             fn bit_mul(&self, input: &I::Rhs) -> $b_type {
                 let mut target = $b_type(0);
                 for b in 0..$len {
                     target |= $b_type(((self[b].0.distance(input) < self[b].1) as $u_type) << b);
                 }
                 target
+            }
+        }
+        impl ArrayBitOr for $b_type {
+            fn bit_or(&self, other: &$b_type) -> $b_type {
+                *self | *other
             }
         }
         impl Default for $b_type {

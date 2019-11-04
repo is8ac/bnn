@@ -8,6 +8,25 @@ extern crate rand_hc;
 use rayon::prelude::*;
 use std::collections::HashSet;
 
+// A helper associated type to get the trinary weights matrix for a given input output pair.
+pub trait InputBits<O> {
+    type TrinaryWeights;
+}
+
+impl<I: BitArray, O: BitArray> InputBits<O> for I
+where
+    (I::WordType, I::WordType): Element<I::WordShape>,
+    (
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ): Element<O::BitShape>,
+{
+    type TrinaryWeights = <(
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ) as Element<O::BitShape>>::Array;
+}
+
 // f32: 3m50.574s
 // f64: 7m21.906s
 // f32 values
@@ -526,17 +545,12 @@ where
 
 pub trait GenParamSet<O: BitArray, C: Shape>
 where
-    Self: BitArray,
+    Self: BitArray + InputBits<O>,
     bool: Element<O::BitShape>,
     u32: Element<O::BitShape>,
     bool: Element<Self::BitShape>,
     u32: Element<Self::BitShape>,
     <u32 as Element<Self::BitShape>>::Array: Element<Self::BitShape>,
-    (Self::WordType, Self::WordType): Element<Self::WordShape>,
-    (
-        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
-        u32,
-    ): Element<O::BitShape>,
     (usize, <u32 as Element<Self::BitShape>>::Array): Element<C>,
 {
     fn gen_parm_set(
@@ -547,10 +561,7 @@ where
         hamming_matrix_counters: &Box<
             <<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array,
         >,
-    ) -> <(
-        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
-        u32,
-    ) as Element<O::BitShape>>::Array;
+    ) -> <Self as InputBits<O>>::TrinaryWeights;
 }
 
 impl<
@@ -581,11 +592,9 @@ where
         hamming_matrix_counters: &Box<
             <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array,
         >,
-    ) -> <(
-        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
-        u32,
-    ) as Element<O::BitShape>>::Array {
-        let partitions = gen_partitions(C);
+    ) -> <Self as InputBits<O>>::TrinaryWeights {
+        let mut partitions = gen_partitions(C);
+        partitions.sort_by_key(|x| x.len().min(C - x.len()));
         let partitions = &partitions[0..O::BitShape::N];
         let weights = I::gen_weights_vec(
             n_examples,

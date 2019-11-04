@@ -54,6 +54,7 @@ where
     ) -> (
         Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>,
         Box<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>,
+        usize,
     );
 }
 
@@ -73,12 +74,18 @@ where
     Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>: Default + Send + Sync + Counters,
     Box<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>:
         Default + Send + Sync + Counters,
+    //(
+    //    Box<[(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array); C]>,
+    //    Box<<<u32 as Element<T::BitShape>>::Array as Element<T::BitShape>>::Array>,
+    //    usize,
+    //): Counters,
 {
     fn count_bits(
         examples: &Vec<(Self, usize)>,
     ) -> (
         Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>,
         Box<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>,
+        usize,
     ) {
         examples
             .par_chunks(examples.len() / num_cpus::get_physical())
@@ -87,10 +94,12 @@ where
                     (
                         Box::<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>::default(),
                         Box::<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>::default(),
+                        0usize,
                     ),
                     |mut acc, (image, class)| {
                         image.increment_frac_counters(&mut acc.0[*class]);
                         image.increment_hamming_distance_matrix(&mut *acc.1, image);
+                        acc.2 +=1;
                         acc
                     },
                 )
@@ -100,11 +109,13 @@ where
                     (
                         Box::<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>::default(),
                         Box::<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>::default(),
+                        0usize,
                     )
                 },
                 |mut a, b| {
                     (a.0).elementwise_add(&b.0);
                     (a.1).elementwise_add(&b.1);
+                    (a.2).elementwise_add(&b.2);
                     a
                 },
             )
@@ -113,41 +124,40 @@ where
 
 pub trait CountBitsConv<IP, const X: usize, const Y: usize, const C: usize>
 where
-    [[IP; 3]; 3]: Normalize2D<Self>,
     Self: BitArray,
     u32: Element<Self::BitShape>,
-    bool: Element<Self::BitShape>,
     <u32 as Element<Self::BitShape>>::Array: Element<Self::BitShape>,
 {
-    fn count_bits(
+    fn count_bits_conv(
         examples: &Vec<([[IP; Y]; X], usize)>,
     ) -> (
         Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>,
         Box<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>,
+        usize,
     );
 }
 
 impl<T: Copy + BitArray, IP: Copy, const X: usize, const Y: usize, const C: usize>
     CountBitsConv<IP, { X }, { Y }, { C }> for [[T; 3]; 3]
 where
+    Self: BitArray,
     [[IP; Y]; X]: ConvIncrementCounters<Self, { C }> + Image2D<PixelType = IP>,
     [[IP; 3]; 3]: Normalize2D<Self>,
-    Self: BitArray,
+    ([[IP; Y]; X], usize): Send + Sync,
     u32: Element<Self::BitShape>,
     bool: Element<Self::BitShape>,
     u32: Element<T::BitShape>,
-    bool: Element<T::BitShape>,
     <u32 as Element<Self::BitShape>>::Array: Element<Self::BitShape>,
-    ([[IP; Y]; X], usize): Send + Sync,
     Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>: Default + Sync + Send + Counters,
     Box<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>:
         Default + Send + Sync + Counters,
 {
-    fn count_bits(
+    fn count_bits_conv(
         examples: &Vec<([[IP; Y]; X], usize)>,
     ) -> (
         Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>,
         Box<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>,
+        usize,
     ) {
         examples
             .par_chunks(examples.len() / num_cpus::get_physical())
@@ -156,9 +166,10 @@ where
                     (
                         Box::<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>::default(),
                         Box::<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>::default(),
+                        0usize,
                     ),
                     |mut acc, (image, class)| {
-                        image.conv_increment_counters(*class, &mut acc.0, &mut acc.1);
+                        image.conv_increment_counters(*class, &mut acc.0, &mut acc.1, &mut acc.2);
                         acc
                     },
                 )
@@ -168,11 +179,13 @@ where
                     (
                         Box::<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>::default(),
                         Box::<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>::default(),
+                        0usize,
                     )
                 },
                 |mut a, b| {
                     (a.0).elementwise_add(&b.0);
                     (a.1).elementwise_add(&b.1);
+                    (a.2).elementwise_add(&b.2);
                     a
                 },
             )

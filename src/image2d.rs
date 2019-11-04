@@ -1,13 +1,27 @@
-use crate::bits::{BitArray, IncrementFracCounters, IncrementHammingDistanceMatrix};
-use crate::shape::Element;
+use crate::bits::{
+    ArrayBitOr, BitArray, BitMul, BitWord, Classify, Distance, IncrementFracCounters,
+    IncrementHammingDistanceMatrix,
+};
+use crate::shape::{Element, Shape};
 use crate::unary::Normalize2D;
+use crate::weight::InputBits;
 
 pub trait Image2D {
     type PixelType;
+    type ImageShape;
 }
 
 impl<P, const X: usize, const Y: usize> Image2D for [[P; Y]; X] {
     type PixelType = P;
+    type ImageShape = [[(); Y]; X];
+}
+
+pub trait ImagePixel<Shape> {
+    type ImageType;
+}
+
+impl<T, const X: usize, const Y: usize> ImagePixel<[[(); Y]; X]> for T {
+    type ImageType = [[T; Y]; X];
 }
 
 pub trait ConvIncrementCounters<P: BitArray, const C: usize>
@@ -23,6 +37,7 @@ where
         class: usize,
         value_counters: &mut [(usize, <u32 as Element<P::BitShape>>::Array); C],
         counters_matrix: &mut <<u32 as Element<P::BitShape>>::Array as Element<P::BitShape>>::Array,
+        n_examples: &mut usize,
     );
 }
 
@@ -47,9 +62,11 @@ where
         counters_matrix: &mut <<u32 as Element<Patch::BitShape>>::Array as Element<
             Patch::BitShape,
         >>::Array,
+        n_examples: &mut usize,
     ) {
         for x in 0..X - 2 {
             for y in 0..Y - 2 {
+                *n_examples += 1;
                 let mut patch = [[IP::default(); 3]; 3];
                 for px in 0..3 {
                     for py in 0..3 {
@@ -64,16 +81,16 @@ where
     }
 }
 
-pub trait OrPool<Output> {
-    fn or_pool(&self) -> Output;
+pub trait OrPool {
+    type OutputImage;
+    fn or_pool(&self) -> Self::OutputImage;
 }
 
 macro_rules! impl_orpool {
     ($x_size:expr, $y_size:expr) => {
-        impl<Pixel: BitOr + Default + Copy> OrPool<[[Pixel; $y_size / 2]; $x_size / 2]>
-            for [[Pixel; $y_size]; $x_size]
-        {
-            fn or_pool(&self) -> [[Pixel; $y_size / 2]; $x_size / 2] {
+        impl<Pixel: ArrayBitOr + Default + Copy> OrPool for [[Pixel; $y_size]; $x_size] {
+            type OutputImage = [[Pixel; $y_size / 2]; $x_size / 2];
+            fn or_pool(&self) -> Self::OutputImage {
                 let mut target = [[Pixel::default(); $y_size / 2]; $x_size / 2];
                 for x in 0..$x_size / 2 {
                     let x_index = x * 2;
@@ -91,10 +108,10 @@ macro_rules! impl_orpool {
     };
 }
 
-//impl_orpool!(32, 32);
-//impl_orpool!(16, 16);
-//impl_orpool!(8, 8);
-//impl_orpool!(4, 4);
+impl_orpool!(32, 32);
+impl_orpool!(16, 16);
+impl_orpool!(8, 8);
+impl_orpool!(4, 4);
 
 pub trait AvgPool {
     type OutputImage;
@@ -131,57 +148,6 @@ impl_avgpool!(16, 16);
 impl_avgpool!(8, 8);
 impl_avgpool!(4, 4);
 
-pub trait ExtractPixels<P> {
-    fn extract_pixels(&self, pixels: &mut Vec<P>);
-}
-
-impl<P: Copy, const X: usize, const Y: usize> ExtractPixels<P> for [[P; Y]; X] {
-    fn extract_pixels(&self, pixels: &mut Vec<P>) {
-        for x in 0..X {
-            for y in 0..Y {
-                pixels.push(self[x][y]);
-            }
-        }
-    }
-}
-
-pub trait PixelFold2D<P, C> {
-    fn fold_2d<F: Fn(C, &P) -> C>(&self, acc: C, fold_fn: F) -> C;
-}
-
-impl<P, C, const X: usize, const Y: usize> PixelFold2D<P, C> for [[P; Y]; X] {
-    // this is faster then `image.iter().flatten().sum()`
-    fn fold_2d<F: Fn(C, &P) -> C>(&self, mut acc: C, fold_fn: F) -> C {
-        for x in 0..X {
-            for y in 0..Y {
-                acc = fold_fn(acc, &self[x][y]);
-            }
-        }
-        acc
-    }
-}
-
-pub trait PixelMap2D<I, O> {
-    type OutputImage;
-    fn map_2d<F: Fn(&I) -> O>(&self, map_fn: F) -> Self::OutputImage;
-}
-
-impl<I, O, const X: usize, const Y: usize> PixelMap2D<I, O> for [[I; Y]; X]
-where
-    [[O; Y]; X]: Default,
-{
-    type OutputImage = [[O; Y]; X];
-    fn map_2d<F: Fn(&I) -> O>(&self, map_fn: F) -> Self::OutputImage {
-        let mut target = <[[O; Y]; X]>::default();
-        for x in 0..X {
-            for y in 0..Y {
-                target[x][y] = map_fn(&self[x][y]);
-            }
-        }
-        target
-    }
-}
-
 pub trait Concat2D<A, B> {
     fn concat_2d(a: &A, b: &B) -> Self;
 }
@@ -202,103 +168,111 @@ where
     }
 }
 
-// extracts patches and puts them in the pixels of the output image.
-pub trait Conv2D<OutputImage> {
-    fn conv2d(&self) -> OutputImage;
-}
-
-macro_rules! impl_conv2d_2x2 {
-    ($x:expr, $y:expr) => {
-        impl<P: Copy + Default> Conv2D<[[[[P; 2]; 2]; $y / 2]; $x / 2]> for [[P; $y]; $x] {
-            fn conv2d(&self) -> [[[[P; 2]; 2]; $y / 2]; $x / 2] {
-                let mut target = <[[[[P; 2]; 2]; $y / 2]; $x / 2]>::default();
-                for x in 0..$x / 2 {
-                    let x_offset = x * 2;
-                    for y in 0..$y / 2 {
-                        let y_offset = y * 2;
-                        for fx in 0..2 {
-                            for fy in 0..2 {
-                                target[x][y][fx][fy] = self[x_offset + fx][y_offset + fy];
-                            }
-                        }
-                    }
-                }
-                target
-            }
-        }
-    };
-}
-
-impl_conv2d_2x2!(32, 32);
-impl_conv2d_2x2!(16, 16);
-impl_conv2d_2x2!(8, 8);
-impl_conv2d_2x2!(4, 4);
-
-impl<P: Copy, const X: usize, const Y: usize> Conv2D<[[[[P; 3]; 3]; Y]; X]> for [[P; Y]; X]
+pub trait Conv2D<Image: Image2D, O>
 where
-    [[[[P; 3]; 3]; Y]; X]: Default,
+    Image::ImageShape: Shape,
+    O: Element<Image::ImageShape>,
 {
-    fn conv2d(&self) -> [[[[P; 3]; 3]; Y]; X] {
-        let mut target = <[[[[P; 3]; 3]; Y]; X]>::default();
+    fn conv2d(&self, image: &Image) -> <O as Element<Image::ImageShape>>::Array;
+}
 
-        for fx in 1..3 {
-            for fy in 1..3 {
-                target[0][0][fx][fy] = self[0 + fx][0 + fy];
-            }
-        }
-        for y in 0..Y - 2 {
-            for fx in 1..3 {
-                for fy in 0..3 {
-                    target[0][y + 1][fx][fy] = self[0 + fx][y + fy];
-                }
-            }
-        }
-        for fx in 1..3 {
-            for fy in 0..2 {
-                target[0][Y - 1][fx][fy] = self[0 + fx][Y - 2 + fy];
-            }
-        }
-
-        // begin center
+impl<
+        T: BitMul<OP>,
+        IP: Default + Copy,
+        OP: ImagePixel<[[(); Y]; X], ImageType = [[OP; Y]; X]> + BitArray,
+        const X: usize,
+        const Y: usize,
+    > Conv2D<[[IP; Y]; X], OP> for T
+where
+    [[IP; 3]; 3]: Normalize2D<T::Input>,
+    Self: Image2D<PixelType = IP, ImageShape = [[(); Y]; X]>,
+    [[OP; Y]; X]: Default,
+{
+    fn conv2d(&self, image: &[[IP; Y]; X]) -> [[OP; Y]; X] {
+        let mut target = <[[OP; Y]; X]>::default();
         for x in 0..X - 2 {
-            for fx in 0..3 {
-                for fy in 1..3 {
-                    target[x + 1][0][fx][fy] = self[x + fx][0 + fy];
-                }
-            }
             for y in 0..Y - 2 {
-                for fx in 0..3 {
-                    for fy in 0..3 {
-                        target[x + 1][y + 1][fx][fy] = self[x + fx][y + fy];
+                let mut patch = [[IP::default(); 3]; 3];
+                for px in 0..3 {
+                    for py in 0..3 {
+                        patch[px][py] = image[x + px][y + py]
                     }
                 }
-            }
-            for fx in 0..3 {
-                for fy in 0..2 {
-                    target[x + 1][Y - 1][fx][fy] = self[x + fx][Y - 2 + fy];
-                }
+                target[x + 1][y + 1] = self.bit_mul(&patch.normalize_2d());
             }
         }
-        // end center
-
-        for fx in 0..2 {
-            for fy in 1..3 {
-                target[X - 1][0][fx][fy] = self[X - 2 + fx][0 + fy];
-            }
-        }
-        for y in 0..Y - 2 {
-            for fx in 0..2 {
-                for fy in 0..3 {
-                    target[X - 1][y + 1][fx][fy] = self[X - 2 + fx][y + fy];
-                }
-            }
-        }
-        for fx in 0..2 {
-            for fy in 0..2 {
-                target[X - 1][Y - 1][fx][fy] = self[X - 2 + fx][Y - 2 + fy];
-            }
-        }
-
         target
+    }
+}
+
+pub trait PrintImage {
+    fn print_channels(&self);
+}
+
+impl<B: BitWord, const W: usize, const X: usize, const Y: usize> PrintImage for [[[B; W]; Y]; X] {
+    fn print_channels(&self) {
+        for w in 0..W {
+            for b in 0..B::BIT_LEN {
+                for x in 0..X {
+                    for y in 0..Y {
+                        print!("{}", self[x][y][w].bit(b) as u8);
+                    }
+                    print!("\n");
+                }
+                println!("-------");
+            }
+        }
+    }
+}
+
+impl<B: BitWord, const X: usize, const Y: usize> PrintImage for [[(B, B); Y]; X] {
+    fn print_channels(&self) {
+        for b in 0..B::BIT_LEN {
+            for x in 0..X {
+                for y in 0..Y {
+                    print!("{}", self[x][y].0.bit(b) as u8);
+                }
+                print!(" ");
+                for y in 0..Y {
+                    print!("{}", self[x][y].1.bit(b) as u8);
+                }
+                print!("\n");
+            }
+            println!("---");
+        }
+    }
+}
+
+pub trait NCorrectConv<Image> {
+    fn n_correct(&self, image: &Image, class: usize) -> (usize, u64);
+}
+
+impl<
+        T: Classify<Input = Patch, ClassesShape = [(); C]>,
+        Patch: Distance<Rhs = Patch>,
+        IP: Default + Copy,
+        const X: usize,
+        const Y: usize,
+        const C: usize,
+    > NCorrectConv<[[IP; Y]; X]> for T
+where
+    [[IP; 3]; 3]: Normalize2D<Patch>,
+{
+    fn n_correct(&self, image: &[[IP; Y]; X], class: usize) -> (usize, u64) {
+        let mut n_correct = 0u64;
+        let mut total = 0usize;
+        for x in 0..X - 2 {
+            for y in 0..Y - 2 {
+                let mut patch = [[IP::default(); 3]; 3];
+                for px in 0..3 {
+                    for py in 0..3 {
+                        patch[px][py] = image[x + px][y + py]
+                    }
+                }
+                total += 1;
+                n_correct += (self.max_class(&patch.normalize_2d()) == class) as u64;
+            }
+        }
+        (total, n_correct)
     }
 }
