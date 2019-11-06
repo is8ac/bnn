@@ -22,10 +22,7 @@ type InputWordType = b32;
 type InputType = <InputWordType as Element<InputWordShape>>::Array;
 
 fn main() {
-    println!(
-        "MatrixCountersType: {}",
-        std::any::type_name::<u8>()
-    );
+    println!("MatrixCountersType: {}", std::any::type_name::<u8>());
     rayon::ThreadPoolBuilder::new()
         .stack_size(2usize.pow(28))
         //.num_threads(2)

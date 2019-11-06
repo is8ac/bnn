@@ -23,21 +23,6 @@ impl<T: Shape> Shape for Box<T> {
     type Index = T::Index;
 }
 
-/// If a `Shape` contains a pair at some level, what is the index type?
-/// It must fork.
-/// This is the purpose of the `SplitIndex` enum.
-///
-/// You should never need to interact directly with it.
-pub enum SplitIndex<A, B> {
-    A(A),
-    B(B),
-}
-
-impl<A: Shape, B: Shape> Shape for (A, B) {
-    const N: usize = A::N + B::N;
-    type Index = SplitIndex<A, B>;
-}
-
 /// Given an element and a shape, get the array.
 ///
 /// # Example
@@ -64,14 +49,6 @@ impl<T: Element<S>, S: Shape, const L: usize> Element<[S; L]> for T {
 
 impl<T: Element<S>, S: Shape> Element<Box<S>> for T {
     type Array = Box<T::Array>;
-}
-
-impl<E, A: Shape, B: Shape> Element<(A, B)> for E
-where
-    E: Element<A>,
-    E: Element<B>,
-{
-    type Array = (<E as Element<A>>::Array, <E as Element<B>>::Array);
 }
 
 pub trait MapMut<I: Element<Self>, O: Element<Self>>

@@ -4,9 +4,11 @@ use crate::bits::{
 };
 use crate::shape::{Element, Shape};
 use crate::unary::Normalize2D;
-use crate::weight::InputBits;
 
-pub trait Image2D {
+pub trait Image2D
+where
+    Self::ImageShape: Shape,
+{
     type PixelType;
     type ImageShape;
 }
@@ -148,26 +150,6 @@ impl_avgpool!(16, 16);
 impl_avgpool!(8, 8);
 impl_avgpool!(4, 4);
 
-pub trait Concat2D<A, B> {
-    fn concat_2d(a: &A, b: &B) -> Self;
-}
-
-impl<A: Copy, B: Copy, const X: usize, const Y: usize> Concat2D<[[A; Y]; X], [[B; Y]; X]>
-    for [[(A, B); Y]; X]
-where
-    Self: Default,
-{
-    fn concat_2d(a: &[[A; Y]; X], b: &[[B; Y]; X]) -> Self {
-        let mut target = <Self>::default();
-        for x in 0..X {
-            for y in 0..Y {
-                target[x][y] = (a[x][y], b[x][y]);
-            }
-        }
-        target
-    }
-}
-
 pub trait Conv2D<Image: Image2D, O>
 where
     Image::ImageShape: Shape,
@@ -185,7 +167,6 @@ impl<
     > Conv2D<[[IP; Y]; X], OP> for T
 where
     [[IP; 3]; 3]: Normalize2D<T::Input>,
-    Self: Image2D<PixelType = IP, ImageShape = [[(); Y]; X]>,
     [[OP; Y]; X]: Default,
 {
     fn conv2d(&self, image: &[[IP; Y]; X]) -> [[OP; Y]; X] {

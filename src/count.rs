@@ -122,14 +122,14 @@ where
     }
 }
 
-pub trait CountBitsConv<IP, const X: usize, const Y: usize, const C: usize>
+pub trait CountBitsConv<Image, const C: usize>
 where
     Self: BitArray,
     u32: Element<Self::BitShape>,
     <u32 as Element<Self::BitShape>>::Array: Element<Self::BitShape>,
 {
     fn count_bits_conv(
-        examples: &Vec<([[IP; Y]; X], usize)>,
+        examples: &Vec<(Image, usize)>,
     ) -> (
         Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>,
         Box<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>,
@@ -138,7 +138,7 @@ where
 }
 
 impl<T: Copy + BitArray, IP: Copy, const X: usize, const Y: usize, const C: usize>
-    CountBitsConv<IP, { X }, { Y }, { C }> for [[T; 3]; 3]
+    CountBitsConv<[[IP; Y]; X], { C }> for [[T; 3]; 3]
 where
     Self: BitArray,
     [[IP; Y]; X]: ConvIncrementCounters<Self, { C }> + Image2D<PixelType = IP>,
