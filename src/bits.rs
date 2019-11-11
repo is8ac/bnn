@@ -1,7 +1,9 @@
 /// the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
 use crate::shape::{Element, Shape};
+use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::num::Wrapping;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 
@@ -15,9 +17,7 @@ where
 {
     fn increment_hamming_distance_matrix(
         &self,
-        counters_matrix: &mut <<u32 as Element<Self::BitShape>>::Array as Element<
-            T::BitShape,
-        >>::Array,
+        counters_matrix: &mut <<u32 as Element<Self::BitShape>>::Array as Element<T::BitShape>>::Array,
         target: &T,
     );
 }
@@ -87,18 +87,20 @@ where
     }
 }
 
-pub trait BitMul<O> {
+pub trait BitMul {
+    type Target;
     type Input;
-    fn bit_mul(&self, input: &Self::Input) -> O;
+    fn bit_mul(&self, input: &Self::Input) -> Self::Target;
 }
 
-impl<O: Default + Copy, T: BitMul<O>, const L: usize> BitMul<[O; L]> for [T; L]
+impl<T: BitMul, const L: usize> BitMul for [T; L]
 where
-    [O; L]: Default,
+    [T::Target; L]: Default,
 {
+    type Target = [T::Target; L];
     type Input = T::Input;
-    fn bit_mul(&self, input: &Self::Input) -> [O; L] {
-        let mut target = <[O; L]>::default();
+    fn bit_mul(&self, input: &Self::Input) -> Self::Target {
+        let mut target = <Self::Target>::default();
         for i in 0..L {
             target[i] = self[i].bit_mul(input);
         }
@@ -204,6 +206,23 @@ where
     }
 }
 
+pub trait ArrayBitAnd {
+    fn bit_and(&self, rhs: &Self) -> Self;
+}
+
+impl<T: ArrayBitAnd, const L: usize> ArrayBitAnd for [T; L]
+where
+    [T; L]: Default,
+{
+    fn bit_and(&self, rhs: &Self) -> Self {
+        let mut target = <[T; L]>::default();
+        for i in 0..L {
+            target[i] = self[i].bit_and(&rhs[i]);
+        }
+        target
+    }
+}
+
 pub trait ArrayBitOr {
     fn bit_or(&self, rhs: &Self) -> Self;
 }
@@ -252,7 +271,7 @@ pub trait BitWord {
 macro_rules! for_uints {
     ($b_type:ident, $u_type:ty, $len:expr, $format_string:expr) => {
         #[allow(non_camel_case_types)]
-        #[derive(Copy, Clone)]
+        #[derive(Copy, Clone, Serialize, Deserialize)]
         pub struct $b_type(pub $u_type);
 
         impl $b_type {
@@ -309,7 +328,8 @@ macro_rules! for_uints {
                 ((self.0 ^ rhs) & self.1).count_ones()
             }
         }
-        impl<I: Distance> BitMul<$b_type> for [(I, u32); $len] {
+        impl<I: Distance> BitMul for [(I, u32); $len] {
+            type Target = $b_type;
             type Input = I::Rhs;
             fn bit_mul(&self, input: &I::Rhs) -> $b_type {
                 let mut target = $b_type(0);
@@ -322,6 +342,11 @@ macro_rules! for_uints {
         impl ArrayBitOr for $b_type {
             fn bit_or(&self, other: &$b_type) -> $b_type {
                 *self | *other
+            }
+        }
+        impl ArrayBitAnd for $b_type {
+            fn bit_and(&self, other: &$b_type) -> $b_type {
+                *self & *other
             }
         }
         impl Default for $b_type {
@@ -371,6 +396,11 @@ macro_rules! for_uints {
         impl fmt::Debug for $b_type {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, $format_string, self.0)
+            }
+        }
+        impl Hash for $b_type {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                self.0.hash(state);
             }
         }
         impl<I: BitArray + BitArrayOPs> IncrementHammingDistanceMatrix<$b_type> for I

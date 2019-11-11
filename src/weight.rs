@@ -1,12 +1,10 @@
 use crate::bits::{BitArray, BitArrayOPs, Distance};
 use crate::count::Counters;
 use crate::shape::{Element, Flatten, Fold, Map, Shape, ZipMap};
-use std::boxed::Box;
-use std::ops::AddAssign;
-extern crate rand;
-extern crate rand_hc;
 use rayon::prelude::*;
+use std::boxed::Box;
 use std::collections::HashSet;
+use std::ops::AddAssign;
 
 // A helper associated type to get the trinary weights matrix for a given input output pair.
 pub trait InputBits<O> {

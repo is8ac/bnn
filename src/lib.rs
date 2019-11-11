@@ -2,10 +2,8 @@
 #![feature(test)]
 
 extern crate bincode;
-extern crate rand;
 extern crate rayon;
 extern crate serde;
-extern crate serde_derive;
 extern crate time;
 
 pub mod bits;

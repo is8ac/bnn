@@ -99,7 +99,7 @@ where
                     |mut acc, (image, class)| {
                         image.increment_frac_counters(&mut acc.0[*class]);
                         image.increment_hamming_distance_matrix(&mut *acc.1, image);
-                        acc.2 +=1;
+                        acc.2 += 1;
                         acc
                     },
                 )

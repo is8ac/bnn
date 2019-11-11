@@ -7,13 +7,10 @@ edition = "2018"
 
 [dependencies]
 time = "0.1"
-rand = "0.6"
-rand_hc = "0.1.0"
 rayon = "1.2"
-serde = "1.0.79"
-serde_derive = "1.0.76"
+serde = { version = "1.0", features = ["derive"] }
 bincode = { version = "1.2", features = ["i128"] }
 num_cpus = "1.11"
 
 [profile.release]
-lto = true
+#lto = true

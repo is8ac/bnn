@@ -31,10 +31,7 @@ impl<T: Shape> Shape for Box<T> {
 /// type Counters = <u32 as Element<MyShape>>::Array
 /// ```
 ///
-pub trait Element<S: Shape>
-where
-    Self: Sized,
-{
+pub trait Element<S: Shape> {
     /// The type of the Shape `S` when filled with `Element`s of `Self`.
     type Array;
 }
@@ -308,3 +305,42 @@ mod test {
         assert_eq!(array1, array2);
     }
 }
+
+pub trait Merge<A, B> {
+    fn merge(a: &A, b: &B) -> Self;
+}
+
+impl<T: Copy> Merge<T, T> for [T; 2] {
+    fn merge(&a: &T, &b: &T) -> Self {
+        [a, b]
+    }
+}
+
+macro_rules! impl_array_array_merge {
+    ($a:expr, $b:expr) => {
+        impl<T: Copy + Default> Merge<[T; $a], [T; $b]> for [T; $a + $b] {
+            fn merge(&a: &[T; $a], &b: &[T; $b]) -> Self {
+                let mut target = <[T; $a + $b]>::default();
+                for i in 0..$a {
+                    target[i] = a[i];
+                }
+                for i in 0..$b {
+                    target[$a + i] = b[i];
+                }
+                target
+            }
+        }
+    };
+}
+
+impl_array_array_merge!(1, 1);
+impl_array_array_merge!(2, 1);
+impl_array_array_merge!(3, 1);
+
+impl_array_array_merge!(1, 2);
+impl_array_array_merge!(2, 2);
+impl_array_array_merge!(3, 2);
+
+impl_array_array_merge!(1, 3);
+impl_array_array_merge!(2, 3);
+impl_array_array_merge!(3, 3);

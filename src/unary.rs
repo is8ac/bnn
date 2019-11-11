@@ -13,7 +13,7 @@ to_unary!(to_3, u8, 3);
 to_unary!(to_10, u32, 10);
 to_unary!(to_32, u32, 32);
 
-trait ToUnary<B> {
+pub trait ToUnary<B> {
     fn to_unary(&self) -> B;
 }
 
@@ -53,8 +53,12 @@ impl<T: Copy> Normalize2D<[[T; 3]; 3]> for [[T; 3]; 3] {
 }
 
 // slide the min to 0
-impl Normalize2D<[[b32; 3]; 3]> for [[[u8; 3]; 3]; 3] {
-    fn normalize_2d(&self) -> [[b32; 3]; 3] {
+impl<T> Normalize2D<[[T; 3]; 3]> for [[[u8; 3]; 3]; 3]
+where
+    [u8; 3]: ToUnary<T>,
+    [[T; 3]; 3]: Default,
+{
+    fn normalize_2d(&self) -> [[T; 3]; 3] {
         let mut mins = [255u8; 3];
         for x in 0..3 {
             for y in 0..3 {
@@ -63,7 +67,7 @@ impl Normalize2D<[[b32; 3]; 3]> for [[[u8; 3]; 3]; 3] {
                 }
             }
         }
-        let mut target = <[[b32; 3]; 3]>::default();
+        let mut target = <[[T; 3]; 3]>::default();
         for x in 0..3 {
             for y in 0..3 {
                 let mut pixel = [0u8; 3];
