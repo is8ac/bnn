@@ -3,23 +3,26 @@ use crate::bits::{
     IncrementHammingDistanceMatrix,
 };
 use crate::count::IncrementCounters;
+use crate::layer::Apply;
 use crate::shape::{Element, Shape};
 use crate::unary::NormalizeAndBitpack;
-use crate::layer::Apply;
 use std::hash::{Hash, Hasher};
 
-pub struct StaticImage<Pixel, const X: usize, const Y: usize> {
-    pub image: [[Pixel; Y]; X],
+pub struct StaticImage<Image> {
+    pub image: Image,
 }
 
-impl<T: BitMul, IP: Default + Copy, const X: usize, const Y: usize> Apply<StaticImage<IP, {X}, {Y}>, [[IP; 3]; 3], T::Input> for T
+impl<T: BitMul, IP: Default + Copy, const X: usize, const Y: usize>
+    Apply<StaticImage<[[IP; Y]; X]>, [[IP; 3]; 3], T::Input> for T
 where
     [[IP; 3]; 3]: NormalizeAndBitpack<T::Input>,
     [[T::Target; Y]; X]: Default,
 {
-    type Output = StaticImage<T::Target, {X}, {Y}>;
-    fn apply(&self, image: &StaticImage<IP, {X}, {Y}>) -> StaticImage<T::Target, {X}, {Y}> {
-        let mut target = StaticImage{image: <[[T::Target; Y]; X]>::default()};
+    type Output = StaticImage<[[T::Target; Y]; X]>;
+    fn apply(&self, image: &StaticImage<[[IP; Y]; X]>) -> StaticImage<[[T::Target; Y]; X]> {
+        let mut target = StaticImage {
+            image: <[[T::Target; Y]; X]>::default(),
+        };
         for x in 0..X - 2 {
             for y in 0..Y - 2 {
                 let mut patch = [[IP::default(); 3]; 3];
@@ -35,13 +38,14 @@ where
     }
 }
 
-
-impl<P, const X: usize, const Y: usize> Hash for StaticImage<P, {X}, {Y}> where [[P; Y]; X]: Hash {
+impl<P, const X: usize, const Y: usize> Hash for StaticImage<[[P; Y]; X]>
+where
+    [[P; Y]; X]: Hash,
+{
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.image.hash(state);
     }
 }
-
 
 impl<
         Pixel: Copy,
@@ -49,7 +53,7 @@ impl<
         const X: usize,
         const Y: usize,
         const C: usize,
-    > IncrementCounters<[[Pixel; 3]; 3], Patch, { C }> for StaticImage<Pixel, { X }, { Y }>
+    > IncrementCounters<[[Pixel; 3]; 3], Patch, { C }> for StaticImage<[[Pixel; Y]; X]>
 where
     [[Pixel; 3]; 3]: NormalizeAndBitpack<Patch> + Default,
     u32: Element<Patch::BitShape>,
@@ -90,7 +94,7 @@ where
     type ImageShape;
 }
 
-impl<P, const X: usize, const Y: usize> Image2D for StaticImage<P, { X }, { Y }> {
+impl<P, const X: usize, const Y: usize> Image2D for StaticImage<[[P; Y]; X]> {
     type PixelType = P;
     type ImageShape = [[(); Y]; X];
 }
@@ -244,38 +248,29 @@ impl_bitpool!(16, 16);
 impl_bitpool!(8, 8);
 impl_bitpool!(4, 4);
 
-pub trait AvgPool
-where
-    Self: Image2D,
-    Self::ImageShape: Poolable,
-    <<Self as Image2D>::ImageShape as Poolable>::Pooled: Shape,
-    <Self as Image2D>::PixelType: Element<<<Self as Image2D>::ImageShape as Poolable>::Pooled>,
-{
-    fn avg_pool(
-        &self,
-    ) -> <<Self as Image2D>::PixelType as Element<
-        <<Self as Image2D>::ImageShape as Poolable>::Pooled,
-    >>::Array;
+pub trait AvgPool {
+    type Pooled;
+    fn avg_pool(&self) -> Self::Pooled;
 }
 
 macro_rules! impl_avgpool {
     ($x_size:expr, $y_size:expr) => {
-        impl AvgPool for [[[u8; 3]; $y_size]; $x_size]
-        where
-            [[(); $x_size]; $y_size]: Poolable<Pooled = [[(); $y_size / 2]; $y_size / 2]>,
-        {
-            fn avg_pool(&self) -> [[[u8; 3]; $y_size / 2]; $x_size / 2] {
-                let mut target = [[[0u8; 3]; $y_size / 2]; $x_size / 2];
+        impl AvgPool for StaticImage<[[[u8; 3]; $y_size]; $x_size]> {
+            type Pooled = StaticImage<[[[u8; 3]; $y_size / 2]; $x_size / 2]>;
+            fn avg_pool(&self) -> Self::Pooled {
+                let mut target = StaticImage {
+                    image: [[[0u8; 3]; $y_size / 2]; $x_size / 2],
+                };
                 for x in 0..$x_size / 2 {
                     let x_index = x * 2;
                     for y in 0..$y_size / 2 {
                         let y_index = y * 2;
                         for c in 0..3 {
-                            let sum = self[x_index + 0][y_index + 0][c] as u16
-                                + self[x_index + 0][y_index + 1][c] as u16
-                                + self[x_index + 1][y_index + 0][c] as u16
-                                + self[x_index + 1][y_index + 1][c] as u16;
-                            target[x][y][c] = (sum / 4) as u8;
+                            let sum = self.image[x_index + 0][y_index + 0][c] as u16
+                                + self.image[x_index + 0][y_index + 1][c] as u16
+                                + self.image[x_index + 1][y_index + 0][c] as u16
+                                + self.image[x_index + 1][y_index + 1][c] as u16;
+                            target.image[x][y][c] = (sum / 4) as u8;
                         }
                     }
                 }
