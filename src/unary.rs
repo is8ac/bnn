@@ -41,24 +41,24 @@ impl ToUnary<[b32; 3]> for [u8; 3] {
     }
 }
 
-pub trait Normalize2D<O> {
-    fn normalize_2d(&self) -> O;
+pub trait NormalizeAndBitpack<O> {
+    fn normalize_and_bitpack(&self) -> O;
 }
 
-impl<T: Copy> Normalize2D<[[T; 3]; 3]> for [[T; 3]; 3] {
+impl<T: Copy> NormalizeAndBitpack<[[T; 3]; 3]> for [[T; 3]; 3] {
     #[inline(always)]
-    fn normalize_2d(&self) -> [[T; 3]; 3] {
+    fn normalize_and_bitpack(&self) -> [[T; 3]; 3] {
         *self
     }
 }
 
 // slide the min to 0
-impl<T> Normalize2D<[[T; 3]; 3]> for [[[u8; 3]; 3]; 3]
+impl<T> NormalizeAndBitpack<[[T; 3]; 3]> for [[[u8; 3]; 3]; 3]
 where
     [u8; 3]: ToUnary<T>,
     [[T; 3]; 3]: Default,
 {
-    fn normalize_2d(&self) -> [[T; 3]; 3] {
+    fn normalize_and_bitpack(&self) -> [[T; 3]; 3] {
         let mut mins = [255u8; 3];
         for x in 0..3 {
             for y in 0..3 {

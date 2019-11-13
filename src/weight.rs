@@ -235,11 +235,11 @@ where
     ///
     /// value_counters is the number of time that each bit was set in each of the two classes.
     fn gen_weights(
+        value_counters: &Box<[(usize, <u32 as Element<Self::BitShape>>::Array); 2]>,
         dist_matrix_counters: &Box<
             <<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array,
         >,
         n: usize,
-        value_counters: &Box<[(usize, <u32 as Element<Self::BitShape>>::Array); 2]>,
     ) -> (
         <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
         u32,
@@ -278,11 +278,11 @@ where
     <(B::WordType, B::WordType) as Element<B::WordShape>>::Array: Distance<Rhs = B>,
 {
     fn gen_weights(
+        value_counters: &Box<[(usize, <u32 as Element<<B as BitArray>::BitShape>>::Array); 2]>,
         dist_matrix_counters: &Box<
             <<u32 as Element<B::BitShape>>::Array as Element<B::BitShape>>::Array,
         >,
         n_examples: usize,
-        value_counters: &Box<[(usize, <u32 as Element<<B as BitArray>::BitShape>>::Array); 2]>,
     ) -> (
         <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
         u32,
@@ -375,7 +375,7 @@ where
     }
 }
 
-fn gen_partitions(depth: usize) -> Vec<HashSet<usize>> {
+pub fn gen_partitions(depth: usize) -> Vec<HashSet<usize>> {
     assert_ne!(depth, 0);
     if depth == 1 {
         vec![HashSet::new()]
@@ -450,9 +450,9 @@ where
                         .elementwise_add(class_counter);
                 }
                 <I as GenWeights>::gen_weights(
+                    &split_counters,
                     &hamming_matrix_counters,
                     n_examples,
-                    &split_counters,
                 )
             })
             .collect()

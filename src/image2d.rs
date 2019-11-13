@@ -2,8 +2,85 @@ use crate::bits::{
     ArrayBitAnd, ArrayBitOr, BitArray, BitMul, BitWord, Classify, Distance, IncrementFracCounters,
     IncrementHammingDistanceMatrix,
 };
+use crate::count::IncrementCounters;
 use crate::shape::{Element, Shape};
-use crate::unary::Normalize2D;
+use crate::unary::NormalizeAndBitpack;
+use crate::layer::Apply;
+use std::hash::{Hash, Hasher};
+
+pub struct StaticImage<Pixel, const X: usize, const Y: usize> {
+    pub image: [[Pixel; Y]; X],
+}
+
+impl<T: BitMul, IP: Default + Copy, const X: usize, const Y: usize> Apply<StaticImage<IP, {X}, {Y}>, [[IP; 3]; 3], T::Input> for T
+where
+    [[IP; 3]; 3]: NormalizeAndBitpack<T::Input>,
+    [[T::Target; Y]; X]: Default,
+{
+    type Output = StaticImage<T::Target, {X}, {Y}>;
+    fn apply(&self, image: &StaticImage<IP, {X}, {Y}>) -> StaticImage<T::Target, {X}, {Y}> {
+        let mut target = StaticImage{image: <[[T::Target; Y]; X]>::default()};
+        for x in 0..X - 2 {
+            for y in 0..Y - 2 {
+                let mut patch = [[IP::default(); 3]; 3];
+                for px in 0..3 {
+                    for py in 0..3 {
+                        patch[px][py] = image.image[x + px][y + py]
+                    }
+                }
+                target.image[x + 1][y + 1] = self.bit_mul(&patch.normalize_and_bitpack());
+            }
+        }
+        target
+    }
+}
+
+
+impl<P, const X: usize, const Y: usize> Hash for StaticImage<P, {X}, {Y}> where [[P; Y]; X]: Hash {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.image.hash(state);
+    }
+}
+
+
+impl<
+        Pixel: Copy,
+        Patch: BitArray + IncrementFracCounters + IncrementHammingDistanceMatrix<Patch>,
+        const X: usize,
+        const Y: usize,
+        const C: usize,
+    > IncrementCounters<[[Pixel; 3]; 3], Patch, { C }> for StaticImage<Pixel, { X }, { Y }>
+where
+    [[Pixel; 3]; 3]: NormalizeAndBitpack<Patch> + Default,
+    u32: Element<Patch::BitShape>,
+    u32: Element<<Patch as BitArray>::BitShape>,
+    <u32 as Element<Patch::BitShape>>::Array: Element<Patch::BitShape>,
+{
+    fn increment_counters(
+        &self,
+        class: usize,
+        value_counters: &mut [(usize, <u32 as Element<Patch::BitShape>>::Array); C],
+        counters_matrix: &mut <<u32 as Element<Patch::BitShape>>::Array as Element<
+            Patch::BitShape,
+        >>::Array,
+        n_examples: &mut usize,
+    ) {
+        for x in 0..X - 2 {
+            for y in 0..Y - 2 {
+                *n_examples += 1;
+                let mut patch = <[[Pixel; 3]; 3]>::default();
+                for px in 0..3 {
+                    for py in 0..3 {
+                        patch[px][py] = self.image[x + px][y + py]
+                    }
+                }
+                let normalized = patch.normalize_and_bitpack();
+                normalized.increment_frac_counters(&mut value_counters[class]);
+                normalized.increment_hamming_distance_matrix(counters_matrix, &normalized);
+            }
+        }
+    }
+}
 
 pub trait Image2D
 where
@@ -11,6 +88,11 @@ where
 {
     type PixelType;
     type ImageShape;
+}
+
+impl<P, const X: usize, const Y: usize> Image2D for StaticImage<P, { X }, { Y }> {
+    type PixelType = P;
+    type ImageShape = [[(); Y]; X];
 }
 
 impl<P, const X: usize, const Y: usize> Image2D for [[P; Y]; X] {
@@ -44,62 +126,62 @@ impl_poolable!(16, 16);
 impl_poolable!(8, 8);
 impl_poolable!(4, 4);
 
-pub trait ConvIncrementCounters<P: BitArray, const C: usize>
-where
-    Self: Image2D,
-    [[Self::PixelType; 3]; 3]: Normalize2D<P>,
-    u32: Element<P::BitShape>,
-    u32: Element<<P as BitArray>::BitShape>,
-    <u32 as Element<P::BitShape>>::Array: Element<P::BitShape>,
-{
-    fn conv_increment_counters(
-        &self,
-        class: usize,
-        value_counters: &mut [(usize, <u32 as Element<P::BitShape>>::Array); C],
-        counters_matrix: &mut <<u32 as Element<P::BitShape>>::Array as Element<P::BitShape>>::Array,
-        n_examples: &mut usize,
-    );
-}
-
-impl<
-        Patch: BitArray + IncrementFracCounters + IncrementHammingDistanceMatrix<Patch>,
-        IP: Copy + Default,
-        const X: usize,
-        const Y: usize,
-        const C: usize,
-    > ConvIncrementCounters<Patch, { C }> for [[IP; Y]; X]
-where
-    Self: Image2D<PixelType = IP>,
-    [[IP; 3]; 3]: Normalize2D<Patch>,
-    u32: Element<Patch::BitShape>,
-    u32: Element<<Patch as BitArray>::BitShape>,
-    <u32 as Element<Patch::BitShape>>::Array: Element<Patch::BitShape>,
-{
-    fn conv_increment_counters(
-        &self,
-        class: usize,
-        value_counters: &mut [(usize, <u32 as Element<Patch::BitShape>>::Array); C],
-        counters_matrix: &mut <<u32 as Element<Patch::BitShape>>::Array as Element<
-            Patch::BitShape,
-        >>::Array,
-        n_examples: &mut usize,
-    ) {
-        for x in 0..X - 2 {
-            for y in 0..Y - 2 {
-                *n_examples += 1;
-                let mut patch = [[IP::default(); 3]; 3];
-                for px in 0..3 {
-                    for py in 0..3 {
-                        patch[px][py] = self[x + px][y + py]
-                    }
-                }
-                let normalized = patch.normalize_2d();
-                normalized.increment_frac_counters(&mut value_counters[class]);
-                normalized.increment_hamming_distance_matrix(counters_matrix, &normalized);
-            }
-        }
-    }
-}
+//pub trait ConvIncrementCounters<P: BitArray, const C: usize>
+//where
+//    Self: Image2D,
+//    [[Self::PixelType; 3]; 3]: Normalize2D<P>,
+//    u32: Element<P::BitShape>,
+//    u32: Element<<P as BitArray>::BitShape>,
+//    <u32 as Element<P::BitShape>>::Array: Element<P::BitShape>,
+//{
+//    fn conv_increment_counters(
+//        &self,
+//        class: usize,
+//        value_counters: &mut [(usize, <u32 as Element<P::BitShape>>::Array); C],
+//        counters_matrix: &mut <<u32 as Element<P::BitShape>>::Array as Element<P::BitShape>>::Array,
+//        n_examples: &mut usize,
+//    );
+//}
+//
+//impl<
+//        Patch: BitArray + IncrementFracCounters + IncrementHammingDistanceMatrix<Patch>,
+//        IP: Copy + Default,
+//        const X: usize,
+//        const Y: usize,
+//        const C: usize,
+//    > ConvIncrementCounters<Patch, { C }> for [[IP; Y]; X]
+//where
+//    Self: Image2D<PixelType = IP>,
+//    [[IP; 3]; 3]: Normalize2D<Patch>,
+//    u32: Element<Patch::BitShape>,
+//    u32: Element<<Patch as BitArray>::BitShape>,
+//    <u32 as Element<Patch::BitShape>>::Array: Element<Patch::BitShape>,
+//{
+//    fn conv_increment_counters(
+//        &self,
+//        class: usize,
+//        value_counters: &mut [(usize, <u32 as Element<Patch::BitShape>>::Array); C],
+//        counters_matrix: &mut <<u32 as Element<Patch::BitShape>>::Array as Element<
+//            Patch::BitShape,
+//        >>::Array,
+//        n_examples: &mut usize,
+//    ) {
+//        for x in 0..X - 2 {
+//            for y in 0..Y - 2 {
+//                *n_examples += 1;
+//                let mut patch = [[IP::default(); 3]; 3];
+//                for px in 0..3 {
+//                    for py in 0..3 {
+//                        patch[px][py] = self[x + px][y + py]
+//                    }
+//                }
+//                let normalized = patch.normalize_2d();
+//                normalized.increment_frac_counters(&mut value_counters[class]);
+//                normalized.increment_hamming_distance_matrix(counters_matrix, &normalized);
+//            }
+//        }
+//    }
+//}
 
 pub trait BitPool
 where
@@ -219,7 +301,7 @@ where
 
 impl<T: BitMul, IP: Default + Copy, const X: usize, const Y: usize> Conv2D<[[IP; Y]; X]> for T
 where
-    [[IP; 3]; 3]: Normalize2D<T::Input>,
+    [[IP; 3]; 3]: NormalizeAndBitpack<T::Input>,
     [[Self::Target; Y]; X]: Default,
 {
     fn conv2d(&self, image: &[[IP; Y]; X]) -> [[Self::Target; Y]; X] {
@@ -232,7 +314,7 @@ where
                         patch[px][py] = image[x + px][y + py]
                     }
                 }
-                target[x + 1][y + 1] = self.bit_mul(&patch.normalize_2d());
+                target[x + 1][y + 1] = self.bit_mul(&patch.normalize_and_bitpack());
             }
         }
         target
@@ -290,7 +372,7 @@ impl<
         const C: usize,
     > NCorrectConv<[[IP; Y]; X]> for T
 where
-    [[IP; 3]; 3]: Normalize2D<Patch>,
+    [[IP; 3]; 3]: NormalizeAndBitpack<Patch>,
 {
     fn n_correct(&self, image: &[[IP; Y]; X], class: usize) -> (usize, u64) {
         let mut n_correct = 0u64;
@@ -304,37 +386,43 @@ where
                     }
                 }
                 total += 1;
-                n_correct += (self.max_class(&patch.normalize_2d()) == class) as u64;
+                n_correct += (self.max_class(&patch.normalize_and_bitpack()) == class) as u64;
             }
         }
         (total, n_correct)
     }
 }
 
-//pub trait CalssifyAllPooled<Image> {
-//    fn n_correct(&self, image: &Image, class: usize) -> (usize, u64);
-//}
-//
-//impl<T: Classify<Input = Patch, ClassesShape = [(); C]>, Patch: Distance<Rhs = Patch>, IP: Default + Copy, const X: usize, const Y: usize, const C: usize>
-//    NCorrectConv<[[IP; Y]; X]> for T
-//where
-//    [[IP; 3]; 3]: Normalize2D<Patch>,
-//{
-//    fn n_correct(&self, image: &[[IP; Y]; X], class: usize) -> (usize, u64) {
-//        let mut n_correct = 0u64;
-//        let mut total = 0usize;
-//        for x in 0..X - 2 {
-//            for y in 0..Y - 2 {
-//                let mut patch = [[IP::default(); 3]; 3];
-//                for px in 0..3 {
-//                    for py in 0..3 {
-//                        patch[px][py] = image[x + px][y + py]
-//                    }
-//                }
-//                total += 1;
-//                n_correct += (self.max_class(&patch.normalize_2d()) == class) as u64;
-//            }
-//        }
-//        (total, n_correct)
-//    }
-//}
+pub trait ClassifyAvgPooled<Image> {
+    fn n_correct(&self, image: &Image, class: usize) -> (usize, u64);
+}
+
+impl<
+        T: Classify<Input = Patch, ClassesShape = [(); C]>,
+        Patch: Distance<Rhs = Patch>,
+        IP: Default + Copy,
+        const X: usize,
+        const Y: usize,
+        const C: usize,
+    > ClassifyAvgPooled<[[IP; Y]; X]> for T
+where
+    [[IP; 3]; 3]: NormalizeAndBitpack<Patch>,
+{
+    fn n_correct(&self, image: &[[IP; Y]; X], class: usize) -> (usize, u64) {
+        let mut n_correct = 0u64;
+        let mut total = 0usize;
+        for x in 0..X - 2 {
+            for y in 0..Y - 2 {
+                let mut patch = [[IP::default(); 3]; 3];
+                for px in 0..3 {
+                    for py in 0..3 {
+                        patch[px][py] = image[x + px][y + py]
+                    }
+                }
+                total += 1;
+                n_correct += (self.max_class(&patch.normalize_and_bitpack()) == class) as u64;
+            }
+        }
+        (total, n_correct)
+    }
+}

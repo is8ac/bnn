@@ -1,8 +1,8 @@
 use crate::bits::{BitArray, BitMul, Classify};
-use crate::count::{CountBits, CountBitsConv};
+use crate::count::{IncrementCounters, Counters};
 use crate::image2d::{AvgPool, BitPool, Conv2D, Image2D, NCorrectConv, Poolable};
-use crate::shape::{Element, Merge, Shape, ZipMap};
-use crate::weight::{GenParamClasses, GenParamSet, InputBits};
+use crate::shape::{Element, Merge, Shape, ZipMap, Flatten};
+use crate::weight::{InputBits, GenWeights, gen_partitions};
 use rayon::prelude::*;
 use std::boxed::Box;
 use std::time::Instant;
@@ -16,126 +16,117 @@ use std::io::prelude::*;
 use std::io::Read;
 use std::path::Path;
 
-pub trait FC<C>
-where
-    Self: Sized + BitMul,
-{
-    fn apply(examples: &Vec<(Self::Input, usize)>) -> (Self, Vec<(Self::Target, usize)>);
+pub trait Apply<Example, Patch, I> {
+    type Output;
+    fn apply(&self, input: &Example) -> Self::Output;
 }
 
-impl<T: BitMul + Sized + Send + Sync, const C: usize> FC<[(); C]> for T
+/// CountBits turns a bit Vec of `Example`s into a fixed size counters.
+/// For each `Example`, we extract 'Patch's from it, normalise to 'Self' and use them to increment counters.
+pub trait CountBits<Example: IncrementCounters<Patch, Self, {C}>, Patch, const C: usize>
 where
-    T::Input: BitArray
-        + GenParamClasses<[(); C]>
-        + GenParamSet<T::Target, [(); C]>
-        + Send
-        + Sync
-        + CountBits<{ C }>
-        + InputBits<T::Target, TrinaryWeights = T>,
-    T::Target: BitArray + Sync + Send,
-    <(
-        <T::Input as BitArray>::WordType,
-        <T::Input as BitArray>::WordType,
-    ) as Element<<T::Input as BitArray>::WordShape>>::Array: Send + Sync,
-    u32: Element<<T::Input as BitArray>::BitShape>
-        + Element<<T::Input as BitArray>::BitShape>
-        + Element<<T::Target as BitArray>::BitShape>,
-    bool: Element<<T::Input as BitArray>::BitShape>
-        + Element<<T::Input as BitArray>::BitShape>
-        + Element<<<T as BitMul>::Target as BitArray>::BitShape>,
-    (
-        <T::Input as BitArray>::WordType,
-        <T::Input as BitArray>::WordType,
-    ): Element<<T::Input as BitArray>::WordShape>,
-    [(
-        <(
-            <T::Input as BitArray>::WordType,
-            <T::Input as BitArray>::WordType,
-        ) as Element<<T::Input as BitArray>::WordShape>>::Array,
-        u32,
-    ); C]: Classify<Input = T::Input, ClassesShape = [(); C]>,
-    <u32 as Element<<T::Input as BitArray>::BitShape>>::Array:
-        Element<<T::Input as BitArray>::BitShape>,
+    Self: BitArray,
+    u32: Element<Self::BitShape>,
+    <u32 as Element<Self::BitShape>>::Array: Element<Self::BitShape>,
 {
-    fn apply(examples: &Vec<(T::Input, usize)>) -> (Self, Vec<(T::Target, usize)>) {
-        let (value_counters, matrix_counters, n_examples) = T::Input::count_bits(&examples);
-        let layer_weights = <T::Input as GenParamSet<T::Target, [(); C]>>::gen_parm_set(
-            n_examples,
-            &value_counters,
-            &matrix_counters,
-        );
-        let class_weights = <T::Input as GenParamClasses<[(); C]>>::gen_parm_classes(
-            n_examples,
-            &value_counters,
-            &matrix_counters,
-        );
-        let n_correct: u64 = examples
-            .par_iter()
-            .map(|(image, class)| (class_weights.max_class(image) == *class) as u64)
-            .sum();
-        println!("acc: {}%", (n_correct as f64 / n_examples as f64) * 100f64);
-        let new_examples: Vec<_> = examples
-            .par_iter()
-            .map(|(image, class)| (layer_weights.bit_mul(image), *class))
-            .collect();
-        (layer_weights, new_examples)
+    fn count_bits(
+        examples: &Vec<(Example, usize)>,
+    ) -> (
+        Box<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>,
+        Box<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>,
+        usize,
+    );
+}
+
+impl<Example: IncrementCounters<Patch, T, { C }> + Send + Sync, Patch, T, const C: usize>
+    CountBits<Example, Patch, { C }> for T
+where
+    T: BitArray,
+    u32: Element<T::BitShape>,
+    bool: Element<T::BitShape>,
+    <u32 as Element<T::BitShape>>::Array: Element<T::BitShape>,
+    Box<[(usize, <u32 as Element<T::BitShape>>::Array); C]>: Default + Sync + Send + Counters,
+    Box<<<u32 as Element<T::BitShape>>::Array as Element<T::BitShape>>::Array>:
+        Default + Send + Sync + Counters,
+{
+    fn count_bits(
+        examples: &Vec<(Example, usize)>,
+    ) -> (
+        Box<[(usize, <u32 as Element<T::BitShape>>::Array); C]>,
+        Box<<<u32 as Element<T::BitShape>>::Array as Element<T::BitShape>>::Array>,
+        usize,
+    ) {
+        examples
+            .par_chunks(examples.len() / num_cpus::get_physical())
+            .map(|chunk| {
+                chunk.iter().fold(
+                    (
+                        Box::<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>::default(),
+                        Box::<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>::default(),
+                        0usize,
+                    ),
+                    |mut acc, (image, class)| {
+                        image.increment_counters(*class, &mut acc.0, &mut acc.1, &mut acc.2);
+                        acc
+                    },
+                )
+            })
+            .reduce(
+                || {
+                    (
+                        Box::<[(usize, <u32 as Element<Self::BitShape>>::Array); C]>::default(),
+                        Box::<<<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array>::default(),
+                        0usize,
+                    )
+                },
+                |mut a, b| {
+                    (a.0).elementwise_add(&b.0);
+                    (a.1).elementwise_add(&b.1);
+                    (a.2).elementwise_add(&b.2);
+                    a
+                },
+            )
     }
 }
 
-pub trait Conv2D3x3<Image: Image2D, C>
+pub trait Layer<Example, Patch, I, C>
 where
-    Self: Sized + BitMul,
-    <Self as BitMul>::Target: Element<<Image as Image2D>::ImageShape>,
+    Self: Sized + Apply<Example, Patch, I>,
 {
-    fn apply(
-        examples: &Vec<(Image, usize)>,
+    fn gen(
+        examples: &Vec<(Example, usize)>,
     ) -> (
         Self,
-        Vec<(<Self::Target as Element<Image::ImageShape>>::Array, usize)>,
+        Vec<(Self::Output, usize)>,
     );
 }
 
 impl<
-        T: BitMul + Conv2D<Image> + Send + Sync + serde::Serialize,
-        Image: Image2D + Send + Sync + Hash,
+        Example: Send + Sync + Hash + IncrementCounters<Patch, I, {C}>,
+        Patch,
+        I: BitArray + CountBits<Example, Patch, {C}> + GenWeights + Copy,
+        T: BitMul<Input=I> + Send + Sync + serde::Serialize + Apply<Example, Patch, I>,
         const C: usize,
-    > Conv2D3x3<Image, [(); C]> for T
+    > Layer<Example, Patch, I, [(); C]> for T
 where
-    <T as BitMul>::Input: BitArray
-        + CountBitsConv<Image, { C }>
-        + GenParamClasses<[(); C]>
-        + GenParamSet<T::Target, [(); C]>
-        + InputBits<T::Target, TrinaryWeights = T>,
-    <T::Target as Element<Image::ImageShape>>::Array: Send + Sync,
-    bool: Element<<T::Target as BitArray>::BitShape> + Element<<T::Input as BitArray>::BitShape>,
-    u32: Element<<T::Target as BitArray>::BitShape> + Element<<T::Input as BitArray>::BitShape>,
-    <u32 as Element<<T::Input as BitArray>::BitShape>>::Array:
-        Element<<T::Input as BitArray>::BitShape>,
-    (
-        <T::Input as BitArray>::WordType,
-        <T::Input as BitArray>::WordType,
-    ): Element<<T::Input as BitArray>::WordShape>,
-    [(
-        <(
-            <T::Input as BitArray>::WordType,
-            <T::Input as BitArray>::WordType,
-        ) as Element<<T::Input as BitArray>::WordShape>>::Array,
-        u32,
-    ); C]: NCorrectConv<Image>,
-    <(
-        <T::Input as BitArray>::WordType,
-        <T::Input as BitArray>::WordType,
-    ) as Element<<T::Input as BitArray>::WordShape>>::Array: Send + Sync,
     for<'de> T: serde::Deserialize<'de>,
-    <T as BitMul>::Target: Element<<Image as Image2D>::ImageShape>,
-    <<T as BitMul>::Target as Element<<Image as Image2D>::ImageShape>>::Array: Send,
-    <T as BitMul>::Target: BitArray + Element<Image::ImageShape>,
+    T::Target: BitArray,
+    T::Output: Send + Sync,
+    (I::WordType, I::WordType): Element<I::WordShape>,
+    bool: Element<I::BitShape> + Element<I::BitShape>,
+    u32: Element<I::BitShape> + Element<I::BitShape>,
+    <u32 as Element<I::BitShape>>::Array: Element<I::BitShape> + Send + Sync,
+    Box::<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>: Default,
+    Box<<<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array>: Send + Sync,
+    (usize, <u32 as Element<I::BitShape>>::Array): Counters,
+    <T::Target as BitArray>::BitShape: Flatten<(<(I::WordType, I::WordType) as Element<I::WordShape>>::Array, u32)>,
+    (<(I::WordType, I::WordType) as Element<I::WordShape>>::Array, u32): Element<<T::Target as BitArray>::BitShape, Array=T> + Send + Sync + Copy,
 {
-    fn apply(
-        examples: &Vec<(Image, usize)>,
+    fn gen(
+        examples: &Vec<(Example, usize)>,
     ) -> (
         Self,
-        Vec<(<T::Target as Element<Image::ImageShape>>::Array, usize)>,
+        Vec<(Self::Output, usize)>,
     ) {
         let total_start = Instant::now();
 
@@ -160,44 +151,39 @@ where
                 acc_string.parse().unwrap()
             };
             println!(
-                "[cache] acc: {:.8}% {}  {}",
+                "[cache] acc: {:.8}% {}",
                 acc * 100f64,
-                std::any::type_name::<Image::ImageShape>(),
                 std::any::type_name::<Self>()
             );
             layer_weights
         } else {
             let start = Instant::now();
             let (value_counters, matrix_counters, n_examples) =
-                T::Input::count_bits_conv(&examples);
+                I::count_bits(&examples);
             let count_time = start.elapsed();
-            {
-                let class_weights = <T::Input as GenParamClasses<[(); C]>>::gen_parm_classes(
-                    n_examples,
-                    &value_counters,
-                    &matrix_counters,
-                );
-                let (n_examples, n_correct): (usize, u64) = examples
-                    .par_iter()
-                    .fold(
-                        || (0usize, 0u64),
-                        |acc, (image, class)| {
-                            let (n_examples, n_correct) = class_weights.n_correct(image, *class);
-                            (acc.0 + n_examples, acc.1 + n_correct)
-                        },
-                    )
-                    .reduce(|| (0usize, 0u64), |a, b| (a.0 + b.0, a.1 + b.1));
-                println!("acc: {}%", (n_correct as f64 / n_examples as f64) * 100f64);
-                let mut acc_file = File::create(dataset_path.join("acc")).unwrap();
-                write!(&mut acc_file, "{}", n_correct as f64 / n_examples as f64).unwrap();
-            }
             let start = Instant::now();
-            let layer_weights =
-                <<T as BitMul>::Input as GenParamSet<T::Target, [(); C]>>::gen_parm_set(
-                    n_examples,
-                    &value_counters,
-                    &matrix_counters,
-                );
+            let layer_weights = {
+                let mut partitions = gen_partitions(C);
+                partitions.sort_by_key(|x| x.len().min(C - x.len()));
+                let partitions = &partitions[0..<T::Target as BitArray>::BitShape::N];
+                let weights: Vec<_> = partitions
+                        .par_iter()
+                        .map(|partition| {
+                            let mut split_counters =
+                                Box::<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>::default();
+                            for (class, class_counter) in value_counters.iter().enumerate() {
+                                split_counters[partition.contains(&class) as usize]
+                                    .elementwise_add(class_counter);
+                            }
+                            <I as GenWeights>::gen_weights(
+                                &split_counters,
+                                &matrix_counters,
+                                n_examples,
+                            )
+                        })
+                        .collect();
+                <T::Target as BitArray>::BitShape::from_vec(&weights)
+            };
             let weights_time = start.elapsed();
             let total_time = total_start.elapsed();
             println!(
@@ -211,7 +197,7 @@ where
             .par_iter()
             .map(|(image, class)| {
                 (
-                    <Self as Conv2D<Image>>::conv2d(&layer_weights, image),
+                    <Self as Apply<Example, Patch, I>>::apply(&layer_weights, image),
                     *class,
                 )
             })
