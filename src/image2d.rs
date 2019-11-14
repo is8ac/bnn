@@ -1,10 +1,10 @@
 use crate::bits::{
-    ArrayBitAnd, ArrayBitOr, BitArray, BitMul, BitWord, Classify, Distance, IncrementFracCounters,
-    IncrementHammingDistanceMatrix,
+    AndOr, ArrayBitAnd, ArrayBitOr, BitArray, BitMul, BitWord, Classify, Distance,
+    IncrementFracCounters, IncrementHammingDistanceMatrix,
 };
 use crate::count::IncrementCounters;
 use crate::layer::Apply;
-use crate::shape::{Element, Shape};
+use crate::shape::{Element, Merge, Shape, ZipMap};
 use crate::unary::NormalizeAndBitpack;
 use std::hash::{Hash, Hasher};
 
@@ -86,6 +86,24 @@ where
     }
 }
 
+pub trait Concat<A, B> {
+    fn concat(a: &A, b: &B) -> Self;
+}
+
+impl<A, B, O: Merge<A, B>, const X: usize, const Y: usize>
+    Concat<StaticImage<[[A; Y]; X]>, StaticImage<[[B; Y]; X]>> for StaticImage<[[O; Y]; X]>
+where
+    [[(); Y]; X]: ZipMap<A, B, O>,
+{
+    fn concat(a: &StaticImage<[[A; Y]; X]>, b: &StaticImage<[[B; Y]; X]>) -> Self {
+        StaticImage {
+            image: <[[(); Y]; X] as ZipMap<A, B, O>>::zip_map(&a.image, &b.image, |a, b| {
+                O::merge(a, b)
+            }),
+        }
+    }
+}
+
 pub trait Image2D
 where
     Self::ImageShape: Shape,
@@ -130,111 +148,30 @@ impl_poolable!(16, 16);
 impl_poolable!(8, 8);
 impl_poolable!(4, 4);
 
-//pub trait ConvIncrementCounters<P: BitArray, const C: usize>
-//where
-//    Self: Image2D,
-//    [[Self::PixelType; 3]; 3]: Normalize2D<P>,
-//    u32: Element<P::BitShape>,
-//    u32: Element<<P as BitArray>::BitShape>,
-//    <u32 as Element<P::BitShape>>::Array: Element<P::BitShape>,
-//{
-//    fn conv_increment_counters(
-//        &self,
-//        class: usize,
-//        value_counters: &mut [(usize, <u32 as Element<P::BitShape>>::Array); C],
-//        counters_matrix: &mut <<u32 as Element<P::BitShape>>::Array as Element<P::BitShape>>::Array,
-//        n_examples: &mut usize,
-//    );
-//}
-//
-//impl<
-//        Patch: BitArray + IncrementFracCounters + IncrementHammingDistanceMatrix<Patch>,
-//        IP: Copy + Default,
-//        const X: usize,
-//        const Y: usize,
-//        const C: usize,
-//    > ConvIncrementCounters<Patch, { C }> for [[IP; Y]; X]
-//where
-//    Self: Image2D<PixelType = IP>,
-//    [[IP; 3]; 3]: Normalize2D<Patch>,
-//    u32: Element<Patch::BitShape>,
-//    u32: Element<<Patch as BitArray>::BitShape>,
-//    <u32 as Element<Patch::BitShape>>::Array: Element<Patch::BitShape>,
-//{
-//    fn conv_increment_counters(
-//        &self,
-//        class: usize,
-//        value_counters: &mut [(usize, <u32 as Element<Patch::BitShape>>::Array); C],
-//        counters_matrix: &mut <<u32 as Element<Patch::BitShape>>::Array as Element<
-//            Patch::BitShape,
-//        >>::Array,
-//        n_examples: &mut usize,
-//    ) {
-//        for x in 0..X - 2 {
-//            for y in 0..Y - 2 {
-//                *n_examples += 1;
-//                let mut patch = [[IP::default(); 3]; 3];
-//                for px in 0..3 {
-//                    for py in 0..3 {
-//                        patch[px][py] = self[x + px][y + py]
-//                    }
-//                }
-//                let normalized = patch.normalize_2d();
-//                normalized.increment_frac_counters(&mut value_counters[class]);
-//                normalized.increment_hamming_distance_matrix(counters_matrix, &normalized);
-//            }
-//        }
-//    }
-//}
-
-pub trait BitPool
-where
-    Self: Image2D,
-    Self::ImageShape: Poolable,
-    <<Self as Image2D>::ImageShape as Poolable>::Pooled: Shape,
-    <Self as Image2D>::PixelType: Element<<<Self as Image2D>::ImageShape as Poolable>::Pooled>,
-{
-    fn or_pool(
-        &self,
-    ) -> <<Self as Image2D>::PixelType as Element<
-        <<Self as Image2D>::ImageShape as Poolable>::Pooled,
-    >>::Array;
-    fn and_pool(
-        &self,
-    ) -> <<Self as Image2D>::PixelType as Element<
-        <<Self as Image2D>::ImageShape as Poolable>::Pooled,
-    >>::Array;
+pub trait BitPool {
+    type Input;
+    fn andor_pool(input: &Self::Input) -> Self;
 }
 
-macro_rules! impl_bitpool {
+macro_rules! andorpool {
     ($x_size:expr, $y_size:expr) => {
-        impl<Pixel: ArrayBitOr + ArrayBitAnd + Default + Copy> BitPool
-            for [[Pixel; $y_size]; $x_size]
+        impl<Pixel: Copy + AndOr + Default> BitPool
+            for StaticImage<[[Pixel; $y_size / 2]; $x_size / 2]>
         {
-            fn or_pool(&self) -> [[Pixel; $y_size / 2]; $x_size / 2] {
-                let mut target = [[Pixel::default(); $y_size / 2]; $x_size / 2];
+            type Input = StaticImage<[[Pixel::Val; $y_size]; $x_size]>;
+            fn andor_pool(StaticImage { image }: &Self::Input) -> Self {
+                let mut target = StaticImage {
+                    image: [[Pixel::default(); $y_size / 2]; $x_size / 2],
+                };
                 for x in 0..$x_size / 2 {
                     let x_index = x * 2;
                     for y in 0..$y_size / 2 {
                         let y_index = y * 2;
-                        target[x][y] = self[x_index + 0][y_index + 0]
-                            .bit_or(&self[x_index + 0][y_index + 1])
-                            .bit_or(&self[x_index + 1][y_index + 0])
-                            .bit_or(&self[x_index + 1][y_index + 1]);
-                    }
-                }
-                target
-            }
-            fn and_pool(&self) -> [[Pixel; $y_size / 2]; $x_size / 2] {
-                let mut target = [[Pixel::default(); $y_size / 2]; $x_size / 2];
-                for x in 0..$x_size / 2 {
-                    let x_index = x * 2;
-                    for y in 0..$y_size / 2 {
-                        let y_index = y * 2;
-                        target[x][y] = self[x_index + 0][y_index + 0]
-                            .bit_and(&self[x_index + 0][y_index + 1])
-                            .bit_and(&self[x_index + 1][y_index + 0])
-                            .bit_and(&self[x_index + 1][y_index + 1]);
+                        target.image[x][y] = Pixel::IDENTITY
+                            .andor(&image[x_index + 0][y_index + 0])
+                            .andor(&image[x_index + 0][y_index + 1])
+                            .andor(&image[x_index + 1][y_index + 0])
+                            .andor(&image[x_index + 1][y_index + 1]);
                     }
                 }
                 target
@@ -243,10 +180,10 @@ macro_rules! impl_bitpool {
     };
 }
 
-impl_bitpool!(32, 32);
-impl_bitpool!(16, 16);
-impl_bitpool!(8, 8);
-impl_bitpool!(4, 4);
+andorpool!(32, 32);
+andorpool!(16, 16);
+andorpool!(8, 8);
+andorpool!(4, 4);
 
 pub trait AvgPool {
     type Pooled;
@@ -284,37 +221,6 @@ impl_avgpool!(32, 32);
 impl_avgpool!(16, 16);
 impl_avgpool!(8, 8);
 impl_avgpool!(4, 4);
-
-pub trait Conv2D<Image: Image2D>
-where
-    Image::ImageShape: Shape,
-    Self: BitMul,
-    Self::Target: Element<Image::ImageShape>,
-{
-    fn conv2d(&self, image: &Image) -> <Self::Target as Element<Image::ImageShape>>::Array;
-}
-
-impl<T: BitMul, IP: Default + Copy, const X: usize, const Y: usize> Conv2D<[[IP; Y]; X]> for T
-where
-    [[IP; 3]; 3]: NormalizeAndBitpack<T::Input>,
-    [[Self::Target; Y]; X]: Default,
-{
-    fn conv2d(&self, image: &[[IP; Y]; X]) -> [[Self::Target; Y]; X] {
-        let mut target = <[[Self::Target; Y]; X]>::default();
-        for x in 0..X - 2 {
-            for y in 0..Y - 2 {
-                let mut patch = [[IP::default(); 3]; 3];
-                for px in 0..3 {
-                    for py in 0..3 {
-                        patch[px][py] = image[x + px][y + py]
-                    }
-                }
-                target[x + 1][y + 1] = self.bit_mul(&patch.normalize_and_bitpack());
-            }
-        }
-        target
-    }
-}
 
 pub trait PrintImage {
     fn print_channels(&self);
@@ -354,70 +260,42 @@ impl<B: BitWord, const X: usize, const Y: usize> PrintImage for [[(B, B); Y]; X]
     }
 }
 
-pub trait NCorrectConv<Image> {
-    fn n_correct(&self, image: &Image, class: usize) -> (usize, u64);
-}
-
-impl<
-        T: Classify<Input = Patch, ClassesShape = [(); C]>,
-        Patch: Distance<Rhs = Patch>,
-        IP: Default + Copy,
-        const X: usize,
-        const Y: usize,
-        const C: usize,
-    > NCorrectConv<[[IP; Y]; X]> for T
+impl<IP: Distance, const X: usize, const Y: usize, const C: usize>
+    Classify<StaticImage<[[IP::Rhs; Y]; X]>> for [([[IP; 3]; 3], u32); C]
 where
-    [[IP; 3]; 3]: NormalizeAndBitpack<Patch>,
+    IP::Rhs: Default + Copy,
+    [u32; C]: Default,
 {
-    fn n_correct(&self, image: &[[IP; Y]; X], class: usize) -> (usize, u64) {
-        let mut n_correct = 0u64;
-        let mut total = 0usize;
+    const N_CLASSES: usize = C;
+    type ClassesShape = [(); C];
+    fn activations(&self, StaticImage { image }: &StaticImage<[[IP::Rhs; Y]; X]>) -> [u32; C] {
+        let mut sums = <[u32; C]>::default();
         for x in 0..X - 2 {
             for y in 0..Y - 2 {
-                let mut patch = [[IP::default(); 3]; 3];
+                let mut patch = [[IP::Rhs::default(); 3]; 3];
                 for px in 0..3 {
                     for py in 0..3 {
                         patch[px][py] = image[x + px][y + py]
                     }
                 }
-                total += 1;
-                n_correct += (self.max_class(&patch.normalize_and_bitpack()) == class) as u64;
+                for c in 0..C {
+                    sums[c] += self[c].0.distance(&patch) + self[c].1;
+                }
             }
         }
-        (total, n_correct)
+        sums
     }
-}
-
-pub trait ClassifyAvgPooled<Image> {
-    fn n_correct(&self, image: &Image, class: usize) -> (usize, u64);
-}
-
-impl<
-        T: Classify<Input = Patch, ClassesShape = [(); C]>,
-        Patch: Distance<Rhs = Patch>,
-        IP: Default + Copy,
-        const X: usize,
-        const Y: usize,
-        const C: usize,
-    > ClassifyAvgPooled<[[IP; Y]; X]> for T
-where
-    [[IP; 3]; 3]: NormalizeAndBitpack<Patch>,
-{
-    fn n_correct(&self, image: &[[IP; Y]; X], class: usize) -> (usize, u64) {
-        let mut n_correct = 0u64;
-        let mut total = 0usize;
-        for x in 0..X - 2 {
-            for y in 0..Y - 2 {
-                let mut patch = [[IP::default(); 3]; 3];
-                for px in 0..3 {
-                    for py in 0..3 {
-                        patch[px][py] = image[x + px][y + py]
-                    }
-                }
-                total += 1;
-                n_correct += (self.max_class(&patch.normalize_and_bitpack()) == class) as u64;
+    fn max_class(&self, input: &StaticImage<[[IP::Rhs; Y]; X]>) -> usize {
+        let activations = self.activations(input);
+        let mut max_act = 0u32;
+        let mut max_class = 0usize;
+        for c in 0..C {
+            let act = activations[c];
+            if act >= max_act {
+                max_act = act;
+                max_class = c;
             }
         }
-        (total, n_correct)
+        max_class
     }
 }

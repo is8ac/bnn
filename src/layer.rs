@@ -1,8 +1,8 @@
-use crate::bits::{BitArray, BitMul, Classify};
+use crate::bits::{BitArray, BitMul};
 use crate::count::{Counters, IncrementCounters};
-use crate::image2d::{AvgPool, BitPool, Conv2D, Image2D, NCorrectConv, Poolable};
+use crate::image2d::{AvgPool, BitPool, Concat, Image2D, Poolable};
 use crate::shape::{Element, Flatten, Merge, Shape, ZipMap};
-use crate::weight::{gen_partitions, GenWeights, InputBits};
+use crate::weight::{gen_partitions, GenWeights};
 use rayon::prelude::*;
 use std::boxed::Box;
 use std::time::Instant;
@@ -12,8 +12,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs::create_dir_all;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::prelude::*;
-use std::io::Read;
 use std::path::Path;
 
 pub trait Apply<Example, Patch, I> {
@@ -83,6 +81,7 @@ where
             println!("reading counts from disk");
             deserialize_from(counts_file).expect("can't deserialize from file")
         } else {
+            println!("counting {} examples...", examples.len());
             let counts = examples
                 .par_chunks(examples.len() / num_cpus::get_physical())
                 .map(|chunk| {
@@ -178,17 +177,17 @@ where
             //println!("reading {} from disk", std::any::type_name::<Self>());
             let layer_weights =
                 deserialize_from(weights_file).expect("can't deserialize from file");
-            let acc: f64 = {
-                let mut acc_file = File::open(dataset_path.join("acc")).unwrap();
-                let mut acc_string = String::new();
-                acc_file.read_to_string(&mut acc_string).unwrap();
-                acc_string.parse().unwrap()
-            };
-            println!(
-                "[cache] acc: {:.8}% {}",
-                acc * 100f64,
-                std::any::type_name::<Self>()
-            );
+            //let acc: f64 = {
+            //    let mut acc_file = File::open(dataset_path.join("acc")).unwrap();
+            //    let mut acc_string = String::new();
+            //    acc_file.read_to_string(&mut acc_string).unwrap();
+            //    acc_string.parse().unwrap()
+            //};
+            //println!(
+            //    "[cache] acc: {:.8}% {}",
+            //    acc * 100f64,
+            //    std::any::type_name::<Self>()
+            //);
             layer_weights
         } else {
             let start = Instant::now();
@@ -239,41 +238,18 @@ where
     }
 }
 
-pub trait BitPoolLayer<P: Element<Self>, O: Merge<P, P>>
-where
-    Self: Shape + Sized + Poolable,
-    Self::Pooled: Shape,
-    O: Element<Self::Pooled>,
-{
-    fn bit_pool(
-        examples: &Vec<(<P as Element<Self>>::Array, usize)>,
-    ) -> Vec<(<O as Element<Self::Pooled>>::Array, usize)>;
+pub trait BitPoolLayer<Image: BitPool> {
+    fn bit_pool(examples: &Vec<(Image::Input, usize)>) -> Vec<(Image, usize)>;
 }
 
-impl<S: Shape + Poolable, P: Element<S> + Element<S::Pooled> + Copy, O: Merge<P, P>>
-    BitPoolLayer<P, O> for S
+impl<Image: BitPool + Sync + Send> BitPoolLayer<Image> for ()
 where
-    <P as Element<S>>::Array: Image2D<ImageShape = S, PixelType = P>,
-    S::Pooled: Shape + ZipMap<P, P, O>,
-    O: Element<S::Pooled>,
-    <P as Element<S>>::Array: BitPool + Send + Sync,
-    <O as Element<S::Pooled>>::Array: Send + Sync,
+    Image::Input: Sync,
 {
-    fn bit_pool(
-        examples: &Vec<(<P as Element<S>>::Array, usize)>,
-    ) -> Vec<(<O as Element<<S as Poolable>::Pooled>>::Array, usize)> {
+    fn bit_pool(examples: &Vec<(Image::Input, usize)>) -> Vec<(Image, usize)> {
         examples
             .par_iter()
-            .map(|(image, class)| {
-                (
-                    <Self::Pooled as ZipMap<P, P, O>>::zip_map(
-                        &image.or_pool(),
-                        &image.and_pool(),
-                        |a, b| O::merge(a, b),
-                    ),
-                    *class,
-                )
-            })
+            .map(|(image, class)| (Image::andor_pool(image), *class))
             .collect()
     }
 }
@@ -297,41 +273,18 @@ where
     }
 }
 
-pub trait ConcatLayer<A: Element<Self>, B: Element<Self>, O: Element<Self>>
-where
-    Self: Shape + Sized,
-{
-    fn concat(
-        examples_a: &Vec<(<A as Element<Self>>::Array, usize)>,
-        examples_b: &Vec<(<B as Element<Self>>::Array, usize)>,
-    ) -> Vec<(<O as Element<Self>>::Array, usize)>;
+pub trait ConcatImages<A, B, O> {
+    fn concat(examples_a: &Vec<(A, usize)>, examples_b: &Vec<(B, usize)>) -> Vec<(O, usize)>;
 }
 
-impl<
-        A: Element<Self>,
-        B: Element<Self>,
-        O: Element<Self> + Merge<A, B>,
-        S: Shape + Sized + ZipMap<A, B, O>,
-    > ConcatLayer<A, B, O> for S
-where
-    Self: Shape + Sized,
-    <A as Element<S>>::Array: Sync + Send,
-    <B as Element<S>>::Array: Sync + Send,
-    <O as Element<S>>::Array: Sync + Send,
-{
-    fn concat(
-        examples_a: &Vec<(<A as Element<Self>>::Array, usize)>,
-        examples_b: &Vec<(<B as Element<Self>>::Array, usize)>,
-    ) -> Vec<(<O as Element<Self>>::Array, usize)> {
+impl<A: Sync, B: Sync, O: Sync + Send + Concat<A, B>> ConcatImages<A, B, O> for () {
+    fn concat(examples_a: &Vec<(A, usize)>, examples_b: &Vec<(B, usize)>) -> Vec<(O, usize)> {
         examples_a
             .par_iter()
             .zip(examples_b.par_iter())
             .map(|(a, b)| {
                 assert_eq!(a.1, b.1);
-                (
-                    <S as ZipMap<A, B, O>>::zip_map(&a.0, &b.0, |a, b| O::merge(a, b)),
-                    a.1,
-                )
+                (O::concat(&a.0, &b.0), a.1)
             })
             .collect()
     }

@@ -47,23 +47,21 @@ where
     }
 }
 
-pub trait Classify
+pub trait Classify<Example>
 where
     u32: Element<Self::ClassesShape>,
     Self::ClassesShape: Shape,
 {
-    type Input;
     const N_CLASSES: usize;
     type ClassesShape;
-    fn activations(&self, input: &Self::Input) -> <u32 as Element<Self::ClassesShape>>::Array;
-    fn max_class(&self, input: &Self::Input) -> usize;
+    fn activations(&self, input: &Example) -> <u32 as Element<Self::ClassesShape>>::Array;
+    fn max_class(&self, input: &Example) -> usize;
 }
 
-impl<I: Distance, const C: usize> Classify for [(I, u32); C]
+impl<I: Distance, const C: usize> Classify<I::Rhs> for [(I, u32); C]
 where
     [u32; C]: Default,
 {
-    type Input = I::Rhs;
     const N_CLASSES: usize = C;
     type ClassesShape = [(); C];
     fn activations(&self, input: &I::Rhs) -> [u32; C] {
@@ -131,6 +129,25 @@ impl<T: BitArray, const L: usize> BitArray for [T; L] {
     type WordType = T::WordType;
     type WordShape = [T::WordShape; L];
 }
+
+pub trait BitStates {
+    const ONES: Self;
+    const ZEROS: Self;
+}
+
+macro_rules! impl_bitstats_for_array {
+    ($len:expr) => {
+        impl<T: BitStates> BitStates for [T; $len] {
+            const ONES: Self = [T::ONES; $len];
+            const ZEROS: Self = [T::ZEROS; $len];
+        }
+    };
+}
+
+impl_bitstats_for_array!(1);
+impl_bitstats_for_array!(2);
+impl_bitstats_for_array!(3);
+impl_bitstats_for_array!(4);
 
 /// A collection of bits which has a shape.
 pub trait BitArrayOPs
@@ -294,6 +311,10 @@ macro_rules! for_uints {
             type WordType = $b_type;
             type WordShape = ();
         }
+        impl BitStates for $b_type {
+            const ONES: $b_type = $b_type(!0);
+            const ZEROS: $b_type = $b_type(0);
+        }
         impl BitArrayOPs for $b_type {
             fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self {
                 let mut bits = <$u_type>::default();
@@ -426,3 +447,17 @@ for_uints!(b16, u16, 16, "{:016b}");
 for_uints!(b32, u32, 32, "{:032b}");
 for_uints!(b64, u64, 64, "{:064b}");
 for_uints!(b128, u128, 128, "{:0128b}");
+
+pub trait AndOr {
+    type Val;
+    const IDENTITY: Self;
+    fn andor(&self, val: &Self::Val) -> Self;
+}
+
+impl<T: BitArray + BitStates + ArrayBitAnd + ArrayBitOr> AndOr for [T; 2] {
+    type Val = T;
+    const IDENTITY: Self = [T::ONES, T::ZEROS];
+    fn andor(&self, val: &Self::Val) -> Self {
+        [self[0].bit_and(val), self[1].bit_or(val)]
+    }
+}

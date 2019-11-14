@@ -1,8 +1,5 @@
-use crate::bits::{BitArray, BitArrayOPs, IncrementFracCounters, IncrementHammingDistanceMatrix};
-use crate::image2d::Image2D;
+use crate::bits::BitArray;
 use crate::shape::Element;
-//use crate::unary::NormalizeAndBitpack;
-use rayon::prelude::*;
 use std::boxed::Box;
 
 pub trait Counters {
