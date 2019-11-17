@@ -1,7 +1,7 @@
-use crate::bits::{BitArray, BitMul};
+use crate::bits::{BitArray, BitMul, Classify};
 use crate::count::{Counters, IncrementCounters};
-use crate::image2d::{AvgPool, BitPool, Concat, Image2D, Poolable};
-use crate::shape::{Element, Flatten, Merge, Shape, ZipMap};
+use crate::image2d::{AvgPool, BitPool, Concat};
+use crate::shape::{Element, Flatten, Shape};
 use crate::weight::{gen_partitions, GenWeights};
 use rayon::prelude::*;
 use std::boxed::Box;
@@ -21,7 +21,7 @@ pub trait Apply<Example, Patch, I> {
 
 /// CountBits turns a bit Vec of `Example`s into a fixed size counters.
 /// For each `Example`, we extract 'Patch's from it, normalise to 'Self' and use them to increment counters.
-pub trait CountBits<Example: IncrementCounters<Patch, Self, { C }>, Patch, const C: usize>
+pub trait CountBits<Example, Patch, const C: usize>
 where
     Self: BitArray,
     u32: Element<Self::BitShape>,
@@ -78,7 +78,7 @@ where
         create_dir_all("params").unwrap();
 
         if let Some(counts_file) = File::open(&count_path).ok() {
-            println!("reading counts from disk");
+            println!("reading counts from file: {:?}", counts_file);
             deserialize_from(counts_file).expect("can't deserialize from file")
         } else {
             println!("counting {} examples...", examples.len());
@@ -93,7 +93,7 @@ where
                                     Self::BitShape,
                                 >>::Array,
                             >::default(),
-                            0usize,
+                            0_usize,
                         ),
                         |mut acc, (image, class)| {
                             image.increment_counters(*class, &mut acc.0, &mut acc.1, &mut acc.2);
@@ -110,7 +110,7 @@ where
                                     Self::BitShape,
                                 >>::Array,
                             >::default(),
-                            0usize,
+                            0_usize,
                         )
                     },
                     |mut a, b| {
@@ -162,7 +162,6 @@ where
 {
     fn gen(examples: &Vec<(Example, usize)>) -> (Self, Vec<(Self::Output, usize)>) {
         let total_start = Instant::now();
-
         let input_hash = {
             let mut s = DefaultHasher::new();
             examples.hash(&mut s);
@@ -174,22 +173,9 @@ where
 
         let weights_path = dataset_path.join(std::any::type_name::<Self>());
         let layer_weights = if let Some(weights_file) = File::open(&weights_path).ok() {
-            //println!("reading {} from disk", std::any::type_name::<Self>());
-            let layer_weights =
-                deserialize_from(weights_file).expect("can't deserialize from file");
-            //let acc: f64 = {
-            //    let mut acc_file = File::open(dataset_path.join("acc")).unwrap();
-            //    let mut acc_string = String::new();
-            //    acc_file.read_to_string(&mut acc_string).unwrap();
-            //    acc_string.parse().unwrap()
-            //};
-            //println!(
-            //    "[cache] acc: {:.8}% {}",
-            //    acc * 100f64,
-            //    std::any::type_name::<Self>()
-            //);
-            layer_weights
+            deserialize_from(weights_file).expect("can't deserialize from file")
         } else {
+            println!("training {}", std::any::type_name::<Self>());
             let start = Instant::now();
             let (value_counters, matrix_counters, n_examples) = I::count_bits(&examples);
             let count_time = start.elapsed();
@@ -287,5 +273,87 @@ impl<A: Sync, B: Sync, O: Sync + Send + Concat<A, B>> ConcatImages<A, B, O> for 
                 (O::concat(&a.0, &b.0), a.1)
             })
             .collect()
+    }
+}
+
+pub trait ClassifyLayer<Example, I, C>
+where
+    Self: Sized,
+{
+    fn gen_classify(examples: &Vec<(Example, usize)>) -> (Self, f64);
+}
+
+impl<
+        T: Send + Sync + Classify<Example> + serde::Serialize,
+        Example: Hash + Send + Sync,
+        I: GenWeights + Sized + BitArray + CountBits<Example, I, { C }>,
+        const C: usize,
+    > ClassifyLayer<Example, I, [(); C]> for T
+where
+    for<'de> T: serde::Deserialize<'de>,
+    u32: Element<I::BitShape> + Element<<T as Classify<Example>>::ClassesShape>,
+    <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
+    (I::WordType, I::WordType): Element<I::WordShape>,
+    <(I::WordType, I::WordType) as Element<I::WordShape>>::Array: Send + Sync + Copy,
+    [(); C]: Flatten<(
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    )>,
+    Box<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>: Default,
+    (usize, <u32 as Element<I::BitShape>>::Array): Counters,
+    (
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ): Element<[(); C], Array = T>,
+    <u32 as Element<I::BitShape>>::Array: Send + Sync,
+    <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array: Send + Sync,
+{
+    fn gen_classify(examples: &Vec<(Example, usize)>) -> (Self, f64) {
+        let input_hash = {
+            let mut s = DefaultHasher::new();
+            examples.hash(&mut s);
+            s.finish()
+        };
+        let dataset_path = format!("params/{}", input_hash);
+        let dataset_path = &Path::new(&dataset_path);
+        create_dir_all(&dataset_path).unwrap();
+
+        let weights_path = dataset_path.join(std::any::type_name::<Self>());
+        let weights: T = if let Some(weights_file) = File::open(&weights_path).ok() {
+            println!("reading {} from disk", std::any::type_name::<Self>());
+            deserialize_from(weights_file).expect("can't deserialize from file")
+        } else {
+            let (value_counters, matrix_counters, n_examples) = I::count_bits(&examples);
+            let classes: Vec<usize> = (0..C).collect();
+            let weights: Vec<_> = classes
+                .par_iter()
+                .map(|&class| {
+                    let mut split_counters =
+                        Box::<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>::default();
+                    for (part_class, class_counter) in value_counters.iter().enumerate() {
+                        split_counters[(part_class == class) as usize]
+                            .elementwise_add(class_counter);
+                    }
+                    <I as GenWeights>::gen_weights(&split_counters, &matrix_counters, n_examples)
+                })
+                .collect();
+            let max_act: u32 = *weights.iter().map(|(_, t)| t).max().unwrap();
+            let weights: Vec<_> = weights
+                .iter()
+                .map(|(weights, threshold)| (*weights, max_act - threshold))
+                .collect();
+            let weights = <[(); C] as Flatten<(
+                <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+                u32,
+            )>>::from_vec(&weights);
+            serialize_into(File::create(&weights_path).unwrap(), &weights).unwrap();
+            weights
+        };
+        let n_correct: u64 = examples
+            .par_iter()
+            .map(|(example, class)| (weights.max_class(example) == *class) as u64)
+            .sum();
+        let acc = n_correct as f64 / examples.len() as f64;
+        (weights, acc)
     }
 }

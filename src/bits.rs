@@ -72,8 +72,8 @@ where
         target
     }
     fn max_class(&self, input: &I::Rhs) -> usize {
-        let mut max_act = 0u32;
-        let mut max_class = 0usize;
+        let mut max_act = 0_u32;
+        let mut max_class = 0_usize;
         for c in 0..C {
             let act = self[c].0.distance(input) + self[c].1;
             if act >= max_act {
@@ -267,7 +267,7 @@ pub trait Distance {
 impl<T: Distance, const L: usize> Distance for [T; L] {
     type Rhs = [T::Rhs; L];
     fn distance(&self, rhs: &Self::Rhs) -> u32 {
-        let mut sum = 0u32;
+        let mut sum = 0_u32;
         for i in 0..L {
             sum += self[i].distance(&rhs[i]);
         }
@@ -283,6 +283,23 @@ pub trait BitWord {
     fn splat(sign: bool) -> Self;
     /// Returns the value of the `i`th bit in `self`.
     fn bit(&self, i: usize) -> bool;
+}
+
+impl<T: BitWord, const L: usize> BitWord for [T; L]
+where
+    Self: Default,
+{
+    const BIT_LEN: usize = T::BIT_LEN * L;
+    fn splat(sign: bool) -> Self {
+        let mut target = Self::default();
+        for i in 0..L {
+            target[i] = T::splat(sign);
+        }
+        target
+    }
+    fn bit(&self, i: usize) -> bool {
+        self[i / T::BIT_LEN].bit(i % T::BIT_LEN)
+    }
 }
 
 macro_rules! for_uints {
@@ -413,7 +430,6 @@ macro_rules! for_uints {
                 write!(f, $format_string, self.0)
             }
         }
-
         impl fmt::Debug for $b_type {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, $format_string, self.0)

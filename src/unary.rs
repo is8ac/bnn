@@ -59,7 +59,7 @@ where
     [[T; 3]; 3]: Default,
 {
     fn normalize_and_bitpack(&self) -> [[T; 3]; 3] {
-        let mut mins = [255u8; 3];
+        let mut mins = [255_u8; 3];
         for x in 0..3 {
             for y in 0..3 {
                 for c in 0..3 {
@@ -70,7 +70,7 @@ where
         let mut target = <[[T; 3]; 3]>::default();
         for x in 0..3 {
             for y in 0..3 {
-                let mut pixel = [0u8; 3];
+                let mut pixel = [0_u8; 3];
                 for c in 0..3 {
                     pixel[c] = self[x][y][c] - mins[c];
                 }

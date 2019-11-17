@@ -19,6 +19,8 @@ Memory usage linear with training set size is fine for CIFAR, but will be an iss
 - [Transfer Learning with Binary Neural Networks](https://arxiv.org/abs/1711.10761)
 - [Combinatorial Attacks on Binarized Neural Networks](https://arxiv.org/abs/1810.03538)
 - [FINN: A Framework for Fast, Scalable Binarized Neural Network Inference](https://arxiv.org/abs/1612.07119)
+- [Probabilistic Binary Neural Networks](https://arxiv.org/abs/1809.03368)
+- [A Review of Binarized Neural Networks](https://www.mdpi.com/2079-9292/8/6/661/pdf)
 
 https://openreview.net/pdf?id=ryxfHnCctX
 
@@ -54,3 +56,4 @@ https://arxiv.org/abs/1803.09522
 https://arxiv.org/abs/1812.11446
 https://arxiv.org/abs/1608.05343
 https://arxiv.org/abs/1310.6343
+- [A Theory of Local Learning, the Learning Channel, and the Optimality of Backpropagation](https://arxiv.org/abs/1506.06472)

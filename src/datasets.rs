@@ -39,24 +39,6 @@ pub mod mnist {
         images
     }
 
-    pub fn display_mnist_b32(bits: &[b32; 25]) {
-        let bits: Vec<char> = bits
-            .iter()
-            .rev()
-            .map(|word| {
-                let chars: Vec<char> = format!("{}", word).chars().collect();
-                chars
-            })
-            .flatten()
-            .rev()
-            .collect();
-        bits.chunks_exact(28).for_each(|x| {
-            let row: String = x.iter().collect();
-            println!("{}", row);
-        });
-        print!("\n");
-    }
-
     pub fn load_images_u8(path: &Path, size: usize) -> Vec<[[u8; 28]; 28]> {
         let mut file = File::open(&path).expect("can't open images");
         let mut header: [u8; 16] = [0; 16];
@@ -68,7 +50,7 @@ pub mod mnist {
         for _ in 0..size {
             file.read_exact(&mut images_bytes)
                 .expect("can't read images");
-            let mut image = [[0u8; 28]; 28];
+            let mut image = [[0_u8; 28]; 28];
             for p in 0..784 {
                 image[p / 28][p % 28] = images_bytes[p];
             }
@@ -104,7 +86,7 @@ pub mod cifar {
                     file.read_exact(&mut image_bytes)
                         .expect("can't read images");
                     let mut image = StaticImage {
-                        image: [[[0u8; 3]; 32]; 32],
+                        image: [[[0_u8; 3]; 32]; 32],
                     };
                     for x in 0..32 {
                         for y in 0..32 {

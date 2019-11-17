@@ -1,15 +1,43 @@
 use crate::bits::{
-    AndOr, ArrayBitAnd, ArrayBitOr, BitArray, BitMul, BitWord, Classify, Distance,
-    IncrementFracCounters, IncrementHammingDistanceMatrix,
+    AndOr, BitArray, BitMul, BitWord, Classify, Distance, IncrementFracCounters,
+    IncrementHammingDistanceMatrix,
 };
 use crate::count::IncrementCounters;
 use crate::layer::Apply;
 use crate::shape::{Element, Merge, Shape, ZipMap};
 use crate::unary::NormalizeAndBitpack;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 
 pub struct StaticImage<Image> {
     pub image: Image,
+}
+
+impl<P: fmt::Debug, const X: usize, const Y: usize> fmt::Debug for StaticImage<[[P; Y]; X]> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for x in 0..X {
+            for y in 0..Y {
+                writeln!(f, "{:?}", self.image[x][y])?
+            }
+            writeln!(f, "{}", x)?
+        }
+        Ok(())
+    }
+}
+
+impl<P: BitWord, const X: usize, const Y: usize> fmt::Display for StaticImage<[[P; Y]; X]> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for b in 0..P::BIT_LEN {
+            for x in 0..X {
+                for y in 0..Y {
+                    write!(f, "{}", if self.image[x][y].bit(b) { 1 } else { 0 })?
+                }
+                writeln!(f)?
+            }
+            writeln!(f, "{}", b)?
+        }
+        Ok(())
+    }
 }
 
 impl<T: BitMul, IP: Default + Copy, const X: usize, const Y: usize>
@@ -130,24 +158,6 @@ impl<T, const X: usize, const Y: usize> ImagePixel<[[(); Y]; X]> for T {
     type ImageType = [[T; Y]; X];
 }
 
-// An image shape that can be 2x2 pooled
-pub trait Poolable {
-    type Pooled;
-}
-
-macro_rules! impl_poolable {
-    ($x:expr, $y:expr) => {
-        impl Poolable for [[(); $y]; $x] {
-            type Pooled = [[(); $y / 2]; $x / 2];
-        }
-    };
-}
-
-impl_poolable!(32, 32);
-impl_poolable!(16, 16);
-impl_poolable!(8, 8);
-impl_poolable!(4, 4);
-
 pub trait BitPool {
     type Input;
     fn andor_pool(input: &Self::Input) -> Self;
@@ -196,7 +206,7 @@ macro_rules! impl_avgpool {
             type Pooled = StaticImage<[[[u8; 3]; $y_size / 2]; $x_size / 2]>;
             fn avg_pool(&self) -> Self::Pooled {
                 let mut target = StaticImage {
-                    image: [[[0u8; 3]; $y_size / 2]; $x_size / 2],
+                    image: [[[0_u8; 3]; $y_size / 2]; $x_size / 2],
                 };
                 for x in 0..$x_size / 2 {
                     let x_index = x * 2;
@@ -221,44 +231,6 @@ impl_avgpool!(32, 32);
 impl_avgpool!(16, 16);
 impl_avgpool!(8, 8);
 impl_avgpool!(4, 4);
-
-pub trait PrintImage {
-    fn print_channels(&self);
-}
-
-impl<B: BitWord, const W: usize, const X: usize, const Y: usize> PrintImage for [[[B; W]; Y]; X] {
-    fn print_channels(&self) {
-        for w in 0..W {
-            for b in 0..B::BIT_LEN {
-                for x in 0..X {
-                    for y in 0..Y {
-                        print!("{}", self[x][y][w].bit(b) as u8);
-                    }
-                    print!("\n");
-                }
-                println!("-------");
-            }
-        }
-    }
-}
-
-impl<B: BitWord, const X: usize, const Y: usize> PrintImage for [[(B, B); Y]; X] {
-    fn print_channels(&self) {
-        for b in 0..B::BIT_LEN {
-            for x in 0..X {
-                for y in 0..Y {
-                    print!("{}", self[x][y].0.bit(b) as u8);
-                }
-                print!(" ");
-                for y in 0..Y {
-                    print!("{}", self[x][y].1.bit(b) as u8);
-                }
-                print!("\n");
-            }
-            println!("---");
-        }
-    }
-}
 
 impl<IP: Distance, const X: usize, const Y: usize, const C: usize>
     Classify<StaticImage<[[IP::Rhs; Y]; X]>> for [([[IP; 3]; 3], u32); C]
@@ -287,8 +259,8 @@ where
     }
     fn max_class(&self, input: &StaticImage<[[IP::Rhs; Y]; X]>) -> usize {
         let activations = self.activations(input);
-        let mut max_act = 0u32;
-        let mut max_class = 0usize;
+        let mut max_act = 0_u32;
+        let mut max_class = 0_usize;
         for c in 0..C {
             let act = activations[c];
             if act >= max_act {

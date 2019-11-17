@@ -1,5 +1,6 @@
+#![forbid(unsafe_code)]
 #![feature(const_generics)]
-#![feature(test)]
+#![deny(unreachable_pub)]
 
 extern crate bincode;
 extern crate rayon;
