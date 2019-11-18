@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::num::Wrapping;
-use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
+use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Shl, Shr};
 
 /// Increment the elements of a matrix of counters to count the number of times that the bits are different.
 pub trait IncrementHammingDistanceMatrix<T: BitArray>
@@ -433,6 +433,20 @@ macro_rules! for_uints {
         impl fmt::Debug for $b_type {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, $format_string, self.0)
+            }
+        }
+        impl Shl<usize> for $b_type {
+            type Output = Self;
+
+            fn shl(self, rhs: usize) -> $b_type {
+                $b_type(self.0 << rhs)
+            }
+        }
+        impl Shr<usize> for $b_type {
+            type Output = Self;
+
+            fn shr(self, rhs: usize) -> $b_type {
+                $b_type(self.0 >> rhs)
             }
         }
         impl Hash for $b_type {
