@@ -48,7 +48,7 @@ where
 // |a|a| |
 // |a| |b|
 // | |b|b|
-// center is ignores by all edges.
+// center is ignored by all edges.
 fn edges_from_patch(patch: &[[[u8; 3]; 3]; 3]) -> b32 {
     let mut target = b32::default();
     // horizontal
@@ -95,6 +95,7 @@ fn elementwise_sum_3(a: [u8; 3], b: [u8; 3], c: [u8; 3]) -> [u16; 3] {
 }
 
 // for each of the 8 combinations of the three color channels, compare the two sides of the edge.
+// 0, which is black, is degenerate.
 fn color_features_from_partition(a: [u16; 3], b: [u16; 3]) -> b8 {
     let mut target = b8::default();
     for i in 0..8 {
@@ -121,11 +122,11 @@ pub struct StaticImage<Image> {
 
 impl<P: fmt::Debug, const X: usize, const Y: usize> fmt::Debug for StaticImage<[[P; Y]; X]> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for x in 0..X {
-            for y in 0..Y {
+        for y in 0..Y {
+            for x in 0..X {
                 writeln!(f, "{:?}", self.image[x][y])?
             }
-            writeln!(f, "{}", x)?
+            writeln!(f, "{}", y)?
         }
         Ok(())
     }
@@ -134,9 +135,23 @@ impl<P: fmt::Debug, const X: usize, const Y: usize> fmt::Debug for StaticImage<[
 impl<P: BitWord, const X: usize, const Y: usize> fmt::Display for StaticImage<[[P; Y]; X]> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for b in 0..P::BIT_LEN {
-            for x in 0..X {
-                for y in 0..Y {
+            for y in 0..Y {
+                for x in 0..X {
                     write!(f, "{}", if self.image[x][y].bit(b) { 1 } else { 0 })?
+                }
+                writeln!(f)?
+            }
+            writeln!(f, "{}", b)?
+        }
+        Ok(())
+    }
+}
+impl<const X: usize, const Y: usize> fmt::Display for StaticImage<[[[u8; 3]; Y]; X]> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for b in 0..3 {
+            for y in 0..Y {
+                for x in 0..X {
+                    write!(f, "{}", if self.image[x][y][b] > 128 { 1 } else { 0 })?
                 }
                 writeln!(f)?
             }
