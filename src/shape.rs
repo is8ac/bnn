@@ -335,12 +335,9 @@ macro_rules! impl_array_array_merge {
 
 impl_array_array_merge!(1, 1);
 impl_array_array_merge!(2, 1);
-impl_array_array_merge!(3, 1);
 
 impl_array_array_merge!(1, 2);
 impl_array_array_merge!(2, 2);
-impl_array_array_merge!(3, 2);
 
 impl_array_array_merge!(1, 3);
 impl_array_array_merge!(2, 3);
-impl_array_array_merge!(3, 3);
