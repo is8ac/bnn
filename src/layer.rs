@@ -1,6 +1,6 @@
 use crate::bits::{BitArray, BitMul, Classify};
 use crate::count::{Counters, IncrementCounters};
-use crate::image2d::{AvgPool, BitPool, Concat};
+use crate::image2d::{AvgPool, BitPool, Concat, ExtractEdges};
 use crate::shape::{Element, Flatten, Shape};
 use crate::weight::{gen_partitions, GenWeights};
 use rayon::prelude::*;
@@ -355,5 +355,21 @@ where
             .sum();
         let acc = n_correct as f64 / examples.len() as f64;
         (weights, acc)
+    }
+}
+
+pub trait IntToEdges<Image: ExtractEdges> {
+    fn edges(examples: &Vec<(Image, usize)>) -> Vec<(Image::OutputImage, usize)>;
+}
+
+impl<T: ExtractEdges + Sync> IntToEdges<T> for ()
+where
+    T::OutputImage: Send,
+{
+    fn edges(examples: &Vec<(T, usize)>) -> Vec<(T::OutputImage, usize)> {
+        examples
+            .par_iter()
+            .map(|(image, class)| (image.extract_edges(), *class))
+            .collect()
     }
 }
