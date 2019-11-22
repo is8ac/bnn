@@ -23,6 +23,38 @@ impl<T: Shape> Shape for Box<T> {
     type Index = T::Index;
 }
 
+pub trait Indexable
+where
+    Self: Shape,
+{
+    fn indices() -> Vec<Self::Index>;
+}
+
+impl Indexable for () {
+    fn indices() -> Vec<()> {
+        vec![()]
+    }
+}
+
+impl<T: Shape + Indexable, const L: usize> Indexable for [T; L]
+where
+    T::Index: Copy,
+{
+    fn indices() -> Vec<Self::Index> {
+        let sub_indices = T::indices();
+        (0..L)
+            .map(|i| sub_indices.iter().map(|&x| (i, x)).collect::<Vec<_>>())
+            .flatten()
+            .collect()
+    }
+}
+
+impl<T: Indexable> Indexable for Box<T> {
+    fn indices() -> Vec<Self::Index> {
+        T::indices()
+    }
+}
+
 /// Given an element and a shape, get the array.
 ///
 /// # Example

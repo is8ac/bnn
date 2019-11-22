@@ -7,6 +7,44 @@ use std::hash::{Hash, Hasher};
 use std::num::Wrapping;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Shl, Shr};
 
+pub trait IncrementCooccurrenceMatrix<T: BitArray>
+where
+    Self: BitArray,
+    u32: Element<Self::BitShape>,
+    [(usize, <u32 as Element<Self::BitShape>>::Array); 2]: Element<T::BitShape>,
+    u32: Element<T::BitShape>,
+{
+    fn increment_cooccurrence_matrix(
+        &self,
+        counters_matrix: &mut <[(usize, <u32 as Element<Self::BitShape>>::Array); 2] as Element<
+            T::BitShape,
+        >>::Array,
+        target: &T,
+    );
+}
+
+impl<I: IncrementCooccurrenceMatrix<T> + BitArray, T: BitArray + BitArrayOPs, const L: usize>
+    IncrementCooccurrenceMatrix<[T; L]> for I
+where
+    bool: Element<T::BitShape>,
+    u32: Element<T::BitShape>,
+    bool: Element<I::BitShape>,
+    u32: Element<I::BitShape>,
+    [(usize, <u32 as Element<Self::BitShape>>::Array); 2]: Element<T::BitShape>,
+    [T; L]: Default,
+{
+    fn increment_cooccurrence_matrix(
+        &self,
+        counters_matrix: &mut [<[(usize, <u32 as Element<Self::BitShape>>::Array); 2] as Element<T::BitShape>>::Array;
+                 L],
+        target: &[T; L],
+    ) {
+        for w in 0..L {
+            self.increment_cooccurrence_matrix(&mut counters_matrix[w], &target[w]);
+        }
+    }
+}
+
 /// Increment the elements of a matrix of counters to count the number of times that the bits are different.
 pub trait IncrementHammingDistanceMatrix<T: BitArray>
 where
@@ -466,6 +504,23 @@ macro_rules! for_uints {
             ) {
                 for i in 0..<$b_type>::BIT_LEN {
                     self.flipped_increment_counters(target.bit(i), &mut counters_matrix[i]);
+                }
+            }
+        }
+        impl<I: BitArray + BitArrayOPs> IncrementCooccurrenceMatrix<$b_type> for I
+        where
+            bool: Element<I::BitShape>,
+            u32: Element<I::BitShape>,
+        {
+            fn increment_cooccurrence_matrix(
+                &self,
+                counters_matrix: &mut [[(usize, <u32 as Element<Self::BitShape>>::Array); 2];
+                         <$b_type>::BIT_LEN],
+                target: &$b_type,
+            ) {
+                for i in 0..<$b_type>::BIT_LEN {
+                    counters_matrix[i][!target.bit(i) as usize].0 += 1;
+                    self.increment_counters(&mut counters_matrix[i][!target.bit(i) as usize].1);
                 }
             }
         }
