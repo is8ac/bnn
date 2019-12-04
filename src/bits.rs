@@ -35,8 +35,7 @@ where
 {
     fn increment_cooccurrence_matrix(
         &self,
-        counters_matrix: &mut [<[(usize, <u32 as Element<Self::BitShape>>::Array); 2] as Element<T::BitShape>>::Array;
-                 L],
+        counters_matrix: &mut [<[(usize, <u32 as Element<Self::BitShape>>::Array); 2] as Element<T::BitShape>>::Array; L],
         target: &[T; L],
     ) {
         for w in 0..L {
@@ -527,6 +526,8 @@ macro_rules! for_uints {
     };
 }
 
+for_uints!(b2, u8, 2, "{:02b}");
+for_uints!(b4, u8, 4, "{:04b}");
 for_uints!(b8, u8, 8, "{:08b}");
 for_uints!(b16, u16, 16, "{:016b}");
 for_uints!(b32, u32, 32, "{:032b}");
