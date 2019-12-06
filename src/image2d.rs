@@ -1,10 +1,7 @@
-use crate::bits::{
-    b32, b8, AndOr, BitArray, BitMul, BitWord, Classify, Distance, IncrementFracCounters,
-    IncrementHammingDistanceMatrix,
-};
+use crate::bits::{b32, b8, AndOr, BitArray, BitMul, BitWord, Classify, Distance};
 use crate::count::IncrementCounters;
 use crate::layer::Apply;
-use crate::shape::{Element, Merge, Shape, ZipMap};
+use crate::shape::{Merge, Shape, ZipMap};
 use crate::unary::NormalizeAndBitpack;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -196,40 +193,24 @@ where
     }
 }
 
-impl<
-        Pixel: Copy,
-        Patch: BitArray + IncrementFracCounters + IncrementHammingDistanceMatrix<Patch>,
-        const X: usize,
-        const Y: usize,
-        const C: usize,
-    > IncrementCounters<[[Pixel; 3]; 3], Patch, { C }> for StaticImage<[[Pixel; Y]; X]>
+impl<Pixel: Copy, T: BitArray, Counters, const X: usize, const Y: usize>
+    IncrementCounters<[[Pixel; 3]; 3], T, Counters> for StaticImage<[[Pixel; Y]; X]>
 where
-    [[Pixel; 3]; 3]: NormalizeAndBitpack<Patch> + Default,
-    u32: Element<Patch::BitShape>,
-    u32: Element<<Patch as BitArray>::BitShape>,
-    <u32 as Element<Patch::BitShape>>::Array: Element<Patch::BitShape>,
+    [[Pixel; 3]; 3]: Default + IncrementCounters<[[Pixel; 3]; 3], T, Counters>,
 {
-    fn increment_counters(
-        &self,
-        class: usize,
-        value_counters: &mut [(usize, <u32 as Element<Patch::BitShape>>::Array); C],
-        counters_matrix: &mut <<u32 as Element<Patch::BitShape>>::Array as Element<
-            Patch::BitShape,
-        >>::Array,
-        n_examples: &mut usize,
-    ) {
+    fn increment_counters(&self, class: usize, counters: &mut Counters) {
         for x in 0..X - 2 {
             for y in 0..Y - 2 {
-                *n_examples += 1;
-                let mut patch = <[[Pixel; 3]; 3]>::default();
-                for px in 0..3 {
-                    for py in 0..3 {
-                        patch[px][py] = self.image[x + px][y + py]
+                {
+                    let mut patch = <[[Pixel; 3]; 3]>::default();
+                    for px in 0..3 {
+                        for py in 0..3 {
+                            patch[px][py] = self.image[x + px][y + py]
+                        }
                     }
+                    patch
                 }
-                let normalized = patch.normalize_and_bitpack();
-                normalized.increment_frac_counters(&mut value_counters[class]);
-                normalized.increment_hamming_distance_matrix(counters_matrix, &normalized);
+                .increment_counters(class, counters);
             }
         }
     }

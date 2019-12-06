@@ -290,18 +290,18 @@ impl<
         }
     }
 }
-impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>> ZipMapMut<A, B, O>
-    for Box<S>
-{
-    fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
-        target: &mut <O as Element<Self>>::Array,
-        a: &<A as Element<Self>>::Array,
-        b: &<B as Element<Self>>::Array,
-        map_fn: F,
-    ) {
-        S::zip_map_mut(target, &a, &b, &map_fn);
-    }
-}
+//impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>> ZipMapMut<A, B, O>
+//    for Box<S>
+//{
+//    fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
+//        target: &mut <O as Element<Self>>::Array,
+//        a: &<A as Element<Self>>::Array,
+//        b: &<B as Element<Self>>::Array,
+//        map_fn: F,
+//    ) {
+//        S::zip_map_mut(target, &a, &b, &map_fn);
+//    }
+//}
 
 pub trait ZipMap<A: Element<Self>, B: Element<Self>, O: Element<Self>>
 where

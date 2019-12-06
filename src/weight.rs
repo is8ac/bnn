@@ -1,5 +1,7 @@
 use crate::bits::{BitArray, BitArrayOPs, BitWord, Distance};
-use crate::shape::{Element, Flatten, Fold, Map, Shape, ZipMap};
+use crate::count::ElementwiseAdd;
+use crate::shape::{Element, Flatten, Fold, Map, Shape, ZipMap, ZipMapMut};
+use rayon::prelude::*;
 use std::boxed::Box;
 use std::collections::HashSet;
 use std::ops::AddAssign;
@@ -200,7 +202,86 @@ where
     .sum()
 }
 
-pub trait GenWeights
+pub trait GenWeights<I: BitArray, O: BitArray, Accumulator>
+where
+    (I::WordType, I::WordType): Element<I::WordShape>,
+    (
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ): Element<O::BitShape>,
+{
+    fn gen_weights(
+        acc: &Accumulator,
+    ) -> <(
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ) as Element<O::BitShape>>::Array;
+}
+
+struct SupervisedWeightsGen {}
+
+impl<I: BitArray + GenFilterSupervised, O: BitArray, const C: usize>
+    GenWeights<
+        I,
+        O,
+        Box<(
+            [(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C],
+            <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array,
+            usize,
+        )>,
+    > for SupervisedWeightsGen
+where
+    u32: Element<I::BitShape>,
+    <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
+    (I::WordType, I::WordType): Element<I::WordShape>,
+    (
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ): Element<O::BitShape>,
+    (usize, <u32 as Element<I::BitShape>>::Array): Default + ElementwiseAdd,
+    <(I::WordType, I::WordType) as Element<I::WordShape>>::Array: Send + Sync + Copy,
+    O::BitShape: Flatten<(
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    )>,
+    (
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ): Element<O::BitShape>,
+    Box<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>: Send + Sync,
+    <u32 as Element<I::BitShape>>::Array: Send + Sync,
+    <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array: Send + Sync,
+{
+    fn gen_weights(
+        acc: &Box<(
+            [(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C],
+            <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array,
+            usize,
+        )>,
+    ) -> <(
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ) as Element<O::BitShape>>::Array {
+        let mut partitions = gen_partitions(C);
+        partitions.sort_by_key(|x| x.len().min(C - x.len()));
+        let partitions = &partitions[0..<O as BitArray>::BitShape::N];
+        let weights: Vec<_> = partitions
+            .par_iter()
+            .map(|partition| {
+                let mut split_counters =
+                    Box::<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>::default();
+                for (class, class_counter) in acc.0.iter().enumerate() {
+                    split_counters[partition.contains(&class) as usize]
+                        .elementwise_add(class_counter);
+                }
+                <I as GenFilterSupervised>::gen_filter(&split_counters, &acc.1, acc.2)
+            })
+            .collect();
+        <O as BitArray>::BitShape::from_vec(&weights)
+    }
+}
+
+pub trait GenFilterSupervised
 where
     Self: BitArray + Sized,
     u32: Element<Self::BitShape>,
@@ -213,11 +294,11 @@ where
     /// The `x`th by `y`th entry is the number of examples in which the xth and yth bit were the same.
     ///
     /// value_counters is the number of time that each bit was set in each of the two classes.
-    fn gen_weights(
-        value_counters: &Box<[(usize, <u32 as Element<Self::BitShape>>::Array); 2]>,
-        dist_matrix_counters: &Box<
-            <<u32 as Element<Self::BitShape>>::Array as Element<Self::BitShape>>::Array,
-        >,
+    fn gen_filter(
+        value_counters: &[(usize, <u32 as Element<Self::BitShape>>::Array); 2],
+        dist_matrix_counters: &<<u32 as Element<Self::BitShape>>::Array as Element<
+            Self::BitShape,
+        >>::Array,
         n: usize,
     ) -> (
         <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
@@ -225,7 +306,7 @@ where
     );
 }
 
-impl<B: BitArray + BitArrayOPs> GenWeights for B
+impl<B: BitArray + BitArrayOPs> GenFilterSupervised for B
 where
     B::BitShape: Mse
         + Min
@@ -242,6 +323,8 @@ where
     (Self::WordType, Self::WordType): Element<Self::WordShape>,
     Box<B::BitShape>: Map<<u32 as Element<B::BitShape>>::Array, <f32 as Element<B::BitShape>>::Array>
         + ZipMap<bool, <u32 as Element<B::BitShape>>::Array, <f32 as Element<B::BitShape>>::Array>,
+    B::BitShape:
+        ZipMapMut<bool, <u32 as Element<B::BitShape>>::Array, <f32 as Element<B::BitShape>>::Array>,
     <B::BitShape as Element<<B as BitArray>::BitShape>>::Array: Shape,
     u32: Element<B::BitShape> + Element<<B::BitShape as Element<B::BitShape>>::Array>,
     f32: Element<B::BitShape> + Element<<B::BitShape as Element<B::BitShape>>::Array>,
@@ -256,11 +339,9 @@ where
     <bool as Element<B::BitShape>>::Array: std::fmt::Debug,
     <(B::WordType, B::WordType) as Element<B::WordShape>>::Array: Distance<Rhs = B>,
 {
-    fn gen_weights(
-        value_counters: &Box<[(usize, <u32 as Element<<B as BitArray>::BitShape>>::Array); 2]>,
-        dist_matrix_counters: &Box<
-            <<u32 as Element<B::BitShape>>::Array as Element<B::BitShape>>::Array,
-        >,
+    fn gen_filter(
+        value_counters: &[(usize, <u32 as Element<<B as BitArray>::BitShape>>::Array); 2],
+        dist_matrix_counters: &<<u32 as Element<B::BitShape>>::Array as Element<B::BitShape>>::Array,
         n_examples: usize,
     ) -> (
         <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
@@ -291,23 +372,34 @@ where
         ));
 
         //dbg!(&values);
-        let edges = <Box<B::BitShape> as ZipMap<
-            bool,
-            <u32 as Element<B::BitShape>>::Array,
-            <f32 as Element<B::BitShape>>::Array,
-        >>::zip_map(&sign_bools, dist_matrix_counters, |outer_sign, row| {
-            <B::BitShape as ZipMap<bool, u32, f32>>::zip_map(
+        let edges = {
+            let mut target = Box::<
+                <<f32 as Element<B::BitShape>>::Array as Element<B::BitShape>>::Array,
+            >::default();
+            <B::BitShape as ZipMapMut<
+                bool,
+                <u32 as Element<B::BitShape>>::Array,
+                <f32 as Element<B::BitShape>>::Array,
+            >>::zip_map_mut(
+                &mut target,
                 &sign_bools,
-                row,
-                |inner_sign, &count| {
-                    if outer_sign ^ inner_sign {
-                        count as f32 / n_examples as f32
-                    } else {
-                        (n_examples - count as usize) as f32 / n_examples as f32
-                    }
+                dist_matrix_counters,
+                |target, outer_sign, row| {
+                    *target = <B::BitShape as ZipMap<bool, u32, f32>>::zip_map(
+                        &sign_bools,
+                        row,
+                        |inner_sign, &count| {
+                            if outer_sign ^ inner_sign {
+                                count as f32 / n_examples as f32
+                            } else {
+                                (n_examples - count as usize) as f32 / n_examples as f32
+                            }
+                        },
+                    );
                 },
-            )
-        });
+            );
+            target
+        };
         let mut mask = <B::BitShape as Map<(), bool>>::map(&B::BitShape::default(), |_| true);
         // false: 18.855%
         // true:  49.566666%
