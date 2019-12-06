@@ -1,5 +1,5 @@
-use crate::bits::{BitArray, BitArrayOPs, Distance, BitWord};
-use crate::shape::{Element, Fold, Map, Shape, ZipMap, Flatten};
+use crate::bits::{BitArray, BitArrayOPs, BitWord, Distance};
+use crate::shape::{Element, Flatten, Fold, Map, Shape, ZipMap};
 use std::boxed::Box;
 use std::collections::HashSet;
 use std::ops::AddAssign;
@@ -366,7 +366,6 @@ pub fn gen_partitions(depth: usize) -> Vec<HashSet<usize>> {
             .collect()
     }
 }
-
 
 /// `distances` is the square symmetrical matrix of distances between bits.
 /// The value of distances[x][1][y][0] is the proportion of examples in which bit x is set and bit y is unset.
