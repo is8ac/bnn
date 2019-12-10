@@ -53,12 +53,12 @@ impl<T: Copy> NormalizeAndBitpack<[[T; 3]; 3]> for [[T; 3]; 3] {
 }
 
 // slide the min to 0
-impl<T> NormalizeAndBitpack<[[T; 3]; 3]> for [[[u8; 3]; 3]; 3]
+impl NormalizeAndBitpack<[[[b32; 3]; 3]; 3]> for [[[u8; 3]; 3]; 3]
 where
-    [u8; 3]: ToUnary<T>,
-    [[T; 3]; 3]: Default,
+//[u8; 3]: ToUnary<T>,
+//[[T; 3]; 3]: Default,
 {
-    fn normalize_and_bitpack(&self) -> [[T; 3]; 3] {
+    fn normalize_and_bitpack(&self) -> [[[b32; 3]; 3]; 3] {
         let mut mins = [255_u8; 3];
         for x in 0..3 {
             for y in 0..3 {
@@ -67,7 +67,7 @@ where
                 }
             }
         }
-        let mut target = <[[T; 3]; 3]>::default();
+        let mut target = <[[[b32; 3]; 3]; 3]>::default();
         for x in 0..3 {
             for y in 0..3 {
                 let mut pixel = [0_u8; 3];

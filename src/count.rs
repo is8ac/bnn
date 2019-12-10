@@ -57,29 +57,33 @@ pub trait IncrementCounters<Patch, T, Counters> {
     fn increment_counters(&self, class: usize, counters: &mut Counters);
 }
 
-impl<T: BitArray + IncrementFracCounters + IncrementHammingDistanceMatrix<T>, const C: usize>
+impl<
+        Input,
+        T: BitArray + IncrementFracCounters + IncrementHammingDistanceMatrix<T>,
+        const C: usize,
+    >
     IncrementCounters<
-        Self,
+        Input,
         T,
-        (
+        Box<(
             [(usize, <u32 as Element<T::BitShape>>::Array); C],
             <<u32 as Element<T::BitShape>>::Array as Element<T::BitShape>>::Array,
             usize,
-        ),
-    > for T
+        )>,
+    > for Input
 where
-    Self: NormalizeAndBitpack<T>,
+    Input: NormalizeAndBitpack<T>,
     u32: Element<T::BitShape>,
     <u32 as Element<T::BitShape>>::Array: Element<T::BitShape>,
 {
     fn increment_counters(
         &self,
         class: usize,
-        counters: &mut (
+        counters: &mut Box<(
             [(usize, <u32 as Element<T::BitShape>>::Array); C],
             <<u32 as Element<T::BitShape>>::Array as Element<T::BitShape>>::Array,
             usize,
-        ),
+        )>,
     ) {
         let normalized = self.normalize_and_bitpack();
         normalized.increment_frac_counters(&mut counters.0[class]);
@@ -88,32 +92,32 @@ where
     }
 }
 
-impl<T: BitArray + IncrementCooccurrenceMatrix<T>>
+impl<Input, T: BitArray + IncrementCooccurrenceMatrix<T>>
     IncrementCounters<
-        Self,
+        Input,
         T,
-        (
+        Box<(
             <[(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array); 2] as Element<
                 <T as BitArray>::BitShape,
             >>::Array,
             usize,
-        ),
-    > for T
+        )>,
+    > for Input
 where
     [(usize, <u32 as Element<T::BitShape>>::Array); 2]: Element<T::BitShape>,
     Self: NormalizeAndBitpack<T>,
     u32: Element<T::BitShape>,
-    //<u32 as Element<T::BitShape>>::Array: Element<T::BitShape>,
+    <u32 as Element<T::BitShape>>::Array: Element<T::BitShape>,
 {
     fn increment_counters(
         &self,
-        class: usize,
-        counters: &mut (
+        _: usize,
+        counters: &mut Box<(
             <[(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array); 2] as Element<
                 <T as BitArray>::BitShape,
             >>::Array,
             usize,
-        ),
+        )>,
     ) {
         let normalized = self.normalize_and_bitpack();
         normalized.increment_cooccurrence_matrix(&mut counters.0, &normalized);

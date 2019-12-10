@@ -1,9 +1,10 @@
 use crate::bits::{BitArray, BitArrayOPs, BitWord, Distance};
 use crate::count::ElementwiseAdd;
-use crate::shape::{Element, Flatten, Fold, Map, Shape, ZipMap, ZipMapMut};
+use crate::shape::{Element, Flatten, Fold, Map, MapMut, Shape, ZipMap, ZipMapMut};
 use rayon::prelude::*;
 use std::boxed::Box;
 use std::collections::HashSet;
+use std::marker::PhantomData;
 use std::ops::AddAssign;
 
 // f32: 3m50.574s
@@ -202,7 +203,7 @@ where
     .sum()
 }
 
-pub trait GenWeights<I: BitArray, O: BitArray, Accumulator>
+pub trait GenWeights<I: BitArray, O: BitArray>
 where
     (I::WordType, I::WordType): Element<I::WordShape>,
     (
@@ -210,26 +211,22 @@ where
         u32,
     ): Element<O::BitShape>,
 {
+    type Accumulator;
     fn gen_weights(
-        acc: &Accumulator,
+        acc: &Self::Accumulator,
     ) -> <(
         <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
         u32,
     ) as Element<O::BitShape>>::Array;
 }
 
-struct SupervisedWeightsGen {}
+pub struct SupervisedWeightsGen<I, O, const C: usize> {
+    input: PhantomData<I>,
+    target: PhantomData<O>,
+}
 
-impl<I: BitArray + GenFilterSupervised, O: BitArray, const C: usize>
-    GenWeights<
-        I,
-        O,
-        Box<(
-            [(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C],
-            <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array,
-            usize,
-        )>,
-    > for SupervisedWeightsGen
+impl<I: BitArray + GenFilterSupervised, O: BitArray, const C: usize> GenWeights<I, O>
+    for SupervisedWeightsGen<I, O, { C }>
 where
     u32: Element<I::BitShape>,
     <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
@@ -252,6 +249,11 @@ where
     <u32 as Element<I::BitShape>>::Array: Send + Sync,
     <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array: Send + Sync,
 {
+    type Accumulator = Box<(
+        [(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C],
+        <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array,
+        usize,
+    )>;
     fn gen_weights(
         acc: &Box<(
             [(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C],
@@ -518,9 +520,7 @@ where
     [(usize, <u32 as Element<I::BitShape>>::Array); 2]: Element<I::BitShape>,
 {
     fn unsupervised_cluster(
-        counts: &Box<
-            <[(usize, <u32 as Element<I::BitShape>>::Array); 2] as Element<I::BitShape>>::Array,
-        >,
+        counts: &<[(usize, <u32 as Element<I::BitShape>>::Array); 2] as Element<I::BitShape>>::Array,
         n_examples: usize,
     ) -> Self;
 }
@@ -544,6 +544,10 @@ where
         [(usize, <u32 as Element<I::BitShape>>::Array); 2],
         [<[f32; 2] as Element<I::BitShape>>::Array; 2],
     >,
+    I::BitShape: MapMut<
+        [(usize, <u32 as Element<I::BitShape>>::Array); 2],
+        [<[f32; 2] as Element<I::BitShape>>::Array; 2],
+    >,
     I::WordType: Copy,
     I::WordShape: ZipMap<I::WordType, I::WordType, (I::WordType, I::WordType)>,
     [f32; 2]: Element<I::BitShape>,
@@ -562,27 +566,31 @@ where
     <bool as Element<<I as BitArray>::BitShape>>::Array: std::fmt::Debug,
 {
     fn unsupervised_cluster(
-        counts: &Box<
-            <[(usize, <u32 as Element<I::BitShape>>::Array); 2] as Element<I::BitShape>>::Array,
-        >,
+        counts: &<[(usize, <u32 as Element<I::BitShape>>::Array); 2] as Element<I::BitShape>>::Array,
         n_examples: usize,
     ) -> Self {
-        let distances = <Box<I::BitShape> as Map<
-            [(usize, <u32 as Element<I::BitShape>>::Array); 2],
-            [<[f32; 2] as Element<I::BitShape>>::Array; 2],
-        >>::map(&counts, |row| {
-            <[(); 2] as Map<
-                (usize, <u32 as Element<I::BitShape>>::Array),
-                <[f32; 2] as Element<I::BitShape>>::Array,
-            >>::map(row, |(n, row)| {
-                <I::BitShape as Map<u32, [f32; 2]>>::map(row, |&c| {
-                    [
-                        (*n as u32 - c) as f32 / (n_examples) as f32,
-                        (c) as f32 / (n_examples) as f32,
-                    ]
-                })
-            })
-        });
+        let distances = {
+            let mut target = Box::<
+                <[<[f32; 2] as Element<I::BitShape>>::Array; 2] as Element<I::BitShape>>::Array,
+            >::default();
+            <I::BitShape as MapMut<
+                [(usize, <u32 as Element<I::BitShape>>::Array); 2],
+                [<[f32; 2] as Element<I::BitShape>>::Array; 2],
+            >>::map_mut(&mut target, &counts, |target, row| {
+                *target = <[(); 2] as Map<
+                    (usize, <u32 as Element<I::BitShape>>::Array),
+                    <[f32; 2] as Element<I::BitShape>>::Array,
+                >>::map(row, |(n, row)| {
+                    <I::BitShape as Map<u32, [f32; 2]>>::map(row, |&c| {
+                        [
+                            (*n as u32 - c) as f32 / (n_examples) as f32,
+                            (c) as f32 / (n_examples) as f32,
+                        ]
+                    })
+                });
+            });
+            target
+        };
 
         let vec_distances = {
             {
@@ -613,7 +621,6 @@ where
         let mut assignments: Vec<(usize, bool)> = (0..I::BIT_LEN)
             .map(|i| (i % O::BIT_LEN, ((i / O::BIT_LEN) % 2) == 0))
             .collect();
-        dbg!(&assignments);
         let mut cur_loss = cluster_mse(&vec_distances, &assignments, I::BIT_LEN, O::BIT_LEN);
         dbg!(cur_loss);
         for i in 0..3 {
@@ -627,7 +634,7 @@ where
                             cluster_mse(&vec_distances, &assignments, I::BIT_LEN, O::BIT_LEN);
                         if new_loss < cur_loss {
                             cur_loss = new_loss;
-                            dbg!(cur_loss);
+                            //dbg!(cur_loss);
                         } else {
                             assignments[b] = old_state;
                         }
@@ -673,5 +680,125 @@ where
             <O::BitShape>::from_vec(&mask_bits_array)
         };
         weights
+    }
+}
+
+pub trait GenClassify<I: BitArray, C: Shape>
+where
+    (I::WordType, I::WordType): Element<I::WordShape>,
+    (
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ): Element<C>,
+{
+    type Accumulator;
+    fn gen_classify(
+        acc: &Self::Accumulator,
+    ) -> <(
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ) as Element<C>>::Array;
+}
+
+pub struct SimpleClassify<I, const C: usize> {
+    input: PhantomData<I>,
+}
+
+impl<I: BitArray + GenFilterSupervised, const C: usize> GenClassify<I, [(); C]>
+    for SimpleClassify<I, C>
+where
+    (I::WordType, I::WordType): Element<I::WordShape>,
+    (
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ): Element<[(); C]> + Copy,
+    u32: Element<I::BitShape>,
+    <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
+    Box<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>: Default,
+    <(I::WordType, I::WordType) as Element<I::WordShape>>::Array: Send + Sync,
+    (usize, <u32 as Element<I::BitShape>>::Array): ElementwiseAdd,
+    [(); C]: Flatten<(
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    )>,
+    Box<(
+        [(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C],
+        <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array,
+        usize,
+    )>: Send + Sync,
+    <(I::WordType, I::WordType) as Element<I::WordShape>>::Array: Copy,
+{
+    type Accumulator = Box<(
+        [(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C],
+        <<u32 as Element<I::BitShape>>::Array as Element<I::BitShape>>::Array,
+        usize,
+    )>;
+    fn gen_classify(
+        acc: &Self::Accumulator,
+    ) -> <(
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ) as Element<[(); C]>>::Array {
+        let classes: Vec<usize> = (0..C).collect();
+        let weights: Vec<_> = classes
+            .par_iter()
+            .map(|&class| {
+                let mut split_counters =
+                    Box::<[(usize, <u32 as Element<I::BitShape>>::Array); 2]>::default();
+                for (part_class, class_counter) in acc.0.iter().enumerate() {
+                    split_counters[(part_class == class) as usize].elementwise_add(class_counter);
+                }
+                <I as GenFilterSupervised>::gen_filter(&split_counters, &acc.1, acc.2)
+            })
+            .collect();
+        let max_act: u32 = *weights.iter().map(|(_, t)| t).max().unwrap();
+        let weights: Vec<_> = weights
+            .iter()
+            .map(|(weights, threshold)| (*weights, max_act - threshold))
+            .collect();
+        let weights = <[(); C] as Flatten<(
+            <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+            u32,
+        )>>::from_vec(&weights);
+        weights
+    }
+}
+
+pub struct UnsupervisedClusterWeightsGen<I, O, const C: usize> {
+    input: PhantomData<I>,
+    target: PhantomData<O>,
+}
+
+impl<I: BitArray, O: BitArray, const C: usize> GenWeights<I, O>
+    for UnsupervisedClusterWeightsGen<I, O, C>
+where
+    (I::WordType, I::WordType): Element<I::WordShape>,
+    (
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ): Element<O::BitShape>,
+    u32: Element<I::BitShape>,
+    [(usize, <u32 as Element<I::BitShape>>::Array); 2]: Element<I::BitShape>,
+    <(
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ) as Element<O::BitShape>>::Array: UnsupervisedCluster<I, O>,
+{
+    type Accumulator = Box<(
+        <[(usize, <u32 as Element<I::BitShape>>::Array); 2] as Element<I::BitShape>>::Array,
+        usize,
+    )>;
+    fn gen_weights(
+        acc: &Self::Accumulator,
+    ) -> <(
+        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+        u32,
+    ) as Element<O::BitShape>>::Array {
+        <<(
+            <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
+            u32,
+        ) as Element<O::BitShape>>::Array as UnsupervisedCluster<I, O>>::unsupervised_cluster(
+            &acc.0, acc.1,
+        )
     }
 }

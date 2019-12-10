@@ -193,12 +193,12 @@ where
     }
 }
 
-impl<Pixel: Copy, T: BitArray, Counters, const X: usize, const Y: usize>
-    IncrementCounters<[[Pixel; 3]; 3], T, Counters> for StaticImage<[[Pixel; Y]; X]>
+impl<Pixel: Copy, T: BitArray, Accumulator, const X: usize, const Y: usize>
+    IncrementCounters<[[Pixel; 3]; 3], T, Accumulator> for StaticImage<[[Pixel; Y]; X]>
 where
-    [[Pixel; 3]; 3]: Default + IncrementCounters<[[Pixel; 3]; 3], T, Counters>,
+    [[Pixel; 3]; 3]: Default + IncrementCounters<[[Pixel; 3]; 3], T, Accumulator>,
 {
-    fn increment_counters(&self, class: usize, counters: &mut Counters) {
+    fn increment_counters(&self, class: usize, counters: &mut Accumulator) {
         for x in 0..X - 2 {
             for y in 0..Y - 2 {
                 {
