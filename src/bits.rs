@@ -1,6 +1,8 @@
 /// the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
 use crate::shape::{Element, Shape};
+use rand::distributions::{Distribution, Standard};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -235,6 +237,35 @@ where
     }
 }
 
+pub trait FloatBitIncrement
+where
+    Self: Sized + BitArray,
+    f64: Element<Self::BitShape>,
+{
+    fn float_increment_counters(
+        &self,
+        weight: f64,
+        counters: &mut <f64 as Element<Self::BitShape>>::Array,
+    );
+}
+
+impl<T: FloatBitIncrement + BitArray, const L: usize> FloatBitIncrement for [T; L]
+where
+    T::BitShape: Shape,
+    f64: Element<T::BitShape>,
+    [T; L]: Default + BitArray<BitShape = [T::BitShape; L]>,
+{
+    fn float_increment_counters(
+        &self,
+        weight: f64,
+        counters: &mut [<f64 as Element<T::BitShape>>::Array; L],
+    ) {
+        for i in 0..L {
+            self[i].float_increment_counters(weight, &mut counters[i]);
+        }
+    }
+}
+
 pub trait IncrementFracCounters
 where
     Self: BitArray,
@@ -299,6 +330,13 @@ pub trait Distance {
     type Rhs;
     /// Returns the number of bits that are different
     fn distance(&self, rhs: &Self::Rhs) -> u32;
+}
+
+impl Distance for usize {
+    type Rhs = usize;
+    fn distance(&self, rhs: &usize) -> u32 {
+        (self ^ rhs).count_ones()
+    }
 }
 
 impl<T: Distance, const L: usize> Distance for [T; L] {
@@ -382,13 +420,16 @@ macro_rules! for_uints {
                     counters[b] += ((self.0 >> b) & 1) as u32
                 }
             }
-            fn flipped_increment_counters(
-                &self,
-                sign: bool,
-                counters: &mut <u32 as Element<Self::BitShape>>::Array,
-            ) {
+            fn flipped_increment_counters(&self, sign: bool, counters: &mut [u32; $len]) {
                 let word = *self ^ Self::splat(sign);
                 word.increment_counters(counters);
+            }
+        }
+        impl FloatBitIncrement for $b_type {
+            fn float_increment_counters(&self, weight: f64, counters: &mut [f64; $len]) {
+                for b in 0..$len {
+                    counters[b] += if self.bit(b) { -1f64 } else { 1f64 } * weight;
+                }
             }
         }
         impl Distance for $b_type {
@@ -412,6 +453,12 @@ macro_rules! for_uints {
                     target |= $b_type(((self[b].0.distance(input) < self[b].1) as $u_type) << b);
                 }
                 target
+            }
+        }
+        impl Distribution<$b_type> for Standard {
+            #[inline]
+            fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> $b_type {
+                $b_type(rng.gen())
             }
         }
         impl ArrayBitOr for $b_type {
@@ -545,5 +592,19 @@ impl<T: BitArray + BitStates + ArrayBitAnd + ArrayBitOr> AndOr for [T; 2] {
     const IDENTITY: Self = [T::ONES, T::ZEROS];
     fn andor(&self, val: &Self::Val) -> Self {
         [self[0].bit_and(val), self[1].bit_or(val)]
+    }
+}
+
+pub trait PrintTritWord {
+    fn print_trit_array(&self);
+}
+
+impl<T: PrintTritWord, const L: usize> PrintTritWord for [T; L] {
+    fn print_trit_array(&self) {
+        print!("[");
+        for i in 0..L {
+            self[i].print_trit_array();
+        }
+        print!("]");
     }
 }
