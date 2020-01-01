@@ -39,7 +39,6 @@ where
     Accumulator: serde::Serialize,
 {
     fn count_bits(examples: &Vec<(Example, usize)>) -> Accumulator {
-        dbg!();
         let input_hash = {
             let mut s = DefaultHasher::new();
             examples.hash(&mut s);
@@ -82,7 +81,7 @@ pub trait Layer<Example, Patch, I, WeightsAlgorithm, O, C>
 where
     Self: Sized + Apply<Example, Patch, I>,
 {
-    fn gen(examples: &Vec<(Example, usize)>) -> Vec<(Self::Output, usize)>;
+    fn gen(examples: &Vec<(Example, usize)>) -> (Self, Vec<(Self::Output, usize)>);
 }
 
 impl<
@@ -114,7 +113,7 @@ where
         u32,
     ): Element<O::BitShape, Array = T> + Copy,
 {
-    fn gen(examples: &Vec<(Example, usize)>) -> Vec<(Self::Output, usize)> {
+    fn gen(examples: &Vec<(Example, usize)>) -> (T, Vec<(Self::Output, usize)>) {
         let total_start = Instant::now();
         let input_hash = {
             let mut s = DefaultHasher::new();
@@ -153,7 +152,7 @@ where
                 )
             })
             .collect();
-        new_examples
+        (layer_weights, new_examples)
     }
 }
 

@@ -623,8 +623,11 @@ where
             .collect();
         let mut cur_loss = cluster_mse(&vec_distances, &assignments, I::BIT_LEN, O::BIT_LEN);
         dbg!(cur_loss);
-        for i in 0..3 {
-            dbg!(i);
+        let mut n_updates = 1usize;
+        let mut n_epocs = 0;
+        while n_updates > 0 {
+            n_updates = 0;
+            //dbg!(n_epocs);
             for b in 0..I::BIT_LEN {
                 for c in 0..O::BIT_LEN {
                     for &sign in &[true, false] {
@@ -634,14 +637,19 @@ where
                             cluster_mse(&vec_distances, &assignments, I::BIT_LEN, O::BIT_LEN);
                         if new_loss < cur_loss {
                             cur_loss = new_loss;
-                            //dbg!(cur_loss);
+                            n_updates += 1;
+                        //dbg!(cur_loss);
                         } else {
                             assignments[b] = old_state;
                         }
                     }
                 }
             }
+            //dbg!(cur_loss);
+            //dbg!(n_updates);
+            n_epocs += 1;
         }
+        dbg!(n_epocs);
         dbg!(cur_loss);
         let weights = {
             let avg_input = {

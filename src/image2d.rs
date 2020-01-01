@@ -1,7 +1,7 @@
 use crate::bits::{b32, b8, AndOr, BitArray, BitMul, BitWord, Classify, Distance};
 use crate::count::IncrementCounters;
 use crate::layer::Apply;
-use crate::shape::{Merge, Shape, ZipMap};
+use crate::shape::{Element, Merge, Shape, ZipMap};
 use crate::unary::NormalizeAndBitpack;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -371,5 +371,15 @@ where
             }
         }
         max_class
+    }
+}
+
+fn print_patch_filter<P: BitArray, const W: usize>(
+    patch: &[[[[<(P::WordType, P::WordType) as Element<P::WordShape>>::Array; 3]; 3]; 32]; W],
+) where
+    (P::WordType, P::WordType): Element<P::WordShape>,
+{
+    for w in 0..W {
+        for b in 0..32 {}
     }
 }

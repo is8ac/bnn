@@ -23,6 +23,12 @@ impl<A: ElementwiseAdd, B: ElementwiseAdd, C: ElementwiseAdd> ElementwiseAdd for
     }
 }
 
+impl ElementwiseAdd for Vec<u32> {
+    fn elementwise_add(&mut self, other: &Vec<u32>) {
+        self.iter_mut().zip(other.iter()).for_each(|(a, b)| *a += b);
+    }
+}
+
 impl ElementwiseAdd for u32 {
     fn elementwise_add(&mut self, other: &u32) {
         *self += other;
