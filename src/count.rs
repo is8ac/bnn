@@ -1,7 +1,8 @@
 use crate::bits::{
     BitArray, IncrementCooccurrenceMatrix, IncrementFracCounters, IncrementHammingDistanceMatrix,
 };
-use crate::shape::Element;
+use crate::block::BlockCode;
+use crate::shape::{Element, Shape};
 use crate::unary::NormalizeAndBitpack;
 use std::boxed::Box;
 
@@ -20,6 +21,12 @@ impl<A: ElementwiseAdd, B: ElementwiseAdd, C: ElementwiseAdd> ElementwiseAdd for
         self.0.elementwise_add(&other.0);
         self.1.elementwise_add(&other.1);
         self.2.elementwise_add(&other.2);
+    }
+}
+
+impl ElementwiseAdd for Vec<u32> {
+    fn elementwise_add(&mut self, other: &Vec<u32>) {
+        self.iter_mut().zip(other.iter()).for_each(|(a, b)| *a += b);
     }
 }
 
@@ -57,70 +64,50 @@ pub trait IncrementCounters<Patch, T, Counters> {
     fn increment_counters(&self, class: usize, counters: &mut Counters);
 }
 
-impl<
-        Input,
-        T: BitArray + IncrementFracCounters + IncrementHammingDistanceMatrix<T>,
-        const C: usize,
-    >
-    IncrementCounters<
-        Input,
-        T,
-        Box<(
-            [(usize, <u32 as Element<T::BitShape>>::Array); C],
-            <<u32 as Element<T::BitShape>>::Array as Element<T::BitShape>>::Array,
-            usize,
-        )>,
-    > for Input
-where
-    Input: NormalizeAndBitpack<T>,
-    u32: Element<T::BitShape>,
-    <u32 as Element<T::BitShape>>::Array: Element<T::BitShape>,
+impl<T: BlockCode<[(); K]>, const K: usize, const C: usize>
+    IncrementCounters<T, T, CounterArray<T, [(); K], { C }>> for T
 {
-    fn increment_counters(
-        &self,
-        class: usize,
-        counters: &mut Box<(
-            [(usize, <u32 as Element<T::BitShape>>::Array); C],
-            <<u32 as Element<T::BitShape>>::Array as Element<T::BitShape>>::Array,
-            usize,
-        )>,
-    ) {
-        let normalized = self.normalize_and_bitpack();
-        normalized.increment_frac_counters(&mut counters.0[class]);
-        normalized.increment_hamming_distance_matrix(&mut counters.1, &normalized);
-        counters.2 += 1;
+    fn increment_counters(&self, class: usize, counters: &mut CounterArray<T, [(); K], { C }>) {
+        let index = self.apply_block(&counters.bit_matrix);
+        counters.counters[class][index] += 1;
     }
 }
 
-impl<Input, T: BitArray + IncrementCooccurrenceMatrix<T>>
-    IncrementCounters<
-        Input,
-        T,
-        Box<(
-            <[(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array); 2] as Element<
-                <T as BitArray>::BitShape,
-            >>::Array,
-            usize,
-        )>,
-    > for Input
+pub struct CounterArray<T: Element<K>, K: Shape, const C: usize> {
+    pub bit_matrix: <T as Element<K>>::Array,
+    pub counters: [Vec<u32>; C],
+}
+
+impl<T: BlockCode<[(); K]>, const K: usize, const C: usize> Default
+    for CounterArray<T, [(); K], { C }>
 where
-    [(usize, <u32 as Element<T::BitShape>>::Array); 2]: Element<T::BitShape>,
-    Self: NormalizeAndBitpack<T>,
-    u32: Element<T::BitShape>,
-    <u32 as Element<T::BitShape>>::Array: Element<T::BitShape>,
+    [Vec<u32>; C]: Default,
 {
-    fn increment_counters(
-        &self,
-        _: usize,
-        counters: &mut Box<(
-            <[(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array); 2] as Element<
-                <T as BitArray>::BitShape,
-            >>::Array,
-            usize,
-        )>,
-    ) {
-        let normalized = self.normalize_and_bitpack();
-        normalized.increment_cooccurrence_matrix(&mut counters.0, &normalized);
-        counters.1 += 1;
+    fn default() -> Self {
+        let mut counters = CounterArray {
+            bit_matrix: T::encoder(),
+            counters: <[Vec<u32>; C]>::default(),
+        };
+        for i in 0..C {
+            counters.counters[i] = vec![0u32; 2usize.pow(K as u32)];
+        }
+        counters
+    }
+}
+
+impl<T, const K: usize, const C: usize> ElementwiseAdd for CounterArray<T, [(); K], { C }>
+where
+    <T as Element<[(); K]>>::Array: Eq + std::fmt::Debug,
+{
+    fn elementwise_add(&mut self, other: &Self) {
+        assert_eq!(self.bit_matrix, other.bit_matrix);
+        for c in 0..C {
+            assert_eq!(self.counters[c].len(), 2usize.pow(K as u32));
+            assert_eq!(other.counters[c].len(), 2usize.pow(K as u32));
+            self.counters[c]
+                .iter_mut()
+                .zip(other.counters[c].iter())
+                .for_each(|(a, b)| *a += b);
+        }
     }
 }

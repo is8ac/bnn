@@ -8,6 +8,7 @@ extern crate serde;
 extern crate time;
 
 pub mod bits;
+pub mod block;
 pub mod count;
 pub mod datasets;
 pub mod image2d;

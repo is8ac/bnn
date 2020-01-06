@@ -1,6 +1,6 @@
 /// the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
-use crate::shape::{Element, Shape};
+use crate::shape::{Element, Shape, ZipMap};
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -97,20 +97,20 @@ where
     fn max_class(&self, input: &Example) -> usize;
 }
 
-impl<I: Distance, const C: usize> Classify<I::Rhs> for [(I, u32); C]
+impl<I: Distance, const C: usize> Classify<I> for [(I, u32); C]
 where
     [u32; C]: Default,
 {
     const N_CLASSES: usize = C;
     type ClassesShape = [(); C];
-    fn activations(&self, input: &I::Rhs) -> [u32; C] {
+    fn activations(&self, input: &I) -> [u32; C] {
         let mut target = <[u32; C]>::default();
         for c in 0..C {
             target[c] = self[c].0.distance(input) + self[c].1;
         }
         target
     }
-    fn max_class(&self, input: &I::Rhs) -> usize {
+    fn max_class(&self, input: &I) -> usize {
         let mut max_act = 0_u32;
         let mut max_class = 0_usize;
         for c in 0..C {
@@ -124,20 +124,16 @@ where
     }
 }
 
-pub trait BitMul {
-    type Target;
-    type Input;
-    fn bit_mul(&self, input: &Self::Input) -> Self::Target;
+pub trait BitMul<I, O> {
+    fn bit_mul(&self, input: &I) -> O;
 }
 
-impl<T: BitMul, const L: usize> BitMul for [T; L]
+impl<I, O, T: BitMul<I, O>, const L: usize> BitMul<I, [O; L]> for [T; L]
 where
-    [T::Target; L]: Default,
+    [O; L]: Default,
 {
-    type Target = [T::Target; L];
-    type Input = T::Input;
-    fn bit_mul(&self, input: &Self::Input) -> Self::Target {
-        let mut target = <Self::Target>::default();
+    fn bit_mul(&self, input: &I) -> [O; L] {
+        let mut target = <[O; L]>::default();
         for i in 0..L {
             target[i] = self[i].bit_mul(input);
         }
@@ -154,7 +150,7 @@ where
     Self::WordType: Element<Self::WordShape, Array = Self>,
 {
     /// The shape of the bits.
-    /// Note that this is not the shape of the array with word as elements,
+    /// Note that this is not the shape of the array with words as elements,
     /// but rather the shape of the array with bits as elements.
     type BitShape;
     /// The type of the bitword inside the shape.
@@ -199,6 +195,11 @@ where
     fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self;
     /// For each bit that is set, increment the corresponding counter.
     fn increment_counters(&self, counters: &mut <u32 as Element<Self::BitShape>>::Array);
+    fn weighted_increment_counters(
+        &self,
+        weight: u32,
+        counters: &mut <u32 as Element<Self::BitShape>>::Array,
+    );
     /// For each bit that is the value of `sign`, increment the corresponding counter.
     fn flipped_increment_counters(
         &self,
@@ -226,6 +227,15 @@ where
             self[i].increment_counters(&mut counters[i]);
         }
     }
+    fn weighted_increment_counters(
+        &self,
+        weight: u32,
+        counters: &mut <u32 as Element<Self::BitShape>>::Array,
+    ) {
+        for i in 0..L {
+            self[i].weighted_increment_counters(weight, &mut counters[i]);
+        }
+    }
     fn flipped_increment_counters(
         &self,
         sign: bool,
@@ -237,42 +247,22 @@ where
     }
 }
 
-pub trait FloatBitIncrement
-where
-    Self: Sized + BitArray,
-    f64: Element<Self::BitShape>,
-{
-    fn float_increment_counters(
-        &self,
-        weight: f64,
-        counters: &mut <f64 as Element<Self::BitShape>>::Array,
-    );
-}
-
-impl<T: FloatBitIncrement + BitArray, const L: usize> FloatBitIncrement for [T; L]
-where
-    T::BitShape: Shape,
-    f64: Element<T::BitShape>,
-    [T; L]: Default + BitArray<BitShape = [T::BitShape; L]>,
-{
-    fn float_increment_counters(
-        &self,
-        weight: f64,
-        counters: &mut [<f64 as Element<T::BitShape>>::Array; L],
-    ) {
-        for i in 0..L {
-            self[i].float_increment_counters(weight, &mut counters[i]);
-        }
-    }
-}
-
 pub trait IncrementFracCounters
 where
     Self: BitArray,
     u32: Element<Self::BitShape>,
 {
+    fn bitpack_fracs(
+        a: &(usize, <u32 as Element<Self::BitShape>>::Array),
+        b: &(usize, <u32 as Element<Self::BitShape>>::Array),
+    ) -> Self;
     fn increment_frac_counters(
         &self,
+        counters: &mut (usize, <u32 as Element<Self::BitShape>>::Array),
+    );
+    fn weighted_increment_frac_counters(
+        &self,
+        weight: u32,
         counters: &mut (usize, <u32 as Element<Self::BitShape>>::Array),
     );
 }
@@ -281,13 +271,35 @@ impl<B: BitArray + BitArrayOPs> IncrementFracCounters for B
 where
     bool: Element<Self::BitShape>,
     u32: Element<Self::BitShape>,
+    Self::BitShape: ZipMap<u32, u32, bool>,
 {
+    fn bitpack_fracs(
+        a: &(usize, <u32 as Element<Self::BitShape>>::Array),
+        b: &(usize, <u32 as Element<Self::BitShape>>::Array),
+    ) -> Self {
+        let ac = a.0 as u64;
+        let bc = b.0 as u64;
+        let diffs = <<Self as BitArray>::BitShape as ZipMap<u32, u32, bool>>::zip_map(
+            &a.1,
+            &b.1,
+            |&a, &b| (a as u64 * bc) > (b as u64 * ac),
+        );
+        Self::bitpack(&diffs)
+    }
     fn increment_frac_counters(
         &self,
         counters: &mut (usize, <u32 as Element<B::BitShape>>::Array),
     ) {
         counters.0 += 1;
         self.increment_counters(&mut counters.1);
+    }
+    fn weighted_increment_frac_counters(
+        &self,
+        weight: u32,
+        counters: &mut (usize, <u32 as Element<B::BitShape>>::Array),
+    ) {
+        counters.0 += weight as usize;
+        self.weighted_increment_counters(weight, &mut counters.1);
     }
 }
 
@@ -327,21 +339,18 @@ where
 
 /// Hamming distance betwene two collections of bits of the same shape.
 pub trait Distance {
-    type Rhs;
     /// Returns the number of bits that are different
-    fn distance(&self, rhs: &Self::Rhs) -> u32;
+    fn distance(&self, rhs: &Self) -> u32;
 }
 
 impl Distance for usize {
-    type Rhs = usize;
     fn distance(&self, rhs: &usize) -> u32 {
         (self ^ rhs).count_ones()
     }
 }
 
 impl<T: Distance, const L: usize> Distance for [T; L] {
-    type Rhs = [T::Rhs; L];
-    fn distance(&self, rhs: &Self::Rhs) -> u32 {
+    fn distance(&self, rhs: &Self) -> u32 {
         let mut sum = 0_u32;
         for i in 0..L {
             sum += self[i].distance(&rhs[i]);
@@ -358,6 +367,7 @@ pub trait BitWord {
     fn splat(sign: bool) -> Self;
     /// Returns the value of the `i`th bit in `self`.
     fn bit(&self, i: usize) -> bool;
+    fn flip_bit(&mut self, i: usize);
 }
 
 impl<T: BitWord, const L: usize> BitWord for [T; L]
@@ -374,6 +384,9 @@ where
     }
     fn bit(&self, i: usize) -> bool {
         self[i / T::BIT_LEN].bit(i % T::BIT_LEN)
+    }
+    fn flip_bit(&mut self, i: usize) {
+        self[i / T::BIT_LEN].flip_bit(i % T::BIT_LEN)
     }
 }
 
@@ -397,6 +410,9 @@ macro_rules! for_uints {
             fn bit(&self, i: usize) -> bool {
                 ((self.0 >> i) & 1) == 1
             }
+            fn flip_bit(&mut self, i: usize) {
+                *self ^= $b_type(1 as $u_type) << i;
+            }
         }
         impl BitArray for $b_type {
             type BitShape = [(); $len];
@@ -417,7 +433,12 @@ macro_rules! for_uints {
             }
             fn increment_counters(&self, counters: &mut [u32; $len]) {
                 for b in 0..$len {
-                    counters[b] += ((self.0 >> b) & 1) as u32
+                    counters[b] += ((self.0 >> b) & 1) as u32;
+                }
+            }
+            fn weighted_increment_counters(&self, weight: u32, counters: &mut [u32; $len]) {
+                for b in 0..$len {
+                    counters[b] += ((self.0 >> b) & 1) as u32 * weight;
                 }
             }
             fn flipped_increment_counters(&self, sign: bool, counters: &mut [u32; $len]) {
@@ -425,32 +446,28 @@ macro_rules! for_uints {
                 word.increment_counters(counters);
             }
         }
-        impl FloatBitIncrement for $b_type {
-            fn float_increment_counters(&self, weight: f64, counters: &mut [f64; $len]) {
-                for b in 0..$len {
-                    counters[b] += if self.bit(b) { -1f64 } else { 1f64 } * weight;
-                }
-            }
-        }
         impl Distance for $b_type {
-            type Rhs = $b_type;
-            fn distance(&self, rhs: &Self::Rhs) -> u32 {
+            fn distance(&self, rhs: &Self) -> u32 {
                 (self.0 ^ rhs.0).count_ones()
             }
         }
-        impl Distance for ($b_type, $b_type) {
-            type Rhs = $b_type;
-            fn distance(&self, &rhs: &Self::Rhs) -> u32 {
-                ((self.0 ^ rhs) & self.1).count_ones()
-            }
-        }
-        impl<I: Distance> BitMul for [(I, u32); $len] {
-            type Target = $b_type;
-            type Input = I::Rhs;
-            fn bit_mul(&self, input: &I::Rhs) -> $b_type {
+        //impl<I: Distance> BitMul<I> for [(I, u32); $len] {
+        //    type Target = $b_type;
+        //    fn bit_mul(&self, input: &I) -> $b_type {
+        //        let mut target = $b_type(0);
+        //        for b in 0..$len {
+        //            target |= $b_type(((self[b].0.distance(input) < self[b].1) as $u_type) << b);
+        //        }
+        //        target
+        //    }
+        //}
+        impl<I: Distance + BitWord> BitMul<I, $b_type> for [I; $len] {
+            fn bit_mul(&self, input: &I) -> $b_type {
                 let mut target = $b_type(0);
                 for b in 0..$len {
-                    target |= $b_type(((self[b].0.distance(input) < self[b].1) as $u_type) << b);
+                    target |= $b_type(
+                        ((self[b].distance(input) < (I::BIT_LEN as u32 / 2)) as $u_type) << b,
+                    );
                 }
                 target
             }
@@ -476,6 +493,12 @@ macro_rules! for_uints {
                 $b_type(0)
             }
         }
+        impl PartialEq for $b_type {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0
+            }
+        }
+        impl Eq for $b_type {}
         impl BitXor for $b_type {
             type Output = Self;
             fn bitxor(self, rhs: Self) -> Self::Output {
@@ -573,8 +596,8 @@ macro_rules! for_uints {
     };
 }
 
-for_uints!(b2, u8, 2, "{:02b}");
-for_uints!(b4, u8, 4, "{:04b}");
+//for_uints!(b2, u8, 2, "{:02b}");
+//for_uints!(b4, u8, 4, "{:04b}");
 for_uints!(b8, u8, 8, "{:08b}");
 for_uints!(b16, u16, 16, "{:016b}");
 for_uints!(b32, u32, 32, "{:032b}");

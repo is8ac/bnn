@@ -158,31 +158,31 @@ impl<const X: usize, const Y: usize> fmt::Display for StaticImage<[[[u8; 3]; Y];
     }
 }
 
-impl<T: BitMul, IP: Default + Copy, const X: usize, const Y: usize>
-    Apply<StaticImage<[[IP; Y]; X]>, [[IP; 3]; 3], T::Input> for T
-where
-    [[IP; 3]; 3]: NormalizeAndBitpack<T::Input>,
-    [[T::Target; Y]; X]: Default,
-{
-    type Output = StaticImage<[[T::Target; Y]; X]>;
-    fn apply(&self, image: &StaticImage<[[IP; Y]; X]>) -> StaticImage<[[T::Target; Y]; X]> {
-        let mut target = StaticImage {
-            image: <[[T::Target; Y]; X]>::default(),
-        };
-        for x in 0..X - 2 {
-            for y in 0..Y - 2 {
-                let mut patch = [[IP::default(); 3]; 3];
-                for px in 0..3 {
-                    for py in 0..3 {
-                        patch[px][py] = image.image[x + px][y + py]
-                    }
-                }
-                target.image[x + 1][y + 1] = self.bit_mul(&patch.normalize_and_bitpack());
-            }
-        }
-        target
-    }
-}
+//impl<T: BitMul<[[IP; 3]; 3], >, IP: Default + Copy, const X: usize, const Y: usize>
+//    Apply<StaticImage<[[IP; Y]; X]>, [[IP; 3]; 3], [[IP; 3]; 3]> for T
+//where
+//    [[IP; 3]; 3]: NormalizeAndBitpack<[[IP; 3]; 3]>,
+//    [[T::Target; Y]; X]: Default,
+//{
+//    type Output = StaticImage<[[T::Target; Y]; X]>;
+//    fn apply(&self, image: &StaticImage<[[IP; Y]; X]>) -> StaticImage<[[T::Target; Y]; X]> {
+//        let mut target = StaticImage {
+//            image: <[[T::Target; Y]; X]>::default(),
+//        };
+//        for x in 0..X - 2 {
+//            for y in 0..Y - 2 {
+//                let mut patch = [[IP::default(); 3]; 3];
+//                for px in 0..3 {
+//                    for py in 0..3 {
+//                        patch[px][py] = image.image[x + px][y + py]
+//                    }
+//                }
+//                target.image[x + 1][y + 1] = self.bit_mul(&patch.normalize_and_bitpack());
+//            }
+//        }
+//        target
+//    }
+//}
 
 impl<P, const X: usize, const Y: usize> Hash for StaticImage<[[P; Y]; X]>
 where
@@ -335,18 +335,18 @@ impl_avgpool!(8, 8);
 impl_avgpool!(4, 4);
 
 impl<IP: Distance, const X: usize, const Y: usize, const C: usize>
-    Classify<StaticImage<[[IP::Rhs; Y]; X]>> for [([[IP; 3]; 3], u32); C]
+    Classify<StaticImage<[[IP; Y]; X]>> for [([[IP; 3]; 3], u32); C]
 where
-    IP::Rhs: Default + Copy,
+    IP: Default + Copy,
     [u32; C]: Default,
 {
     const N_CLASSES: usize = C;
     type ClassesShape = [(); C];
-    fn activations(&self, StaticImage { image }: &StaticImage<[[IP::Rhs; Y]; X]>) -> [u32; C] {
+    fn activations(&self, StaticImage { image }: &StaticImage<[[IP; Y]; X]>) -> [u32; C] {
         let mut sums = <[u32; C]>::default();
         for x in 0..X - 2 {
             for y in 0..Y - 2 {
-                let mut patch = [[IP::Rhs::default(); 3]; 3];
+                let mut patch = [[IP::default(); 3]; 3];
                 for px in 0..3 {
                     for py in 0..3 {
                         patch[px][py] = image[x + px][y + py]
@@ -359,7 +359,7 @@ where
         }
         sums
     }
-    fn max_class(&self, input: &StaticImage<[[IP::Rhs; Y]; X]>) -> usize {
+    fn max_class(&self, input: &StaticImage<[[IP; Y]; X]>) -> usize {
         let activations = self.activations(input);
         let mut max_act = 0_u32;
         let mut max_class = 0_usize;

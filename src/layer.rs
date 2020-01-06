@@ -35,8 +35,8 @@ where
     u32: Element<T::BitShape>,
     bool: Element<T::BitShape>,
     <u32 as Element<T::BitShape>>::Array: Element<T::BitShape>,
-    for<'de> Accumulator: serde::Deserialize<'de>,
-    Accumulator: serde::Serialize,
+    //for<'de> Accumulator: serde::Deserialize<'de>,
+    //Accumulator: serde::Serialize,
 {
     fn count_bits(examples: &Vec<(Example, usize)>) -> Accumulator {
         dbg!();
@@ -49,32 +49,40 @@ where
         let dataset_path = &Path::new(&dataset_path);
         create_dir_all(&dataset_path).unwrap();
 
+        //if let Some(counts_file) = File::open(&count_path).ok() {
         let count_path = dataset_path.join(std::any::type_name::<Accumulator>());
-        if let Some(counts_file) = File::open(&count_path).ok() {
-            println!("reading counts from file: {:?}", counts_file);
-            deserialize_from(counts_file).expect("can't deserialize from file")
-        } else {
-            println!("counting {} examples...", examples.len());
-            let counts = examples
-                .par_chunks(examples.len() / num_cpus::get_physical())
-                .map(|chunk| {
-                    chunk
-                        .iter()
-                        .fold(Accumulator::default(), |mut accumulator, (image, class)| {
-                            image.increment_counters(*class, &mut accumulator);
-                            accumulator
-                        })
-                })
-                .reduce(
-                    || Accumulator::default(),
-                    |mut a, b| {
-                        a.elementwise_add(&b);
-                        a
+        //    println!("reading counts from file: {:?}", counts_file);
+        //    deserialize_from(counts_file).expect("can't deserialize from file")
+        //} else {
+        println!("counting {} examples...", examples.len());
+        let start = Instant::now();
+        let sub_accs: Vec<Accumulator> = examples
+            .par_chunks(examples.len() / num_cpus::get_physical())
+            .map(|chunk| {
+                let foo = chunk.iter().fold(
+                    {
+                        let foo = Accumulator::default();
+                        //dbg!("done allocating");
+                        foo
+                    },
+                    |mut accumulator, (image, class)| {
+                        image.increment_counters(*class, &mut accumulator);
+                        accumulator
                     },
                 );
-            serialize_into(File::create(&count_path).unwrap(), &counts).unwrap();
-            counts
-        }
+                dbg!("done");
+                foo
+            })
+            .collect();
+        let counts = sub_accs.iter().fold(Accumulator::default(), |mut a, b| {
+            a.elementwise_add(&b);
+            a
+        });
+        let count_time = start.elapsed();
+        dbg!(count_time);
+        //serialize_into(File::create(&count_path).unwrap(), &counts).unwrap();
+        counts
+        //}
     }
 }
 
