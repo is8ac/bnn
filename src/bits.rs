@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::num::Wrapping;
-use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Shl, Shr};
+use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
 
 pub trait IncrementCooccurrenceMatrix<T: BitArray>
 where
@@ -478,6 +478,14 @@ macro_rules! for_uints {
                 $b_type(rng.gen())
             }
         }
+        impl Not for $b_type {
+            type Output = $b_type;
+
+            fn not(self) -> $b_type {
+                $b_type(!(self.0))
+            }
+        }
+
         impl ArrayBitOr for $b_type {
             fn bit_or(&self, other: &$b_type) -> $b_type {
                 *self | *other

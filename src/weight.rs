@@ -1,10 +1,7 @@
-use crate::bits::{BitArray, BitArrayOPs, BitWord, Distance, IncrementFracCounters};
+use crate::bits::{BitArray, BitWord, Distance, IncrementFracCounters};
 use crate::count::ElementwiseAdd;
-use crate::shape::{Element, Flatten, Fold, Map, MapMut, Shape, ZipMap, ZipMapMut};
+use crate::shape::{Element, Shape};
 use rayon::prelude::*;
-use rayon::prelude::*;
-use std::boxed::Box;
-use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::ops::AddAssign;
 
@@ -187,12 +184,14 @@ pub trait Objective<I, const C: usize> {
     fn loss(&self, input: &I, class: usize) -> u32;
     fn max_class_index(&self, input: &I) -> usize;
     fn generate(inputs: &Vec<(u32, I, usize)>) -> Self;
+    fn decend(&mut self, inputs: &Vec<(u32, I, usize)>, cur_sum_loss: &mut u64);
 }
 
-impl<I: Copy + Distance + BitArray + IncrementFracCounters + Send + Sync, const C: usize>
-    Objective<I, { C }> for [(I, u32); C]
+impl<
+        I: Copy + Distance + BitArray + BitWord + IncrementFracCounters + Send + Sync,
+        const C: usize,
+    > Objective<I, { C }> for [(I, u32); C]
 where
-    //[Vec<(u32, I)>; C]: IntoParallelIterator,
     [(I, u32); C]: Default + std::fmt::Debug,
     [I; C]: Default + std::fmt::Debug,
     [u64; C]: Default + std::fmt::Debug,
@@ -286,5 +285,22 @@ where
             params[c].1 = max_bias - avg_act;
         }
         params
+    }
+    fn decend(&mut self, inputs: &Vec<(u32, I, usize)>, cur_sum_loss: &mut u64) {
+        for b in 0..I::BIT_LEN {
+            for c in 0..C {
+                //self[c].flip_bit(b);
+                let new_loss: u64 = inputs
+                    .par_iter()
+                    .map(|(count, input, class)| self.loss(input, *class) as u64 * *count as u64)
+                    .sum();
+                if new_loss < *cur_sum_loss {
+                    *cur_sum_loss = new_loss;
+                    dbg!(new_loss);
+                } else {
+                    //self[c].flip_bit(b);
+                }
+            }
+        }
     }
 }

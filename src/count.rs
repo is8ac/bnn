@@ -1,9 +1,6 @@
-use crate::bits::{
-    BitArray, IncrementCooccurrenceMatrix, IncrementFracCounters, IncrementHammingDistanceMatrix,
-};
 use crate::block::BlockCode;
 use crate::shape::{Element, Shape};
-use crate::unary::NormalizeAndBitpack;
+use crate::unary::Preprocess;
 use std::boxed::Box;
 
 pub trait ElementwiseAdd {
@@ -60,15 +57,22 @@ impl<T: ElementwiseAdd, const L: usize> ElementwiseAdd for [T; L] {
 /// the second to change the type.
 /// We take a 'Self', extract a 'Patch` from it, normalise it to `T`,
 /// and use T to increment the counters.
-pub trait IncrementCounters<Patch, T, Counters> {
+/// If Patch is (), we use Self directly.
+pub trait IncrementCounters<Patch, Preprocessor, Counters> {
     fn increment_counters(&self, class: usize, counters: &mut Counters);
 }
 
-impl<T: BlockCode<[(); K]>, const K: usize, const C: usize>
-    IncrementCounters<T, T, CounterArray<T, [(); K], { C }>> for T
+impl<T, Preprocessor: Preprocess<T>, const K: usize, const C: usize>
+    IncrementCounters<(), Preprocessor, CounterArray<Preprocessor::Output, [(); K], { C }>> for T
+where
+    Preprocessor::Output: BlockCode<[(); K]>,
 {
-    fn increment_counters(&self, class: usize, counters: &mut CounterArray<T, [(); K], { C }>) {
-        let index = self.apply_block(&counters.bit_matrix);
+    fn increment_counters(
+        &self,
+        class: usize,
+        counters: &mut CounterArray<Preprocessor::Output, [(); K], { C }>,
+    ) {
+        let index = Preprocessor::preprocess(self).apply_block(&counters.bit_matrix);
         counters.counters[class][index] += 1;
     }
 }
