@@ -2,6 +2,7 @@ use crate::bits::BitArray;
 use crate::count::{ElementwiseAdd, IncrementCounters};
 use crate::image2d::{AvgPool, BitPool, Concat};
 use crate::shape::Element;
+use crate::weight::GenWeights;
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -68,10 +69,10 @@ where
                         accumulator
                     },
                 );
-                dbg!("done");
                 foo
             })
             .collect();
+        dbg!("done counting");
         let counts = sub_accs.iter().fold(Accumulator::default(), |mut a, b| {
             a.elementwise_add(&b);
             a
@@ -84,84 +85,73 @@ where
     }
 }
 
-pub trait Layer<Example, Patch, I, WeightsAlgorithm, O, C>
+pub trait Layer<Example, Patch, I, Preprocessor, WeightsAlgorithm, O, C>
 where
-    Self: Sized + Apply<Example, Patch, I, O>,
+    Self: Sized,
 {
     fn gen(examples: &Vec<(Example, usize)>) -> Vec<(O, usize)>;
 }
 
-//impl<
-//        T: Copy + serde::Serialize + Send + Sync,
-//        Example: Send + Sync + Hash,
-//        Patch,
-//        WeightsAlgorithm: GenWeights<I, O>,
-//        I: CountBits<Example, Patch, WeightsAlgorithm::Accumulator>
-//            + GenFilterSupervised
-//            + Copy
-//            + BitArray,
-//        O: BitArray,
-//        const C: usize,
-//    > Layer<Example, Patch, I, WeightsAlgorithm, O, [(); C]> for T
-//where
-//    Self: Apply<Example, Patch, I> + Copy,
-//    for<'de> T: serde::Deserialize<'de>,
-//    Self::Output: Send + Sync,
-//    (I::WordType, I::WordType): Element<I::WordShape>,
-//    bool: Element<I::BitShape> + Element<I::BitShape>,
-//    u32: Element<I::BitShape> + Element<I::BitShape>,
-//    <u32 as Element<I::BitShape>>::Array: Element<I::BitShape> + Send + Sync,
-//    O::BitShape: Flatten<(
-//        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
-//        u32,
-//    )>,
-//    (
-//        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
-//        u32,
-//    ): Element<O::BitShape, Array = T> + Copy,
-//{
-//    fn gen(examples: &Vec<(Example, usize)>) -> Vec<(Self::Output, usize)> {
-//        let total_start = Instant::now();
-//        let input_hash = {
-//            let mut s = DefaultHasher::new();
-//            examples.hash(&mut s);
-//            s.finish()
-//        };
-//        let dataset_path = format!("params/{}", input_hash);
-//        let dataset_path = &Path::new(&dataset_path);
-//        create_dir_all(&dataset_path).unwrap();
-//
-//        let weights_path = dataset_path.join(std::any::type_name::<WeightsAlgorithm>());
-//        let layer_weights = if let Some(weights_file) = File::open(&weights_path).ok() {
-//            deserialize_from(weights_file).expect("can't deserialize from file")
-//        } else {
-//            println!("training {}", std::any::type_name::<WeightsAlgorithm>());
-//            let start = Instant::now();
-//            let accumulator = I::count_bits(&examples);
-//            let count_time = start.elapsed();
-//            let start = Instant::now();
-//            let layer_weights = WeightsAlgorithm::gen_weights(&accumulator);
-//            let weights_time = start.elapsed();
-//            let total_time = total_start.elapsed();
-//            println!(
-//                "count: {:?}, weights: {:?}, total: {:?}",
-//                count_time, weights_time, total_time
-//            );
-//            serialize_into(File::create(&weights_path).unwrap(), &layer_weights).unwrap();
-//            layer_weights
-//        };
-//        let new_examples: Vec<_> = examples
-//            .par_iter()
-//            .map(|(image, class)| {
-//                (
-//                    <Self as Apply<Example, Patch, I>>::apply(&layer_weights, image),
-//                    *class,
-//                )
-//            })
-//            .collect();
-//        new_examples
-//    }
-//}
+impl<
+        T: Copy + serde::Serialize + Send + Sync + Apply<Example, Patch, Preprocessor, O> + Copy,
+        Preprocessor,
+        Example: Send + Sync + Hash,
+        Patch,
+        WeightsAlgorithm: GenWeights<I, O>,
+        I: CountBits<Example, Patch, Preprocessor, WeightsAlgorithm::Accumulator>
+            + Copy
+            + BitArray
+            + Element<O::BitShape, Array = T>,
+        O: BitArray + Send + Sync,
+        const C: usize,
+    > Layer<Example, Patch, I, Preprocessor, WeightsAlgorithm, O, [(); C]> for T
+where
+    for<'de> T: serde::Deserialize<'de>,
+    bool: Element<I::BitShape> + Element<I::BitShape>,
+    u32: Element<I::BitShape> + Element<I::BitShape>,
+{
+    fn gen(examples: &Vec<(Example, usize)>) -> Vec<(O, usize)> {
+        let total_start = Instant::now();
+        let input_hash = {
+            let mut s = DefaultHasher::new();
+            examples.hash(&mut s);
+            s.finish()
+        };
+        let dataset_path = format!("params/{}", input_hash);
+        let dataset_path = &Path::new(&dataset_path);
+        create_dir_all(&dataset_path).unwrap();
+
+        let weights_path = dataset_path.join(std::any::type_name::<WeightsAlgorithm>());
+        let layer_weights = if let Some(weights_file) = File::open(&weights_path).ok() {
+            deserialize_from(weights_file).expect("can't deserialize from file")
+        } else {
+            println!("training {}", std::any::type_name::<WeightsAlgorithm>());
+            let start = Instant::now();
+            let accumulator: WeightsAlgorithm::Accumulator = I::count_bits(&examples);
+            let count_time = start.elapsed();
+            let start = Instant::now();
+            let layer_weights = WeightsAlgorithm::gen_weights(&accumulator);
+            let weights_time = start.elapsed();
+            let total_time = total_start.elapsed();
+            println!(
+                "count: {:?}, weights: {:?}, total: {:?}",
+                count_time, weights_time, total_time
+            );
+            serialize_into(File::create(&weights_path).unwrap(), &layer_weights).unwrap();
+            layer_weights
+        };
+        let new_examples: Vec<_> = examples
+            .par_iter()
+            .map(|(image, class)| {
+                (
+                    <Self as Apply<Example, Patch, Preprocessor, O>>::apply(&layer_weights, image),
+                    *class,
+                )
+            })
+            .collect();
+        new_examples
+    }
+}
 
 pub trait BitPoolLayer<Image: BitPool> {
     fn bit_pool(examples: &Vec<(Image::Input, usize)>) -> Vec<(Image, usize)>;

@@ -1,6 +1,11 @@
-use crate::bits::{BitArray, BitWord, Distance, IncrementFracCounters};
-use crate::count::ElementwiseAdd;
+use crate::bits::{BitArray, BitMul, BitWord, Distance, IncrementFracCounters, IndexedFlipBit};
+use crate::block::BlockCode;
+use crate::count::{CounterArray, ElementwiseAdd};
 use crate::shape::{Element, Shape};
+use rand::distributions;
+use rand::Rng;
+use rand::SeedableRng;
+use rand_hc::Hc128Rng;
 use rayon::prelude::*;
 use std::marker::PhantomData;
 use std::ops::AddAssign;
@@ -96,86 +101,12 @@ where
     }
 }
 
-pub trait GenWeights<I: BitArray, O: BitArray>
-where
-    (I::WordType, I::WordType): Element<I::WordShape>,
-    (
-        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
-        u32,
-    ): Element<O::BitShape>,
-{
+pub trait GenWeights<I: Element<O::BitShape>, O: BitArray> {
     type Accumulator;
-    fn gen_weights(
-        acc: &Self::Accumulator,
-    ) -> <(
-        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
-        u32,
-    ) as Element<O::BitShape>>::Array;
+    fn gen_weights(acc: &Self::Accumulator) -> <I as Element<O::BitShape>>::Array;
 }
 
 pub struct SupervisedWeightsGen<I, O, const C: usize> {
-    input: PhantomData<I>,
-    target: PhantomData<O>,
-}
-
-pub trait GenFilterSupervised
-where
-    Self: BitArray + Sized,
-    u32: Element<Self::BitShape>,
-    <u32 as Element<<Self as BitArray>::BitShape>>::Array: Element<<Self as BitArray>::BitShape>,
-    (Self::WordType, Self::WordType): Element<Self::WordShape>,
-{
-    /// Generate sign and mask bits from counters for a binary classification.
-    ///
-    /// dist_matrix_counters is a 2d square symetrical matrix.
-    /// The `x`th by `y`th entry is the number of examples in which the xth and yth bit were the same.
-    ///
-    /// value_counters is the number of time that each bit was set in each of the two classes.
-    fn gen_filter(
-        value_counters: &[(usize, <u32 as Element<Self::BitShape>>::Array); 2],
-        dist_matrix_counters: &<<u32 as Element<Self::BitShape>>::Array as Element<
-            Self::BitShape,
-        >>::Array,
-        n: usize,
-    ) -> (
-        <(Self::WordType, Self::WordType) as Element<Self::WordShape>>::Array,
-        u32,
-    );
-}
-
-pub trait UnsupervisedCluster<I: BitArray, O>
-where
-    u32: Element<I::BitShape>,
-    [(usize, <u32 as Element<I::BitShape>>::Array); 2]: Element<I::BitShape>,
-{
-    fn unsupervised_cluster(
-        counts: &<[(usize, <u32 as Element<I::BitShape>>::Array); 2] as Element<I::BitShape>>::Array,
-        n_examples: usize,
-    ) -> Self;
-}
-
-pub trait GenClassify<I: BitArray, C: Shape>
-where
-    (I::WordType, I::WordType): Element<I::WordShape>,
-    (
-        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
-        u32,
-    ): Element<C>,
-{
-    type Accumulator;
-    fn gen_classify(
-        acc: &Self::Accumulator,
-    ) -> <(
-        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
-        u32,
-    ) as Element<C>>::Array;
-}
-
-pub struct SimpleClassify<I, const C: usize> {
-    input: PhantomData<I>,
-}
-
-pub struct UnsupervisedClusterWeightsGen<I, O, const C: usize> {
     input: PhantomData<I>,
     target: PhantomData<O>,
 }
@@ -280,5 +211,96 @@ where
                 }
             }
         }
+    }
+}
+
+struct DecendOneHiddenLayer<K, const SEED: u64, const THRESHOLD: u32, const C: usize> {
+    k_type: PhantomData<K>,
+}
+
+impl<
+        I: BitArray + Element<O::BitShape> + Element<K> + BitWord + Sync + Send + BlockCode<K>,
+        O: BitArray + BitWord + Sync + Send,
+        K: Shape,
+        const SEED: u64,
+        const THRESHOLD: u32,
+        const C: usize,
+    > GenWeights<I, O> for DecendOneHiddenLayer<K, { SEED }, { THRESHOLD }, { C }>
+where
+    <I as Element<O::BitShape>>::Array: IndexedFlipBit<I, O> + BitMul<I, O> + Sync,
+    <I as Element<K>>::Array: Sync,
+    [O; C]: Objective<O, C>,
+    distributions::Standard: distributions::Distribution<<I as Element<O::BitShape>>::Array>,
+{
+    type Accumulator = CounterArray<I, K, { C }>;
+    fn gen_weights(accumulator: &Self::Accumulator) -> <I as Element<O::BitShape>>::Array {
+        let mut rng = Hc128Rng::seed_from_u64(SEED);
+
+        let inputs: Vec<(u32, I, usize)> = accumulator
+            .counters
+            .par_iter()
+            .enumerate()
+            .map(|(class, inputs)| {
+                inputs
+                    .par_iter()
+                    .enumerate()
+                    .filter(|(_, count)| **count > THRESHOLD)
+                    .map(move |(index, count)| (*count, index, class))
+                    .map(|(count, index, class)| {
+                        (
+                            count,
+                            <I>::reverse_block(&accumulator.bit_matrix, index),
+                            class,
+                        )
+                    })
+            })
+            .flatten()
+            .collect();
+        dbg!(inputs.len());
+
+        let total: u64 = inputs.par_iter().map(|(count, _, _)| *count as u64).sum();
+        dbg!(total);
+
+        let mut layer: <I as Element<<O as BitArray>::BitShape>>::Array = rng.gen();
+        let mut aux_weights = {
+            let hidden_inputs: Vec<(u32, O, usize)> = inputs
+                .par_iter()
+                .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
+                .collect();
+            <[O; C]>::generate(&hidden_inputs)
+        };
+
+        let mut cur_loss: u64 = inputs
+            .par_iter()
+            .map(|(count, input, class)| {
+                aux_weights.loss(&layer.bit_mul(input), *class) as u64 * *count as u64
+            })
+            .sum();
+        let hidden_inputs: Vec<(u32, O, usize)> = inputs
+            .par_iter()
+            .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
+            .collect();
+        aux_weights.decend(&hidden_inputs, &mut cur_loss);
+        for e in 0..4 {
+            dbg!(e);
+            for ib in 0..I::BIT_LEN {
+                for ob in 0..O::BIT_LEN {
+                    layer.indexed_flip_bit(ob, ib);
+                    let new_loss: u64 = inputs
+                        .par_iter()
+                        .map(|(count, input, class)| {
+                            aux_weights.loss(&layer.bit_mul(input), *class) as u64 * *count as u64
+                        })
+                        .sum();
+                    if new_loss < cur_loss {
+                        cur_loss = new_loss;
+                        dbg!(cur_loss as f64 / total as f64);
+                    } else {
+                        layer.indexed_flip_bit(ob, ib);
+                    }
+                }
+            }
+        }
+        layer
     }
 }
