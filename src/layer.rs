@@ -1,9 +1,7 @@
-use crate::bits::{BitArray, Classify};
+use crate::bits::BitArray;
 use crate::count::{ElementwiseAdd, IncrementCounters};
 use crate::image2d::{AvgPool, BitPool, Concat};
-use crate::shape::{Element, Flatten};
-use crate::unary::Preprocess;
-use crate::weight::{GenClassify, GenFilterSupervised, GenWeights};
+use crate::shape::Element;
 use rayon::prelude::*;
 use std::time::Instant;
 

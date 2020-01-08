@@ -7,15 +7,13 @@ extern crate rayon;
 use rayon::prelude::*;
 use std::time::Instant;
 
-use bitnn::bits::{
-    b32, BitArray, BitArrayOPs, BitMul, BitWord, Classify, IncrementFracCounters, IndexedFlipBit,
-};
+use bitnn::bits::{b32, BitArray, BitMul, BitWord, Classify, IndexedFlipBit};
 use bitnn::block::BlockCode;
-use bitnn::count::{CounterArray, ElementwiseAdd};
+use bitnn::count::CounterArray;
 use bitnn::datasets::cifar;
 use bitnn::image2d::StaticImage;
 use bitnn::layer::{Apply, CountBits};
-use bitnn::shape::{Element, ZipMap};
+use bitnn::shape::Element;
 use bitnn::unary::{Identity, Normalize, Unary};
 use bitnn::weight::Objective;
 use rand::Rng;
@@ -131,7 +129,6 @@ fn main() {
         dbg!(start.elapsed());
         dbg!(loss_start.elapsed());
     }
-    dbg!(&layer);
     let acc_start = Instant::now();
     let n_correct: u64 = int_examples_32
         .par_iter()
