@@ -40,7 +40,6 @@ where
     //Accumulator: serde::Serialize,
 {
     fn count_bits(examples: &Vec<(Example, usize)>) -> Accumulator {
-        dbg!();
         let input_hash = {
             let mut s = DefaultHasher::new();
             examples.hash(&mut s);
@@ -224,58 +223,3 @@ where
 {
     fn gen_classify(examples: &Vec<(Example, usize)>) -> f64;
 }
-
-//impl<
-//        WeightsAlgorithm: GenClassify<I, [(); C]>,
-//        Example: Hash + Send + Sync,
-//        I: CountBits<Example, I, WeightsAlgorithm::Accumulator> + BitArray + Sized,
-//        const C: usize,
-//    > ClassifyLayer<Example, I, WeightsAlgorithm, [(); C]>
-//    for [(
-//        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
-//        u32,
-//    ); C]
-//where
-//    for<'de> Self: serde::Deserialize<'de>,
-//    u32: Element<I::BitShape> + Element<<Self as Classify<Example>>::ClassesShape>,
-//    <u32 as Element<I::BitShape>>::Array: Element<I::BitShape>,
-//    (I::WordType, I::WordType): Element<I::WordShape>,
-//    <(I::WordType, I::WordType) as Element<I::WordShape>>::Array: Send + Sync + Copy,
-//    [(); C]: Flatten<(
-//        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
-//        u32,
-//    )>,
-//    (
-//        <(I::WordType, I::WordType) as Element<I::WordShape>>::Array,
-//        u32,
-//    ): Element<[(); C], Array = Self>,
-//    Self: Classify<Example>,
-//{
-//    fn gen_classify(examples: &Vec<(Example, usize)>) -> f64 {
-//        let input_hash = {
-//            let mut s = DefaultHasher::new();
-//            examples.hash(&mut s);
-//            s.finish()
-//        };
-//        let dataset_path = format!("params/{}", input_hash);
-//        let dataset_path = &Path::new(&dataset_path);
-//        create_dir_all(&dataset_path).unwrap();
-//
-//        let weights_path = dataset_path.join(std::any::type_name::<WeightsAlgorithm>());
-//        let weights = if let Some(weights_file) = File::open(&weights_path).ok() {
-//            println!(
-//                "reading {} from disk",
-//                std::any::type_name::<WeightsAlgorithm>()
-//            );
-//            deserialize_from(weights_file).expect("can't deserialize from file")
-//        } else {
-//            let acc = I::count_bits(&examples);
-//            WeightsAlgorithm::gen_classify(&acc)
-//        };
-//        let n_correct: u64 = examples
-//            .par_iter()
-//            .map(|(example, class)| (weights.max_class(example) == *class) as u64)
-//            .sum();
-//        n_correct as f64 / examples.len() as f64
-//    }
-//}
