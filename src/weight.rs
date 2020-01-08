@@ -190,7 +190,7 @@ pub trait Objective<I, const C: usize> {
 impl<
         I: Copy + Distance + BitArray + BitWord + IncrementFracCounters + Send + Sync,
         const C: usize,
-    > Objective<I, { C }> for [(I, u32); C]
+    > Objective<I, { C }> for [I; C]
 where
     [(I, u32); C]: Default + std::fmt::Debug,
     [I; C]: Default + std::fmt::Debug,
@@ -201,10 +201,10 @@ where
     (usize, <u32 as Element<<I as BitArray>::BitShape>>::Array): Default + ElementwiseAdd,
 {
     fn loss(&self, input: &I, class: usize) -> u32 {
-        let target_act = input.distance(&self[class].0) + self[class].1;
+        let target_act = input.distance(&self[class]);
         let mut n_gre = 0u32;
         for c in 0..C {
-            let other_act = input.distance(&self[c].0) + self[c].1;
+            let other_act = input.distance(&self[c]);
             n_gre += (target_act <= other_act) as u32;
         }
         n_gre - 1 // remove target from the count
@@ -213,7 +213,7 @@ where
         let mut max_act = 0_u32;
         let mut max_class = 0_usize;
         for c in 0..C {
-            let act = self[c].0.distance(input) + self[c].1;
+            let act = self[c].distance(input);
             if act >= max_act {
                 max_act = act;
                 max_class = c;
@@ -245,60 +245,38 @@ where
                         a
                     },
                 );
-        let weights = {
-            let mut weights = <[I; C]>::default();
-            weights.iter_mut().enumerate().for_each(|(c, target)| {
-                let other_counts = activation_counts
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| *i != c)
-                    .fold(
-                        <(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array)>::default(),
-                        |mut sum, (_, val)| {
-                            sum.elementwise_add(val);
-                            sum
-                        },
-                    );
-                *target = I::bitpack_fracs(&other_counts, &activation_counts[c]);
-            });
-            weights
-        };
-        let (n_examples, sum_acts): (usize, [u64; C]) = inputs.iter().fold(
-            <(usize, [u64; C])>::default(),
-            |mut acc, (count, input, _)| {
-                acc.0 += *count as usize;
-                for c in 0..C {
-                    acc.1[c] += (weights[c].distance(&input) * count) as u64;
-                }
-                acc
-            },
-        );
-        let max_bias = sum_acts
-            .iter()
-            .map(|x| x / n_examples as u64)
-            .max()
-            .unwrap() as u32;
-        let mut params = <[(I, u32); C]>::default();
-        for c in 0..C {
-            let avg_act = (sum_acts[c] / n_examples as u64) as u32;
-            params[c].0 = weights[c];
-            params[c].1 = max_bias - avg_act;
-        }
-        params
+        let mut weights = <[I; C]>::default();
+        weights.iter_mut().enumerate().for_each(|(c, target)| {
+            let other_counts = activation_counts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != c)
+                .fold(
+                    <(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array)>::default(),
+                    |mut sum, (_, val)| {
+                        sum.elementwise_add(val);
+                        sum
+                    },
+                );
+            *target = I::bitpack_fracs(&other_counts, &activation_counts[c]);
+        });
+        weights
     }
     fn decend(&mut self, inputs: &Vec<(u32, I, usize)>, cur_sum_loss: &mut u64) {
+        dbg!(&cur_sum_loss);
         for b in 0..I::BIT_LEN {
             for c in 0..C {
-                //self[c].flip_bit(b);
+                self[c].flip_bit(b);
                 let new_loss: u64 = inputs
                     .par_iter()
                     .map(|(count, input, class)| self.loss(input, *class) as u64 * *count as u64)
                     .sum();
+                //dbg!((new_loss, *cur_sum_loss));
                 if new_loss < *cur_sum_loss {
                     *cur_sum_loss = new_loss;
                     dbg!(new_loss);
                 } else {
-                    //self[c].flip_bit(b);
+                    self[c].flip_bit(b);
                 }
             }
         }

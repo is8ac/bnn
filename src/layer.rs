@@ -14,9 +14,8 @@ use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-pub trait Apply<Example, Patch, I> {
-    type Output;
-    fn apply(&self, input: &Example) -> Self::Output;
+pub trait Apply<Example, Patch, Preprocessor, Output> {
+    fn apply(&self, input: &Example) -> Output;
 }
 
 /// CountBits turns a bit Vec of `Example`s into a fixed size counters.
@@ -90,9 +89,9 @@ where
 
 pub trait Layer<Example, Patch, I, WeightsAlgorithm, O, C>
 where
-    Self: Sized + Apply<Example, Patch, I>,
+    Self: Sized + Apply<Example, Patch, I, O>,
 {
-    fn gen(examples: &Vec<(Example, usize)>) -> Vec<(Self::Output, usize)>;
+    fn gen(examples: &Vec<(Example, usize)>) -> Vec<(O, usize)>;
 }
 
 //impl<

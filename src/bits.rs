@@ -1,6 +1,8 @@
+use crate::layer::Apply;
 /// the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
 use crate::shape::{Element, Shape, ZipMap};
+use crate::unary::Preprocess;
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -8,6 +10,16 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::num::Wrapping;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
+
+pub trait IndexedFlipBit<I, O> {
+    fn indexed_flip_bit(&mut self, o: usize, i: usize);
+}
+
+impl<I, O, T: IndexedFlipBit<I, O>, const L: usize> IndexedFlipBit<I, [O; L]> for [T; L] {
+    fn indexed_flip_bit(&mut self, o: usize, i: usize) {
+        self[o % L].indexed_flip_bit(o / L, i)
+    }
+}
 
 pub trait IncrementCooccurrenceMatrix<T: BitArray>
 where
@@ -86,41 +98,45 @@ where
     }
 }
 
-pub trait Classify<Example>
+pub trait Classify<Example, Patch, ClassesShape>
 where
-    u32: Element<Self::ClassesShape>,
-    Self::ClassesShape: Shape,
+    u32: Element<ClassesShape>,
+    ClassesShape: Shape,
 {
-    const N_CLASSES: usize;
-    type ClassesShape;
-    fn activations(&self, input: &Example) -> <u32 as Element<Self::ClassesShape>>::Array;
+    fn activations(&self, input: &Example) -> <u32 as Element<ClassesShape>>::Array;
     fn max_class(&self, input: &Example) -> usize;
 }
 
-impl<I: Distance, const C: usize> Classify<I> for [(I, u32); C]
+impl<I: Distance, const C: usize> Classify<I, (), [(); C]> for [I; C]
 where
     [u32; C]: Default,
 {
-    const N_CLASSES: usize = C;
-    type ClassesShape = [(); C];
-    fn activations(&self, input: &I) -> [u32; C] {
+    fn activations(&self, example: &I) -> [u32; C] {
         let mut target = <[u32; C]>::default();
         for c in 0..C {
-            target[c] = self[c].0.distance(input) + self[c].1;
+            target[c] = self[c].distance(&example);
         }
         target
     }
     fn max_class(&self, input: &I) -> usize {
+        let activations = <Self as Classify<I, (), [(); C]>>::activations(self, input);
         let mut max_act = 0_u32;
         let mut max_class = 0_usize;
         for c in 0..C {
-            let act = self[c].0.distance(input) + self[c].1;
-            if act >= max_act {
-                max_act = act;
+            if activations[c] >= max_act {
+                max_act = activations[c];
                 max_class = c;
             }
         }
         max_class
+    }
+}
+
+impl<T: BitMul<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
+    Apply<I, (), Preprocessor, O> for T
+{
+    fn apply(&self, input: &I) -> O {
+        self.bit_mul(&Preprocessor::preprocess(input))
     }
 }
 
@@ -446,21 +462,16 @@ macro_rules! for_uints {
                 word.increment_counters(counters);
             }
         }
+        impl<I: BitWord> IndexedFlipBit<I, $b_type> for [I; $len] {
+            fn indexed_flip_bit(&mut self, o: usize, i: usize) {
+                self[o].flip_bit(i);
+            }
+        }
         impl Distance for $b_type {
             fn distance(&self, rhs: &Self) -> u32 {
                 (self.0 ^ rhs.0).count_ones()
             }
         }
-        //impl<I: Distance> BitMul<I> for [(I, u32); $len] {
-        //    type Target = $b_type;
-        //    fn bit_mul(&self, input: &I) -> $b_type {
-        //        let mut target = $b_type(0);
-        //        for b in 0..$len {
-        //            target |= $b_type(((self[b].0.distance(input) < self[b].1) as $u_type) << b);
-        //        }
-        //        target
-        //    }
-        //}
         impl<I: Distance + BitWord> BitMul<I, $b_type> for [I; $len] {
             fn bit_mul(&self, input: &I) -> $b_type {
                 let mut target = $b_type(0);

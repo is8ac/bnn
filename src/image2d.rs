@@ -1,6 +1,8 @@
 use crate::bits::{AndOr, BitWord, Classify, Distance};
 use crate::count::IncrementCounters;
+use crate::layer::Apply;
 use crate::shape::{Merge, Shape, ZipMap};
+use crate::unary::Identity;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -49,31 +51,35 @@ impl<const X: usize, const Y: usize> fmt::Display for StaticImage<[[[u8; 3]; Y];
     }
 }
 
-//impl<T: BitMul<[[IP; 3]; 3], >, IP: Default + Copy, const X: usize, const Y: usize>
-//    Apply<StaticImage<[[IP; Y]; X]>, [[IP; 3]; 3], [[IP; 3]; 3]> for T
-//where
-//    [[IP; 3]; 3]: NormalizeAndBitpack<[[IP; 3]; 3]>,
-//    [[T::Target; Y]; X]: Default,
-//{
-//    type Output = StaticImage<[[T::Target; Y]; X]>;
-//    fn apply(&self, image: &StaticImage<[[IP; Y]; X]>) -> StaticImage<[[T::Target; Y]; X]> {
-//        let mut target = StaticImage {
-//            image: <[[T::Target; Y]; X]>::default(),
-//        };
-//        for x in 0..X - 2 {
-//            for y in 0..Y - 2 {
-//                let mut patch = [[IP::default(); 3]; 3];
-//                for px in 0..3 {
-//                    for py in 0..3 {
-//                        patch[px][py] = image.image[x + px][y + py]
-//                    }
-//                }
-//                target.image[x + 1][y + 1] = self.bit_mul(&patch.normalize_and_bitpack());
-//            }
-//        }
-//        target
-//    }
-//}
+impl<
+        Preprocessor,
+        T: Apply<[[IP; 3]; 3], (), Preprocessor, OP>,
+        IP: Default + Copy,
+        OP,
+        const X: usize,
+        const Y: usize,
+    > Apply<StaticImage<[[IP; Y]; X]>, [[(); 3]; 3], Preprocessor, StaticImage<[[OP; Y]; X]>> for T
+where
+    [[OP; Y]; X]: Default,
+{
+    fn apply(&self, image: &StaticImage<[[IP; Y]; X]>) -> StaticImage<[[OP; Y]; X]> {
+        let mut target = StaticImage {
+            image: <[[OP; Y]; X]>::default(),
+        };
+        for x in 0..X - 2 {
+            for y in 0..Y - 2 {
+                let mut patch = [[IP::default(); 3]; 3];
+                for px in 0..3 {
+                    for py in 0..3 {
+                        patch[px][py] = image.image[x + px][y + py]
+                    }
+                }
+                target.image[x + 1][y + 1] = self.apply(&patch);
+            }
+        }
+        target
+    }
+}
 
 impl<P, const X: usize, const Y: usize> Hash for StaticImage<[[P; Y]; X]>
 where
@@ -225,39 +231,37 @@ impl_avgpool!(16, 16);
 impl_avgpool!(8, 8);
 impl_avgpool!(4, 4);
 
-impl<IP: Distance, const X: usize, const Y: usize, const C: usize>
-    Classify<StaticImage<[[IP; Y]; X]>> for [([[IP; 3]; 3], u32); C]
+impl<
+        T: Classify<IP, (), [(); C]>,
+        IP: Distance,
+        const X: usize,
+        const Y: usize,
+        const C: usize,
+    > Classify<StaticImage<[[IP; Y]; X]>, (), [(); C]> for T
 where
     IP: Default + Copy,
     [u32; C]: Default,
 {
-    const N_CLASSES: usize = C;
-    type ClassesShape = [(); C];
     fn activations(&self, StaticImage { image }: &StaticImage<[[IP; Y]; X]>) -> [u32; C] {
         let mut sums = <[u32; C]>::default();
         for x in 0..X - 2 {
             for y in 0..Y - 2 {
-                let mut patch = [[IP::default(); 3]; 3];
-                for px in 0..3 {
-                    for py in 0..3 {
-                        patch[px][py] = image[x + px][y + py]
-                    }
-                }
+                let activations = self.activations(&image[x][y]);
                 for c in 0..C {
-                    sums[c] += self[c].0.distance(&patch) + self[c].1;
+                    sums[c] += activations[c];
                 }
             }
         }
         sums
     }
     fn max_class(&self, input: &StaticImage<[[IP; Y]; X]>) -> usize {
-        let activations = self.activations(input);
+        let activations =
+            <T as Classify<StaticImage<[[IP; Y]; X]>, (), [(); C]>>::activations(self, input);
         let mut max_act = 0_u32;
         let mut max_class = 0_usize;
         for c in 0..C {
-            let act = activations[c];
-            if act >= max_act {
-                max_act = act;
+            if activations[c] >= max_act {
+                max_act = activations[c];
                 max_class = c;
             }
         }

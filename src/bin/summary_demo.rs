@@ -7,14 +7,16 @@ extern crate rayon;
 use rayon::prelude::*;
 use std::time::Instant;
 
-use bitnn::bits::{b32, BitArray, BitArrayOPs, BitMul, BitWord, Classify, IncrementFracCounters};
+use bitnn::bits::{
+    b32, BitArray, BitArrayOPs, BitMul, BitWord, Classify, IncrementFracCounters, IndexedFlipBit,
+};
 use bitnn::block::BlockCode;
 use bitnn::count::{CounterArray, ElementwiseAdd};
 use bitnn::datasets::cifar;
 use bitnn::image2d::StaticImage;
-use bitnn::layer::CountBits;
+use bitnn::layer::{Apply, CountBits};
 use bitnn::shape::{Element, ZipMap};
-use bitnn::unary::{Normalize, Unary};
+use bitnn::unary::{Identity, Normalize, Unary};
 use bitnn::weight::Objective;
 use rand::Rng;
 use rand::SeedableRng;
@@ -23,9 +25,12 @@ use std::path::Path;
 
 const N_EXAMPLES: usize = 50_000;
 const N_CLASSES: usize = 10;
-const K: usize = 26;
+const K: usize = 27;
+const TN: usize = 1;
 type InputType = [[b32; 3]; 3];
-type TargetType = b32;
+type TargetType = [b32; TN];
+type PreprocessorType = Unary<[[b32; 3]; 3]>;
+//type PreprocessorType = Normalize<Unary<b32>>;
 
 fn main() {
     let mut rng = Hc128Rng::seed_from_u64(0);
@@ -38,10 +43,15 @@ fn main() {
     let accumulator = <[[b32; 3]; 3] as CountBits<
         StaticImage<[[[u8; 3]; 32]; 32]>,
         [[(); 3]; 3],
-        //Normalize<Unary<b32>>,
-        Unary<[[b32; 3]; 3]>,
+        PreprocessorType,
         CounterArray<[[b32; 3]; 3], [(); K], { N_CLASSES }>,
     >>::count_bits(&int_examples_32);
+    let orig: u64 = accumulator
+        .counters
+        .iter()
+        .map(|x| x.iter().sum::<u32>() as u64)
+        .sum();
+    dbg!(orig);
 
     let start = Instant::now();
     let inputs: Vec<(u32, InputType, usize)> = accumulator
@@ -52,7 +62,7 @@ fn main() {
             inputs
                 .par_iter()
                 .enumerate()
-                .filter(|(_, count)| **count > 1000)
+                .filter(|(_, count)| **count > 3000)
                 .map(move |(index, count)| (*count, index, class))
                 .map(|(count, index, class)| {
                     (
@@ -69,6 +79,7 @@ fn main() {
 
     let total: u64 = inputs.par_iter().map(|(count, _, _)| *count as u64).sum();
     dbg!(total);
+    dbg!(total as f64 / orig as f64);
 
     let mut layer: <InputType as Element<<TargetType as BitArray>::BitShape>>::Array = rng.gen();
     let mut aux_weights = {
@@ -76,7 +87,7 @@ fn main() {
             .par_iter()
             .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
             .collect();
-        <[(TargetType, u32); N_CLASSES]>::generate(&hidden_inputs)
+        <[TargetType; N_CLASSES]>::generate(&hidden_inputs)
     };
 
     let mut cur_loss: u64 = inputs
@@ -86,60 +97,75 @@ fn main() {
         })
         .sum();
     let loss_start = Instant::now();
-    for e in 0..7 {
+    let head_loss_start = Instant::now();
+    let hidden_inputs: Vec<(u32, TargetType, usize)> = inputs
+        .par_iter()
+        .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
+        .collect();
+    dbg!(cur_loss as f64 / total as f64);
+    aux_weights.decend(&hidden_inputs, &mut cur_loss);
+    dbg!(cur_loss as f64 / total as f64);
+    dbg!(head_loss_start.elapsed());
+    //20.4968
+    //l: 3.201
+    for e in 0..4 {
         dbg!(e);
-        for b in 0..<InputType as Element<<TargetType as BitArray>::BitShape>>::Array::BIT_LEN {
-            if b % 11 == 0 {
-                aux_weights = {
-                    let hidden_inputs: Vec<(u32, TargetType, usize)> = inputs
-                        .par_iter()
-                        .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
-                        .collect();
-                    <[(TargetType, u32); N_CLASSES]>::generate(&hidden_inputs)
-                };
-                cur_loss = inputs
+        let start = Instant::now();
+        for ib in 0..InputType::BIT_LEN {
+            for ob in 0..TargetType::BIT_LEN {
+                layer.indexed_flip_bit(ob, ib);
+                let new_loss: u64 = inputs
                     .par_iter()
                     .map(|(count, input, class)| {
                         aux_weights.loss(&layer.bit_mul(input), *class) as u64 * *count as u64
                     })
                     .sum();
-            }
-            layer.flip_bit(b);
-            let new_loss: u64 = inputs
-                .par_iter()
-                .map(|(count, input, class)| {
-                    aux_weights.loss(&layer.bit_mul(input), *class) as u64 * *count as u64
-                })
-                .sum();
-            if new_loss < cur_loss {
-                cur_loss = new_loss;
-                dbg!(cur_loss as f64 / total as f64);
-            } else {
-                layer.flip_bit(b);
+                if new_loss < cur_loss {
+                    cur_loss = new_loss;
+                    dbg!(cur_loss as f64 / total as f64);
+                } else {
+                    layer.indexed_flip_bit(ob, ib);
+                }
             }
         }
+        dbg!(start.elapsed());
+        dbg!(loss_start.elapsed());
     }
-    dbg!(loss_start.elapsed());
-    {
-        let hidden_inputs: Vec<(u32, TargetType, usize)> = inputs
-            .par_iter()
-            .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
-            .collect();
-        let aux_weights = <[(TargetType, u32); N_CLASSES]>::generate(&hidden_inputs);
+    dbg!(&layer);
+    let acc_start = Instant::now();
+    let n_correct: u64 = int_examples_32
+        .par_iter()
+        .map(|(image, class)| {
+            let hidden = <[[[[b32; 3]; 3]; 32]; TN] as Apply<
+                StaticImage<[[[u8; 3]; 32]; 32]>,
+                [[(); 3]; 3],
+                PreprocessorType,
+                StaticImage<[[TargetType; 32]; 32]>,
+            >>::apply(&layer, image);
+            let max_class = <[TargetType; N_CLASSES] as Classify<
+                StaticImage<[[TargetType; 32]; 32]>,
+                (),
+                [(); N_CLASSES],
+            >>::max_class(&aux_weights, &hidden);
+            (max_class == *class) as u64
+        })
+        .sum();
+    dbg!(n_correct as f64 / int_examples_32.len() as f64);
+    dbg!(acc_start.elapsed());
+    //0.10128
+    //50: 0.1522
+    //500: 0.16752
+    //1000: 0.15516
+    //K24: 0.10548
+    // 0.15516
+    //TN2:0.1383
+    //TN1:0.139
 
-        let (n_correct, total) = inputs
-            .iter()
-            .map(|(count, input, class)| {
-                (
-                    ((aux_weights.max_class(&layer.bit_mul(input)) == *class) as u64)
-                        * *count as u64,
-                    *count as usize,
-                )
-            })
-            .fold((0u64, 0usize), |a: (u64, usize), b: (u64, usize)| {
-                (a.0 + b.0, a.1 + b.1)
-            });
-        dbg!(total);
-        println!("{}%", n_correct as f64 / total as f64 * 100f64);
-    }
+    // pow1: 0.12286
+    // pow2: 0.0987
+    // 100: 27000
+    // 50: 0.1548 i: 103282
+    // 0.1339
+    // 0.1317
+    // 1332
 }
