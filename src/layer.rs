@@ -97,7 +97,7 @@ impl<
         Preprocessor,
         Example: Send + Sync + Hash,
         Patch,
-        WeightsAlgorithm: GenWeights<I, O>,
+        WeightsAlgorithm: GenWeights<I, O, [(); C]>,
         I: CountBits<Example, Patch, Preprocessor, WeightsAlgorithm::Accumulator>
             + Copy
             + BitArray
@@ -130,7 +130,7 @@ where
             let accumulator: WeightsAlgorithm::Accumulator = I::count_bits(&examples);
             let count_time = start.elapsed();
             let start = Instant::now();
-            let layer_weights = WeightsAlgorithm::gen_weights(&accumulator);
+            let (layer_weights, obj) = WeightsAlgorithm::gen_weights(&accumulator);
             let weights_time = start.elapsed();
             let total_time = total_start.elapsed();
             println!(

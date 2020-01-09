@@ -12,10 +12,11 @@ use bitnn::block::BlockCode;
 use bitnn::count::CounterArray;
 use bitnn::datasets::cifar;
 use bitnn::image2d::StaticImage;
-use bitnn::layer::{Apply, CountBits};
+use bitnn::layer::{Apply, CountBits, Layer};
 use bitnn::shape::Element;
 use bitnn::unary::{Identity, Normalize, Unary};
 use bitnn::weight::Objective;
+use bitnn::weight::{DecendOneHiddenLayer, GenWeights};
 use rand::Rng;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
@@ -31,104 +32,31 @@ type PreprocessorType = Unary<[[b32; 3]; 3]>;
 //type PreprocessorType = Normalize<Unary<b32>>;
 
 fn main() {
-    let mut rng = Hc128Rng::seed_from_u64(0);
-
     let cifar_base_path = Path::new("/big/cache/datasets/cifar-10-batches-bin");
 
     let int_examples_32 = cifar::load_images_from_base(&cifar_base_path, N_EXAMPLES);
     //let examples = <()>::edges(&int_examples_32);
 
+    //let l2_examples = <[[[[b32; 3]; 3]; 32]; 1] as Layer<
+    //    StaticImage<[[[u8; 3]; 32]; 32]>,
+    //    [[(); 3]; 3],
+    //    [[b32; 3]; 3],
+    //    PreprocessorType,
+    //>>::gen(&int_examples_32);
+
     let accumulator = <[[b32; 3]; 3] as CountBits<
         StaticImage<[[[u8; 3]; 32]; 32]>,
         [[(); 3]; 3],
         PreprocessorType,
-        CounterArray<[[b32; 3]; 3], [(); K], { N_CLASSES }>,
+        CounterArray<[[b32; 3]; 3], { K }, { N_CLASSES }>,
     >>::count_bits(&int_examples_32);
-    let orig: u64 = accumulator
-        .counters
-        .iter()
-        .map(|x| x.iter().sum::<u32>() as u64)
-        .sum();
-    dbg!(orig);
 
-    let start = Instant::now();
-    let inputs: Vec<(u32, InputType, usize)> = accumulator
-        .counters
-        .par_iter()
-        .enumerate()
-        .map(|(class, inputs)| {
-            inputs
-                .par_iter()
-                .enumerate()
-                .filter(|(_, count)| **count > 3000)
-                .map(move |(index, count)| (*count, index, class))
-                .map(|(count, index, class)| {
-                    (
-                        count,
-                        <InputType>::reverse_block(&accumulator.bit_matrix, index),
-                        class,
-                    )
-                })
-        })
-        .flatten()
-        .collect();
-    dbg!(start.elapsed());
-    dbg!(inputs.len());
+    let (layer, aux_weights) = <DecendOneHiddenLayer<K, 0, 3000, 10> as GenWeights<
+        InputType,
+        TargetType,
+        [(); N_CLASSES],
+    >>::gen_weights(&accumulator);
 
-    let total: u64 = inputs.par_iter().map(|(count, _, _)| *count as u64).sum();
-    dbg!(total);
-    dbg!(total as f64 / orig as f64);
-
-    let mut layer: <InputType as Element<<TargetType as BitArray>::BitShape>>::Array = rng.gen();
-    let mut aux_weights = {
-        let hidden_inputs: Vec<(u32, TargetType, usize)> = inputs
-            .par_iter()
-            .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
-            .collect();
-        <[TargetType; N_CLASSES]>::generate(&hidden_inputs)
-    };
-
-    let mut cur_loss: u64 = inputs
-        .par_iter()
-        .map(|(count, input, class)| {
-            aux_weights.loss(&layer.bit_mul(input), *class) as u64 * *count as u64
-        })
-        .sum();
-    let loss_start = Instant::now();
-    let head_loss_start = Instant::now();
-    let hidden_inputs: Vec<(u32, TargetType, usize)> = inputs
-        .par_iter()
-        .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
-        .collect();
-    dbg!(cur_loss as f64 / total as f64);
-    aux_weights.decend(&hidden_inputs, &mut cur_loss);
-    dbg!(cur_loss as f64 / total as f64);
-    dbg!(head_loss_start.elapsed());
-    //20.4968
-    //l: 3.201
-    for e in 0..4 {
-        dbg!(e);
-        let start = Instant::now();
-        for ib in 0..InputType::BIT_LEN {
-            for ob in 0..TargetType::BIT_LEN {
-                layer.indexed_flip_bit(ob, ib);
-                let new_loss: u64 = inputs
-                    .par_iter()
-                    .map(|(count, input, class)| {
-                        aux_weights.loss(&layer.bit_mul(input), *class) as u64 * *count as u64
-                    })
-                    .sum();
-                if new_loss < cur_loss {
-                    cur_loss = new_loss;
-                    dbg!(cur_loss as f64 / total as f64);
-                } else {
-                    layer.indexed_flip_bit(ob, ib);
-                }
-            }
-        }
-        dbg!(start.elapsed());
-        dbg!(loss_start.elapsed());
-    }
     let acc_start = Instant::now();
     let n_correct: u64 = int_examples_32
         .par_iter()

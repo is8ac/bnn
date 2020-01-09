@@ -62,28 +62,31 @@ pub trait IncrementCounters<Patch, Preprocessor, Counters> {
     fn increment_counters(&self, class: usize, counters: &mut Counters);
 }
 
-impl<T, Preprocessor: Preprocess<T>, const K: usize, const C: usize>
-    IncrementCounters<(), Preprocessor, CounterArray<Preprocessor::Output, [(); K], { C }>> for T
+impl<
+        T: Element<[(); K], Array = [T; K]>,
+        Preprocessor: Preprocess<T>,
+        const K: usize,
+        const C: usize,
+    > IncrementCounters<(), Preprocessor, CounterArray<Preprocessor::Output, { K }, { C }>> for T
 where
-    Preprocessor::Output: BlockCode<[(); K]>,
+    Preprocessor::Output: BlockCode<{ K }>,
 {
     fn increment_counters(
         &self,
         class: usize,
-        counters: &mut CounterArray<Preprocessor::Output, [(); K], { C }>,
+        counters: &mut CounterArray<Preprocessor::Output, { K }, { C }>,
     ) {
         let index = Preprocessor::preprocess(self).apply_block(&counters.bit_matrix);
         counters.counters[class][index] += 1;
     }
 }
 
-pub struct CounterArray<T: Element<K>, K: Shape, const C: usize> {
-    pub bit_matrix: <T as Element<K>>::Array,
+pub struct CounterArray<T, const K: usize, const C: usize> {
+    pub bit_matrix: [T; K],
     pub counters: [Vec<u32>; C],
 }
 
-impl<T: BlockCode<[(); K]>, const K: usize, const C: usize> Default
-    for CounterArray<T, [(); K], { C }>
+impl<T: BlockCode<{ K }>, const K: usize, const C: usize> Default for CounterArray<T, { K }, { C }>
 where
     [Vec<u32>; C]: Default,
 {
@@ -99,7 +102,7 @@ where
     }
 }
 
-impl<T, const K: usize, const C: usize> ElementwiseAdd for CounterArray<T, [(); K], { C }>
+impl<T, const K: usize, const C: usize> ElementwiseAdd for CounterArray<T, { K }, { C }>
 where
     <T as Element<[(); K]>>::Array: Eq + std::fmt::Debug,
 {

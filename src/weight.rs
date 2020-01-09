@@ -101,9 +101,11 @@ where
     }
 }
 
-pub trait GenWeights<I: Element<O::BitShape>, O: BitArray> {
+pub trait GenWeights<I: Element<O::BitShape>, O: BitArray + Element<C>, C: Shape> {
     type Accumulator;
-    fn gen_weights(acc: &Self::Accumulator) -> <I as Element<O::BitShape>>::Array;
+    fn gen_weights(
+        acc: &Self::Accumulator,
+    ) -> (<I as Element<O::BitShape>>::Array, <O as Element<C>>::Array);
 }
 
 pub struct SupervisedWeightsGen<I, O, const C: usize> {
@@ -214,26 +216,37 @@ where
     }
 }
 
-struct DecendOneHiddenLayer<K, const SEED: u64, const THRESHOLD: u32, const C: usize> {
-    k_type: PhantomData<K>,
-}
+pub struct DecendOneHiddenLayer<
+    const K: usize,
+    const SEED: u64,
+    const THRESHOLD: u32,
+    const C: usize,
+>();
 
 impl<
-        I: BitArray + Element<O::BitShape> + Element<K> + BitWord + Sync + Send + BlockCode<K>,
+        I: BitArray
+            + Element<O::BitShape>
+            + Element<[(); K]>
+            + BitWord
+            + Sync
+            + Send
+            + BlockCode<{ K }>,
         O: BitArray + BitWord + Sync + Send,
-        K: Shape,
+        const K: usize,
         const SEED: u64,
         const THRESHOLD: u32,
         const C: usize,
-    > GenWeights<I, O> for DecendOneHiddenLayer<K, { SEED }, { THRESHOLD }, { C }>
+    > GenWeights<I, O, [(); C]> for DecendOneHiddenLayer<{ K }, { SEED }, { THRESHOLD }, { C }>
 where
     <I as Element<O::BitShape>>::Array: IndexedFlipBit<I, O> + BitMul<I, O> + Sync,
-    <I as Element<K>>::Array: Sync,
+    <I as Element<[(); K]>>::Array: Sync,
     [O; C]: Objective<O, C>,
     distributions::Standard: distributions::Distribution<<I as Element<O::BitShape>>::Array>,
 {
-    type Accumulator = CounterArray<I, K, { C }>;
-    fn gen_weights(accumulator: &Self::Accumulator) -> <I as Element<O::BitShape>>::Array {
+    type Accumulator = CounterArray<I, { K }, { C }>;
+    fn gen_weights(
+        accumulator: &Self::Accumulator,
+    ) -> (<I as Element<O::BitShape>>::Array, [O; C]) {
         let mut rng = Hc128Rng::seed_from_u64(SEED);
 
         let inputs: Vec<(u32, I, usize)> = accumulator
@@ -301,6 +314,6 @@ where
                 }
             }
         }
-        layer
+        (layer, aux_weights)
     }
 }

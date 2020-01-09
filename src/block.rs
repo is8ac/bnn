@@ -1,17 +1,16 @@
 use crate::bits::{b64, BitArrayOPs, BitWord, Distance};
 use crate::shape::{Element, Flatten, Map, Shape};
 
-pub trait BlockCode<K>
+pub trait BlockCode<const K: usize>
 where
-    Self: Element<K>,
-    K: Shape,
+    Self: Sized,
 {
-    fn encoder() -> <Self as Element<K>>::Array;
-    fn apply_block(&self, block: &<Self as Element<K>>::Array) -> usize;
-    fn reverse_block(block: &<Self as Element<K>>::Array, index: usize) -> Self;
+    fn encoder() -> [Self; K];
+    fn apply_block(&self, block: &[Self; K]) -> usize;
+    fn reverse_block(block: &[Self; K], index: usize) -> Self;
 }
 
-impl<N: Copy + BitWord + BitArrayOPs + Distance, const K: usize> BlockCode<[(); K]> for N
+impl<N: Copy + BitWord + BitArrayOPs + Distance, const K: usize> BlockCode<{ K }> for N
 where
     N::BitShape: Flatten<bool> + Map<u32, bool>,
     u32: Element<N::BitShape>,
