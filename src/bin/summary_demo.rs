@@ -37,41 +37,25 @@ fn main() {
     let int_examples_32 = cifar::load_images_from_base(&cifar_base_path, N_EXAMPLES);
     //let examples = <()>::edges(&int_examples_32);
 
-    //let l2_examples = <[[[[b32; 3]; 3]; 32]; 1] as Layer<
-    //    StaticImage<[[[u8; 3]; 32]; 32]>,
-    //    [[(); 3]; 3],
-    //    [[b32; 3]; 3],
-    //    PreprocessorType,
-    //>>::gen(&int_examples_32);
-
-    let accumulator = <[[b32; 3]; 3] as CountBits<
+    let (l2_examples, layer, aux_weights) = <[[[[b32; 3]; 3]; 32]; 1] as Layer<
         StaticImage<[[[u8; 3]; 32]; 32]>,
         [[(); 3]; 3],
-        PreprocessorType,
-        CounterArray<[[b32; 3]; 3], { K }, { N_CLASSES }>,
-    >>::count_bits(&int_examples_32);
-
-    let (layer, aux_weights) = <DecendOneHiddenLayer<K, 0, 3000, 10> as GenWeights<
-        InputType,
-        TargetType,
+        [[b32; 3]; 3],
+        Unary<[[b32; 3]; 3]>,
+        DecendOneHiddenLayer<K, 3, 500, 9, { N_CLASSES }>,
+        StaticImage<[[[b32; 1]; 32]; 32]>,
         [(); N_CLASSES],
-    >>::gen_weights(&accumulator);
+    >>::gen(&int_examples_32);
 
     let acc_start = Instant::now();
-    let n_correct: u64 = int_examples_32
+    let n_correct: u64 = l2_examples
         .par_iter()
         .map(|(image, class)| {
-            let hidden = <[[[[b32; 3]; 3]; 32]; TN] as Apply<
-                StaticImage<[[[u8; 3]; 32]; 32]>,
-                [[(); 3]; 3],
-                PreprocessorType,
-                StaticImage<[[TargetType; 32]; 32]>,
-            >>::apply(&layer, image);
             let max_class = <[TargetType; N_CLASSES] as Classify<
                 StaticImage<[[TargetType; 32]; 32]>,
                 (),
                 [(); N_CLASSES],
-            >>::max_class(&aux_weights, &hidden);
+            >>::max_class(&aux_weights, &image);
             (max_class == *class) as u64
         })
         .sum();
@@ -94,4 +78,8 @@ fn main() {
     // 0.1317
     // 1332
     //0.13826
+    // s0: 0.13826
+    // s1: 0.09848
+    // s2: 0.1196
+    // s3: 0.11136
 }

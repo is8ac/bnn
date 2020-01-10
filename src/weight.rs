@@ -106,6 +106,7 @@ pub trait GenWeights<I: Element<O::BitShape>, O: BitArray + Element<C>, C: Shape
     fn gen_weights(
         acc: &Self::Accumulator,
     ) -> (<I as Element<O::BitShape>>::Array, <O as Element<C>>::Array);
+    fn string_name() -> String;
 }
 
 pub struct SupervisedWeightsGen<I, O, const C: usize> {
@@ -220,6 +221,7 @@ pub struct DecendOneHiddenLayer<
     const K: usize,
     const SEED: u64,
     const THRESHOLD: u32,
+    const E: usize,
     const C: usize,
 >();
 
@@ -235,13 +237,16 @@ impl<
         const K: usize,
         const SEED: u64,
         const THRESHOLD: u32,
+        const E: usize,
         const C: usize,
-    > GenWeights<I, O, [(); C]> for DecendOneHiddenLayer<{ K }, { SEED }, { THRESHOLD }, { C }>
+    > GenWeights<I, O, [(); C]>
+    for DecendOneHiddenLayer<{ K }, { SEED }, { THRESHOLD }, { E }, { C }>
 where
     <I as Element<O::BitShape>>::Array: IndexedFlipBit<I, O> + BitMul<I, O> + Sync,
     <I as Element<[(); K]>>::Array: Sync,
     [O; C]: Objective<O, C>,
-    distributions::Standard: distributions::Distribution<<I as Element<O::BitShape>>::Array>,
+    distributions::Standard: distributions::Distribution<<I as Element<O::BitShape>>::Array>
+        + distributions::Distribution<[O; C]>,
 {
     type Accumulator = CounterArray<I, { K }, { C }>;
     fn gen_weights(
@@ -275,13 +280,13 @@ where
         dbg!(total);
 
         let mut layer: <I as Element<<O as BitArray>::BitShape>>::Array = rng.gen();
-        let mut aux_weights = {
-            let hidden_inputs: Vec<(u32, O, usize)> = inputs
-                .par_iter()
-                .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
-                .collect();
-            <[O; C]>::generate(&hidden_inputs)
-        };
+        //let mut aux_weights = <[O; C]>::generate(
+        //    &inputs
+        //        .par_iter()
+        //        .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
+        //        .collect(),
+        //);
+        let mut aux_weights: [O; C] = rng.gen();
 
         let mut cur_loss: u64 = inputs
             .par_iter()
@@ -293,9 +298,20 @@ where
             .par_iter()
             .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
             .collect();
-        aux_weights.decend(&hidden_inputs, &mut cur_loss);
-        for e in 0..4 {
+        // s0: 0.14042
+        // s1: 0.12978
+        // s2: 0.14628
+        // s3: 0.1264
+        // s4: 0.13594
+        // e3:  0.12856
+        // e7:  0.1264
+        // e8:  0.1289
+        // e9:  0.13224
+        // e11: 0.1341
+        // e13: 0.1379
+        for e in 0..E {
             dbg!(e);
+            aux_weights.decend(&hidden_inputs, &mut cur_loss);
             for ib in 0..I::BIT_LEN {
                 for ob in 0..O::BIT_LEN {
                     layer.indexed_flip_bit(ob, ib);
@@ -315,5 +331,17 @@ where
             }
         }
         (layer, aux_weights)
+    }
+    fn string_name() -> String {
+        format!(
+            "DecendOneHiddenLayer<I:{}, O:{}, K:{}, SEED:{}, THRESHOLD:{}, E:{}, C:{}>",
+            std::any::type_name::<I>(),
+            std::any::type_name::<O>(),
+            K,
+            SEED,
+            THRESHOLD,
+            E,
+            C
+        )
     }
 }
