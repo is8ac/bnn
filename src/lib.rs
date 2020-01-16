@@ -9,6 +9,7 @@ extern crate time;
 
 pub mod bits;
 pub mod block;
+pub mod cluster;
 pub mod count;
 pub mod datasets;
 pub mod image2d;

@@ -115,10 +115,14 @@ pub struct SupervisedWeightsGen<I, O, const C: usize> {
 }
 
 pub trait Objective<I, const C: usize> {
+    /// Compute the loss for one instance of the input.
     fn loss(&self, input: &I, class: usize) -> u32;
+    /// Given a list of the number of times that this input is of each class, compute the loss.
+    fn count_loss(&self, input: &I, classes_counts: &[u32; C]) -> u32;
     fn max_class_index(&self, input: &I) -> usize;
     fn generate(inputs: &Vec<(u32, I, usize)>) -> Self;
     fn decend(&mut self, inputs: &Vec<(u32, I, usize)>, cur_sum_loss: &mut u64);
+    fn count_decend(&mut self, inputs: &Vec<(I, [u32; C])>, cur_sum_loss: &mut u64);
 }
 
 impl<
@@ -133,6 +137,7 @@ where
     [(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C]:
         Default + Send + Sync + ElementwiseAdd,
     (usize, <u32 as Element<<I as BitArray>::BitShape>>::Array): Default + ElementwiseAdd,
+    [u32; C]: Default,
 {
     fn loss(&self, input: &I, class: usize) -> u32 {
         let target_act = input.distance(&self[class]);
@@ -142,6 +147,22 @@ where
             n_gre += (target_act <= other_act) as u32;
         }
         n_gre - 1 // remove target from the count
+    }
+    fn count_loss(&self, input: &I, classes_counts: &[u32; C]) -> u32 {
+        let mut acts = <[u32; C]>::default();
+        let mut sum_counts = 0u32;
+        for c in 0..C {
+            sum_counts += classes_counts[c];
+            acts[c] = input.distance(&self[c]);
+        }
+
+        let mut loss = 0u32;
+        for a in 0..C {
+            for c in 0..C {
+                loss += (acts[c] <= acts[a]) as u32 * classes_counts[c];
+            }
+        }
+        loss - sum_counts
     }
     fn max_class_index(&self, input: &I) -> usize {
         let mut max_act = 0_u32;
@@ -209,6 +230,24 @@ where
                 if new_loss < *cur_sum_loss {
                     *cur_sum_loss = new_loss;
                     dbg!(new_loss);
+                } else {
+                    self[c].flip_bit(b);
+                }
+            }
+        }
+    }
+    fn count_decend(&mut self, inputs: &Vec<(I, [u32; C])>, cur_sum_loss: &mut u64) {
+        //dbg!(&cur_sum_loss);
+        for b in 0..I::BIT_LEN {
+            for c in 0..C {
+                self[c].flip_bit(b);
+                let new_loss: u64 = inputs
+                    .par_iter()
+                    .map(|(input, counts)| self.count_loss(input, counts) as u64)
+                    .sum();
+                //dbg!((new_loss, *cur_sum_loss));
+                if new_loss < *cur_sum_loss {
+                    *cur_sum_loss = new_loss;
                 } else {
                     self[c].flip_bit(b);
                 }
@@ -294,23 +333,12 @@ where
                 aux_weights.loss(&layer.bit_mul(input), *class) as u64 * *count as u64
             })
             .sum();
-        let hidden_inputs: Vec<(u32, O, usize)> = inputs
-            .par_iter()
-            .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
-            .collect();
-        // s0: 0.14042
-        // s1: 0.12978
-        // s2: 0.14628
-        // s3: 0.1264
-        // s4: 0.13594
-        // e3:  0.12856
-        // e7:  0.1264
-        // e8:  0.1289
-        // e9:  0.13224
-        // e11: 0.1341
-        // e13: 0.1379
         for e in 0..E {
             dbg!(e);
+            let hidden_inputs: Vec<(u32, O, usize)> = inputs
+                .par_iter()
+                .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
+                .collect();
             aux_weights.decend(&hidden_inputs, &mut cur_loss);
             for ib in 0..I::BIT_LEN {
                 for ob in 0..O::BIT_LEN {
@@ -345,3 +373,4 @@ where
         )
     }
 }
+// 0.19212

@@ -1,7 +1,7 @@
 use crate::bits::{AndOr, BitWord, Classify, Distance};
 use crate::count::IncrementCounters;
 use crate::layer::Apply;
-use crate::shape::{Merge, Shape, ZipMap};
+use crate::shape::{Element, Merge, Shape, ZipMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 

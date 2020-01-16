@@ -55,24 +55,34 @@ where
         //} else {
         println!("counting {} examples...", examples.len());
         let start = Instant::now();
-        let sub_accs: Vec<Accumulator> = examples
-            .par_chunks(examples.len() / num_cpus::get_physical())
-            .map(|chunk| {
-                let foo =
-                    chunk
-                        .iter()
-                        .fold(Accumulator::default(), |mut accumulator, (image, class)| {
+        let parallelize = false;
+        let counts = if parallelize {
+            let sub_accs: Vec<Accumulator> = examples
+                .par_chunks(examples.len() / num_cpus::get_physical())
+                .map(|chunk| {
+                    let foo = chunk.iter().fold(
+                        Accumulator::default(),
+                        |mut accumulator, (image, class)| {
                             image.increment_counters(*class, &mut accumulator);
                             accumulator
-                        });
-                foo
+                        },
+                    );
+                    foo
+                })
+                .collect();
+            dbg!("done counting");
+            sub_accs.iter().fold(Accumulator::default(), |mut a, b| {
+                a.elementwise_add(&b);
+                a
             })
-            .collect();
-        dbg!("done counting");
-        let counts = sub_accs.iter().fold(Accumulator::default(), |mut a, b| {
-            a.elementwise_add(&b);
-            a
-        });
+        } else {
+            examples
+                .iter()
+                .fold(Accumulator::default(), |mut accumulator, (image, class)| {
+                    image.increment_counters(*class, &mut accumulator);
+                    accumulator
+                })
+        };
         let count_time = start.elapsed();
         dbg!(count_time);
         //serialize_into(File::create(&count_path).unwrap(), &counts).unwrap();
