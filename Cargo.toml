@@ -3,7 +3,7 @@ name = "bitnn"
 version = "0.1.0"
 authors = ["Isaac Leonard <ifleonar@us.ibm.com>"]
 edition = "2018"
-description = "Greedy layerwise generation of ternary parameters for multi layer conv nets"
+description = "Greedy layerwise generation of binary parameters for multi layer conv nets"
 keywords = ["convolutional neural networks", "neural networks", "bitnets", "cifar10"]
 
 [dependencies]

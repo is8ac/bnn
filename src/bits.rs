@@ -140,6 +140,46 @@ impl<T: BitMul<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
     }
 }
 
+// bit input, float weights and float output.
+pub trait FloatMul<S: Shape>
+where
+    Self: BitArray,
+    f32: Element<Self::BitShape> + Element<S>,
+    <f32 as Element<Self::BitShape>>::Array: Element<S>,
+{
+    fn float_mul(
+        &self,
+        weights: &<<f32 as Element<Self::BitShape>>::Array as Element<S>>::Array,
+    ) -> <f32 as Element<S>>::Array;
+}
+
+impl<T: BitArray + BitFloatMulAcc> FloatMul<()> for T
+where
+    f32: Element<T::BitShape>,
+{
+    fn float_mul(&self, weights: &<f32 as Element<T::BitShape>>::Array) -> f32 {
+        self.bit_float_mul_acc(weights)
+    }
+}
+
+impl<S: Shape, T: BitArray + FloatMul<S>, const L: usize> FloatMul<[S; L]> for T
+where
+    f32: Element<T::BitShape> + Element<S>,
+    <f32 as Element<T::BitShape>>::Array: Element<S>,
+    [<f32 as Element<S>>::Array; L]: Default,
+{
+    fn float_mul(
+        &self,
+        weights: &[<<f32 as Element<Self::BitShape>>::Array as Element<S>>::Array; L],
+    ) -> [<f32 as Element<S>>::Array; L] {
+        let mut target = <[<f32 as Element<S>>::Array; L]>::default();
+        for i in 0..L {
+            target[i] = self.float_mul(&weights[i]);
+        }
+        target
+    }
+}
+
 pub trait BitMul<I, O> {
     fn bit_mul(&self, input: &I) -> O;
 }
@@ -353,7 +393,28 @@ where
     }
 }
 
-/// Hamming distance betwene two collections of bits of the same shape.
+pub trait BitFloatMulAcc
+where
+    Self: BitArray,
+    f32: Element<Self::BitShape>,
+{
+    fn bit_float_mul_acc(&self, weights: &<f32 as Element<Self::BitShape>>::Array) -> f32;
+}
+
+impl<T: BitArray + BitFloatMulAcc, const L: usize> BitFloatMulAcc for [T; L]
+where
+    f32: Element<T::BitShape>,
+{
+    fn bit_float_mul_acc(&self, weights: &[<f32 as Element<T::BitShape>>::Array; L]) -> f32 {
+        let mut sum = 0f32;
+        for i in 0..L {
+            sum += self[i].bit_float_mul_acc(&weights[i]);
+        }
+        sum
+    }
+}
+
+/// Hamming distance between two collections of bits of the same shape.
 pub trait Distance {
     /// Returns the number of bits that are different
     fn distance(&self, rhs: &Self) -> u32;
@@ -470,6 +531,16 @@ macro_rules! for_uints {
         impl Distance for $b_type {
             fn distance(&self, rhs: &Self) -> u32 {
                 (self.0 ^ rhs.0).count_ones()
+            }
+        }
+        impl BitFloatMulAcc for $b_type {
+            fn bit_float_mul_acc(&self, weights: &[f32; $len]) -> f32 {
+                const SIGNS: [f32; 2] = [1f32, -1f32];
+                let mut sum = 0f32;
+                for b in 0..$len {
+                    sum = weights[b].mul_add(SIGNS[self.bit(b) as usize], sum);
+                }
+                sum
             }
         }
         impl<I: Distance + BitWord> BitMul<I, $b_type> for [I; $len] {

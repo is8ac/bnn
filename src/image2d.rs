@@ -52,28 +52,32 @@ impl<const X: usize, const Y: usize> fmt::Display for StaticImage<[[[u8; 3]; Y];
 
 impl<
         Preprocessor,
-        T: Apply<[[IP; 3]; 3], (), Preprocessor, OP>,
+        T: Apply<[[IP; PY]; PX], (), Preprocessor, OP>,
         IP: Default + Copy,
         OP,
         const X: usize,
         const Y: usize,
-    > Apply<StaticImage<[[IP; Y]; X]>, [[(); 3]; 3], Preprocessor, StaticImage<[[OP; Y]; X]>> for T
+        const PX: usize,
+        const PY: usize,
+    > Apply<StaticImage<[[IP; Y]; X]>, [[(); PY]; PX], Preprocessor, StaticImage<[[OP; Y]; X]>>
+    for T
 where
+    [[IP; PY]; PX]: Default,
     [[OP; Y]; X]: Default,
 {
     fn apply(&self, image: &StaticImage<[[IP; Y]; X]>) -> StaticImage<[[OP; Y]; X]> {
         let mut target = StaticImage {
             image: <[[OP; Y]; X]>::default(),
         };
-        for x in 0..X - 2 {
-            for y in 0..Y - 2 {
-                let mut patch = [[IP::default(); 3]; 3];
-                for px in 0..3 {
-                    for py in 0..3 {
+        for x in 0..(X - (PX / 2) * 2) {
+            for y in 0..(Y - (PY / 2) * 2) {
+                let mut patch = <[[IP; PY]; PX]>::default();
+                for px in 0..PX {
+                    for py in 0..PY {
                         patch[px][py] = image.image[x + px][y + py]
                     }
                 }
-                target.image[x + 1][y + 1] = self.apply(&patch);
+                target.image[x + (PX / 2)][y + (PY / 2)] = self.apply(&patch);
             }
         }
         target

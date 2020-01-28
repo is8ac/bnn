@@ -1,134 +1,99 @@
-use crate::bits::BitArray;
+use crate::bits::{BitArray, BitArrayOPs, BitMul, BitWord, Distance, IndexedFlipBit};
+use crate::cluster::{ImageCountByCentroids, ImagePatchLloyds};
 use crate::count::{ElementwiseAdd, IncrementCounters};
 use crate::image2d::{AvgPool, BitPool, Concat, Image2D};
 use crate::shape::{Element, Shape};
-use crate::weight::GenWeights;
-use rayon::prelude::*;
-use std::time::Instant;
-
+use crate::weight::{decend, Objective};
 use bincode::{deserialize_from, serialize_into};
+use rand::distributions;
+use rand::Rng;
+use rand::SeedableRng;
+use rand_hc::Hc128Rng;
+use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
 use std::fs::create_dir_all;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::time::Instant;
 
 pub trait Apply<Example, Patch, Preprocessor, Output> {
     fn apply(&self, input: &Example) -> Output;
 }
 
-/// CountBits turns a bit Vec of `Example`s into a fixed size counters.
-/// For each `Example`, we extract 'Patch's from it, normalise to 'Self' and use them to increment counters.
-pub trait CountBits<Example, Patch, Preprocessor, Accumulator> {
-    fn count_bits(examples: &Vec<(Example, usize)>) -> Accumulator;
+#[derive(Copy, Clone, Debug)]
+pub struct TrainParams {
+    pub lloyds_seed: u64,
+    pub k: usize,
+    pub lloyds_iters: usize,
+    pub weights_seed: u64,
+    pub decend_window_thresh: usize,
 }
 
-impl<
-        Example: Hash + Send + Sync + IncrementCounters<Patch, Preprocessor, Accumulator>,
-        Preprocessor,
-        Accumulator: Send + Sync + Default + ElementwiseAdd,
-        Patch,
-        T,
-    > CountBits<Example, Patch, Preprocessor, Accumulator> for T
+pub trait Layer<InputImage, PatchShape, Preprocessor, O: BitArray, OutputImage, C: Shape>
 where
-    T: BitArray,
-    u32: Element<T::BitShape>,
-    bool: Element<T::BitShape>,
-    <u32 as Element<T::BitShape>>::Array: Element<T::BitShape>,
-    //for<'de> Accumulator: serde::Deserialize<'de>,
-    //Accumulator: serde::Serialize,
-{
-    fn count_bits(examples: &Vec<(Example, usize)>) -> Accumulator {
-        let input_hash = {
-            let mut s = DefaultHasher::new();
-            examples.hash(&mut s);
-            s.finish()
-        };
-        let dataset_path = format!("params/{}", input_hash);
-        let dataset_path = &Path::new(&dataset_path);
-        create_dir_all(&dataset_path).unwrap();
-
-        //if let Some(counts_file) = File::open(&count_path).ok() {
-        //let count_path = dataset_path.join(std::any::type_name::<Accumulator>());
-        //    println!("reading counts from file: {:?}", counts_file);
-        //    deserialize_from(counts_file).expect("can't deserialize from file")
-        //} else {
-        println!("counting {} examples...", examples.len());
-        let start = Instant::now();
-        let parallelize = false;
-        let counts = if parallelize {
-            let sub_accs: Vec<Accumulator> = examples
-                .par_chunks(examples.len() / num_cpus::get_physical())
-                .map(|chunk| {
-                    let foo = chunk.iter().fold(
-                        Accumulator::default(),
-                        |mut accumulator, (image, class)| {
-                            image.increment_counters(*class, &mut accumulator);
-                            accumulator
-                        },
-                    );
-                    foo
-                })
-                .collect();
-            dbg!("done counting");
-            sub_accs.iter().fold(Accumulator::default(), |mut a, b| {
-                a.elementwise_add(&b);
-                a
-            })
-        } else {
-            examples
-                .iter()
-                .fold(Accumulator::default(), |mut accumulator, (image, class)| {
-                    image.increment_counters(*class, &mut accumulator);
-                    accumulator
-                })
-        };
-        let count_time = start.elapsed();
-        dbg!(count_time);
-        //serialize_into(File::create(&count_path).unwrap(), &counts).unwrap();
-        counts
-        //}
-    }
-}
-
-pub trait Layer<Example, Patch, I, Preprocessor, WeightsAlgorithm, Output: Image2D, C: Shape>
-where
-    Self: Sized,
-    Output::PixelType: Element<C>,
+    Self: Element<O::BitShape>,
+    O: Element<C>,
 {
     fn gen(
-        examples: &Vec<(Example, usize)>,
+        examples: &Vec<(InputImage, usize)>,
+        hyper_params: TrainParams,
     ) -> (
-        Vec<(Output, usize)>,
-        Self,
-        <Output::PixelType as Element<C>>::Array,
+        Vec<(OutputImage, usize)>,
+        <Self as Element<O::BitShape>>::Array,
+        <O as Element<C>>::Array,
     );
 }
 
 impl<
-        T: Copy + Send + Sync + Apply<Example, Patch, Preprocessor, Output> + Copy,
+        InputImage: Send + Sync + Hash + Image2D,
+        PatchShape: Shape,
         Preprocessor,
-        Example: Send + Sync + Hash,
-        Patch,
-        WeightsAlgorithm: GenWeights<I, Output::PixelType, [(); C]>,
-        I: CountBits<Example, Patch, Preprocessor, WeightsAlgorithm::Accumulator>
-            + Copy
-            + BitArray
+        I: Copy
             + Sync
-            + Element<<<Output as Image2D>::PixelType as BitArray>::BitShape, Array = T>,
-        Output: Send + Sync + Image2D,
+            + Send
+            + BitWord
+            + Distance
+            + BitArray
+            + BitArrayOPs
+            + serde::Serialize
+            + Element<O::BitShape>
+            + ImagePatchLloyds<InputImage, PatchShape, Preprocessor>
+            + ImageCountByCentroids<InputImage, PatchShape, Preprocessor, [(); C]>,
+        O: BitArray + Sync + Send + BitWord,
+        OutputImage: Send + Sync + Image2D,
         const C: usize,
-    > Layer<Example, Patch, I, Preprocessor, WeightsAlgorithm, Output, [(); C]> for T
+    > Layer<InputImage, PatchShape, Preprocessor, O, OutputImage, [(); C]> for I
 where
-    for<'de> (Self, [Output::PixelType; C]): serde::Deserialize<'de>,
-    (Self, [Output::PixelType; C]): serde::Serialize,
+    distributions::Standard: distributions::Distribution<[I; C]>
+        + distributions::Distribution<I>
+        + distributions::Distribution<[O; C]>
+        + distributions::Distribution<<I as Element<O::BitShape>>::Array>,
+    <I as Element<O::BitShape>>::Array: Apply<InputImage, PatchShape, Preprocessor, OutputImage>
+        + Sync
+        + Apply<InputImage, PatchShape, Preprocessor, OutputImage>
+        + BitMul<I, O>
+        + IndexedFlipBit<I, O>,
+    for<'de> I: serde::Deserialize<'de>,
+    for<'de> [u32; C]: serde::Deserialize<'de>,
+    for<'de> (<I as Element<O::BitShape>>::Array, [O; C]): serde::Deserialize<'de>,
+    (<I as Element<O::BitShape>>::Array, [O; C]): serde::Serialize,
     bool: Element<I::BitShape>,
     u32: Element<I::BitShape>,
-    <Output as Image2D>::PixelType: BitArray,
+    <u32 as Element<I::BitShape>>::Array: Sync + Default,
+    <I as Element<O::BitShape>>::Array: Copy,
+    [O; C]: Objective<O, C> + Copy,
+    [u32; C]: Default + serde::Serialize,
+    InputImage::PixelType: Element<PatchShape>,
 {
     fn gen(
-        examples: &Vec<(Example, usize)>,
-    ) -> (Vec<(Output, usize)>, Self, [Output::PixelType; C]) {
+        examples: &Vec<(InputImage, usize)>,
+        params: TrainParams,
+    ) -> (
+        Vec<(OutputImage, usize)>,
+        <I as Element<O::BitShape>>::Array,
+        [O; C],
+    ) {
         let total_start = Instant::now();
         let input_hash = {
             let mut s = DefaultHasher::new();
@@ -137,37 +102,80 @@ where
         };
         let dataset_path = format!("params/{}", input_hash);
         let dataset_path = &Path::new(&dataset_path);
-        create_dir_all(&dataset_path).unwrap();
 
-        let weights_path = dataset_path.join(WeightsAlgorithm::string_name());
+        let counts_dir = dataset_path.join(format!(
+            "counts:{}, n:{}, seed:{}, k{}, li{}",
+            std::any::type_name::<I>(),
+            examples.len(),
+            params.lloyds_seed,
+            params.k,
+            params.lloyds_iters,
+        ));
+
+        create_dir_all(&counts_dir).unwrap();
+        let weights_path = counts_dir.join(format!(
+            "{}, seed:{}, wt:{}.weights",
+            std::any::type_name::<O>(),
+            params.weights_seed,
+            params.decend_window_thresh,
+        ));
         let (layer_weights, aux_weights) =
             if let Some(weights_file) = File::open(&weights_path).ok() {
                 println!("loading {:?} from disk", &weights_path);
                 deserialize_from(weights_file).expect("can't deserialize from file")
             } else {
-                println!("training {}", WeightsAlgorithm::string_name());
-                let start = Instant::now();
-                let accumulator: WeightsAlgorithm::Accumulator = I::count_bits(&examples);
-                let count_time = start.elapsed();
-                let start = Instant::now();
-                let weights = WeightsAlgorithm::gen_weights(&accumulator);
-                let weights_time = start.elapsed();
-                let total_time = total_start.elapsed();
-                println!(
-                    "count: {:?}, weights: {:?}, total: {:?}",
-                    count_time, weights_time, total_time
+                let counts_path = counts_dir.join("counts");
+                let counts = if let Some(counts_file) = File::open(&counts_path).ok() {
+                    println!("loading {:?} from disk", &counts_path);
+                    deserialize_from(counts_file).expect("can't deserialize counts from file")
+                } else {
+                    let mut rng = Hc128Rng::seed_from_u64(params.lloyds_seed);
+                    let centroids =
+                        <I as ImagePatchLloyds<InputImage, PatchShape, Preprocessor>>::lloyds(
+                            &mut rng,
+                            &examples,
+                            params.k,
+                            params.lloyds_iters,
+                        );
+
+                    let counts = <I as ImageCountByCentroids<
+                        InputImage,
+                        PatchShape,
+                        Preprocessor,
+                        [(); C],
+                    >>::count_by_centroids(&examples, &centroids);
+                    serialize_into(File::create(&counts_path).unwrap(), &counts).unwrap();
+                    counts
+                };
+                let mut rng = Hc128Rng::seed_from_u64(params.weights_seed);
+                let mut layer_weights: <I as Element<<O as BitArray>::BitShape>>::Array = rng.gen();
+                let mut aux_weights: [O; C] = rng.gen();
+
+                decend(
+                    &mut rng,
+                    &mut layer_weights,
+                    &mut aux_weights,
+                    &counts,
+                    params.k,
+                    params.decend_window_thresh,
                 );
-                serialize_into(File::create(&weights_path).unwrap(), &weights).unwrap();
-                weights
+                serialize_into(
+                    File::create(&weights_path).unwrap(),
+                    &(layer_weights, aux_weights),
+                )
+                .unwrap();
+                (layer_weights, aux_weights)
             };
         let new_examples: Vec<_> = examples
             .par_iter()
             .map(|(image, class)| {
                 (
-                    <Self as Apply<Example, Patch, Preprocessor, Output>>::apply(
-                        &layer_weights,
-                        image,
-                    ),
+                    <<I as Element<O::BitShape>>::Array as Apply<
+                        InputImage,
+                        PatchShape,
+                        Preprocessor,
+                        OutputImage,
+                    >>::apply(&layer_weights, image),
                     *class,
                 )
             })

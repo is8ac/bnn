@@ -394,6 +394,12 @@ impl<T: Copy> Merge<T, T> for [T; 2] {
     }
 }
 
+impl<T: Copy> Merge<[[T; 2]; 2], [T; 2]> for [T; 6] {
+    fn merge(&a: &[[T; 2]; 2], &b: &[T; 2]) -> Self {
+        [a[0][0], a[0][1], a[1][0], a[1][1], b[0], b[1]]
+    }
+}
+
 macro_rules! impl_array_array_merge {
     ($a:expr, $b:expr) => {
         impl<T: Copy + Default> Merge<[T; $a], [T; $b]> for [T; $a + $b] {

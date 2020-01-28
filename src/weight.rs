@@ -1,7 +1,9 @@
-use crate::bits::{BitArray, BitMul, BitWord, Distance, IncrementFracCounters, IndexedFlipBit};
-use crate::block::BlockCode;
-use crate::count::{CounterArray, ElementwiseAdd};
-use crate::shape::{Element, Shape};
+use crate::bits::{
+    BitArray, BitFloatMulAcc, BitMul, BitWord, Distance, FloatMul, IncrementFracCounters,
+    IndexedFlipBit,
+};
+use crate::count::ElementwiseAdd;
+use crate::shape::{Element, Map, Shape};
 use rand::distributions;
 use rand::Rng;
 use rand::SeedableRng;
@@ -121,7 +123,7 @@ pub trait Objective<I, const C: usize> {
     fn count_loss(&self, input: &I, classes_counts: &[u32; C]) -> u32;
     fn max_class_index(&self, input: &I) -> usize;
     fn generate(inputs: &Vec<(u32, I, usize)>) -> Self;
-    fn decend(&mut self, inputs: &Vec<(u32, I, usize)>, cur_sum_loss: &mut u64);
+    fn counts_generate(inputs: &[(I, [u32; C])]) -> Self;
     fn count_decend(&mut self, inputs: &Vec<(I, [u32; C])>, cur_sum_loss: &mut u64);
 }
 
@@ -217,24 +219,48 @@ where
         });
         weights
     }
-    fn decend(&mut self, inputs: &Vec<(u32, I, usize)>, cur_sum_loss: &mut u64) {
-        dbg!(&cur_sum_loss);
-        for b in 0..I::BIT_LEN {
-            for c in 0..C {
-                self[c].flip_bit(b);
-                let new_loss: u64 = inputs
-                    .par_iter()
-                    .map(|(count, input, class)| self.loss(input, *class) as u64 * *count as u64)
-                    .sum();
-                //dbg!((new_loss, *cur_sum_loss));
-                if new_loss < *cur_sum_loss {
-                    *cur_sum_loss = new_loss;
-                    dbg!(new_loss);
-                } else {
-                    self[c].flip_bit(b);
-                }
-            }
-        }
+    fn counts_generate(inputs: &[(I, [u32; C])]) -> Self {
+        let activation_counts: [(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C] =
+            inputs
+                .par_iter()
+                .fold(
+                    || {
+                        <[(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C]>::default(
+                        )
+                    },
+                    |mut acc, (input, counts)| {
+                        for c in 0..C {
+                            input.weighted_increment_frac_counters(counts[c], &mut acc[c]);
+                        }
+                        acc
+                    },
+                )
+                .reduce(
+                    || {
+                        <[(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array); C]>::default(
+                        )
+                    },
+                    |mut a, b| {
+                        a.elementwise_add(&b);
+                        a
+                    },
+                );
+        let mut weights = <[I; C]>::default();
+        weights.iter_mut().enumerate().for_each(|(c, target)| {
+            let other_counts = activation_counts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != c)
+                .fold(
+                    <(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array)>::default(),
+                    |mut sum, (_, val)| {
+                        sum.elementwise_add(val);
+                        sum
+                    },
+                );
+            *target = I::bitpack_fracs(&other_counts, &activation_counts[c]);
+        });
+        weights
     }
     fn count_decend(&mut self, inputs: &Vec<(I, [u32; C])>, cur_sum_loss: &mut u64) {
         //dbg!(&cur_sum_loss);
@@ -264,113 +290,193 @@ pub struct DecendOneHiddenLayer<
     const C: usize,
 >();
 
-impl<
-        I: BitArray
-            + Element<O::BitShape>
-            + Element<[(); K]>
-            + BitWord
-            + Sync
-            + Send
-            + BlockCode<{ K }>,
-        O: BitArray + BitWord + Sync + Send,
-        const K: usize,
-        const SEED: u64,
-        const THRESHOLD: u32,
-        const E: usize,
-        const C: usize,
-    > GenWeights<I, O, [(); C]>
-    for DecendOneHiddenLayer<{ K }, { SEED }, { THRESHOLD }, { E }, { C }>
+fn sum_loss<I: Element<O::BitShape> + Sync, O: BitArray + Sync, const C: usize>(
+    layer_weights: &<I as Element<O::BitShape>>::Array,
+    aux_weights: &[O; C],
+    counts: &[(I, [u32; C])],
+) -> u64
 where
-    <I as Element<O::BitShape>>::Array: IndexedFlipBit<I, O> + BitMul<I, O> + Sync,
-    <I as Element<[(); K]>>::Array: Sync,
     [O; C]: Objective<O, C>,
-    distributions::Standard: distributions::Distribution<<I as Element<O::BitShape>>::Array>
-        + distributions::Distribution<[O; C]>,
+    <I as Element<O::BitShape>>::Array: BitMul<I, O> + Sync,
 {
-    type Accumulator = CounterArray<I, { K }, { C }>;
-    fn gen_weights(
-        accumulator: &Self::Accumulator,
-    ) -> (<I as Element<O::BitShape>>::Array, [O; C]) {
-        let mut rng = Hc128Rng::seed_from_u64(SEED);
+    counts
+        .par_iter()
+        .map(|(input, counts)| aux_weights.count_loss(&layer_weights.bit_mul(input), counts) as u64)
+        .sum()
+}
 
-        let inputs: Vec<(u32, I, usize)> = accumulator
-            .counters
-            .par_iter()
-            .enumerate()
-            .map(|(class, inputs)| {
-                inputs
-                    .par_iter()
-                    .enumerate()
-                    .filter(|(_, count)| **count > THRESHOLD)
-                    .map(move |(index, count)| (*count, index, class))
-                    .map(|(count, index, class)| {
-                        (
-                            count,
-                            <I>::reverse_block(&accumulator.bit_matrix, index),
-                            class,
-                        )
-                    })
-            })
-            .flatten()
+pub fn decend<
+    RNG: Rng,
+    I: BitArray + Element<O::BitShape> + Sync + BitWord,
+    O: BitArray + Sync + BitWord + Send,
+    const C: usize,
+>(
+    rng: &mut RNG,
+    layer_weights: &mut <I as Element<O::BitShape>>::Array,
+    aux_weights: &mut [O; C],
+    counts: &[(I, [u32; C])],
+    window_size: usize,
+    window_thresh: usize,
+) where
+    [O; C]: Objective<O, C>,
+    <I as Element<O::BitShape>>::Array: BitMul<I, O> + Sync + IndexedFlipBit<I, O>,
+{
+    if window_size > window_thresh {
+        decend(
+            rng,
+            layer_weights,
+            aux_weights,
+            counts,
+            (window_size * 4) / 5,
+            window_thresh,
+        );
+    }
+    let n_examples: u64 = counts
+        .iter()
+        .map(|(_, c)| c.iter().sum::<u32>() as u64)
+        .sum();
+    let mut cur_sum_loss = sum_loss(&*layer_weights, &aux_weights, &counts);
+    let hidden_counts: Vec<(O, [u32; C])> = counts
+        .par_iter()
+        .map(|(input, counts)| (layer_weights.bit_mul(input), *counts))
+        .collect();
+    //*aux_weights = <[O; C]>::counts_generate(&hidden_counts);
+    aux_weights.count_decend(&hidden_counts, &mut cur_sum_loss);
+    let indices = {
+        let mut indices: Vec<usize> = (0..I::BIT_LEN)
+            .map(|i| (i * (counts.len() - window_size)) / I::BIT_LEN)
             .collect();
-        dbg!(inputs.len());
-
-        let total: u64 = inputs.par_iter().map(|(count, _, _)| *count as u64).sum();
-        dbg!(total);
-
-        let mut layer: <I as Element<<O as BitArray>::BitShape>>::Array = rng.gen();
-        //let mut aux_weights = <[O; C]>::generate(
-        //    &inputs
-        //        .par_iter()
-        //        .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
-        //        .collect(),
-        //);
-        let mut aux_weights: [O; C] = rng.gen();
-
-        let mut cur_loss: u64 = inputs
-            .par_iter()
-            .map(|(count, input, class)| {
-                aux_weights.loss(&layer.bit_mul(input), *class) as u64 * *count as u64
-            })
-            .sum();
-        for e in 0..E {
-            dbg!(e);
-            let hidden_inputs: Vec<(u32, O, usize)> = inputs
-                .par_iter()
-                .map(|(count, input, class)| (*count, layer.bit_mul(input), *class))
-                .collect();
-            aux_weights.decend(&hidden_inputs, &mut cur_loss);
-            for ib in 0..I::BIT_LEN {
-                for ob in 0..O::BIT_LEN {
-                    layer.indexed_flip_bit(ob, ib);
-                    let new_loss: u64 = inputs
-                        .par_iter()
-                        .map(|(count, input, class)| {
-                            aux_weights.loss(&layer.bit_mul(input), *class) as u64 * *count as u64
-                        })
-                        .sum();
-                    if new_loss < cur_loss {
-                        cur_loss = new_loss;
-                        dbg!(cur_loss as f64 / total as f64);
-                    } else {
-                        layer.indexed_flip_bit(ob, ib);
-                    }
-                }
+        rng.shuffle(&mut indices);
+        indices
+    };
+    for (ib, &index) in indices.iter().enumerate() {
+        let minibatch = &counts[index..index + window_size];
+        cur_sum_loss = sum_loss(&*layer_weights, &aux_weights, &minibatch);
+        //dbg!(cur_sum_loss);
+        for ob in 0..O::BIT_LEN {
+            layer_weights.indexed_flip_bit(ob, ib);
+            let new_loss: u64 = sum_loss(&*layer_weights, &aux_weights, &minibatch);
+            if new_loss < cur_sum_loss {
+                cur_sum_loss = new_loss;
+            } else {
+                layer_weights.indexed_flip_bit(ob, ib);
             }
         }
-        (layer, aux_weights)
     }
-    fn string_name() -> String {
-        format!(
-            "DecendOneHiddenLayer<I:{}, O:{}, K:{}, SEED:{}, THRESHOLD:{}, E:{}, C:{}>",
-            std::any::type_name::<I>(),
-            std::any::type_name::<O>(),
-            K,
-            SEED,
-            THRESHOLD,
-            E,
-            C
-        )
+    println!(
+        "{}: {}",
+        window_size,
+        cur_sum_loss as f64 / n_examples as f64
+    );
+}
+
+pub trait FloatObj<I: BitArray, C: Shape>
+where
+    u32: Element<C>,
+{
+    fn loss(&self, input: &I, true_class: usize) -> f32;
+    ///// Given a list of the number of times that this input is of each class, compute the loss.
+    fn counts_loss(&self, input: &I, classes_counts: &<u32 as Element<C>>::Array) -> f32;
+    //fn counts_generate(inputs: &[(I, [u32; C])]) -> Self;
+    //fn count_decend(&mut self, inputs: &Vec<(I, [u32; C])>, cur_sum_loss: &mut u64, iters: usize);
+    fn new() -> Self;
+}
+
+impl<I: BitArray + BitFloatMulAcc, const C: usize> FloatObj<I, [(); C]>
+    for [<f32 as Element<I::BitShape>>::Array; C]
+where
+    <f32 as Element<I::BitShape>>::Array: Noise,
+    f32: Element<I::BitShape>,
+    [f32; C]: Default,
+    [[f32; 2]; C]: Default,
+    rand::distributions::Standard:
+        rand::distributions::Distribution<<f32 as Element<<I as BitArray>::BitShape>>::Array>,
+    I::BitShape: Default,
+    [<f32 as Element<I::BitShape>>::Array; C]: Noise,
+{
+    fn loss(&self, input: &I, true_class: usize) -> f32 {
+        let mut exp = <[f32; C]>::default();
+        let mut sum_exp = 0f32;
+        for c in 0..C {
+            exp[c] = input.bit_float_mul_acc(&self[c]).exp();
+            sum_exp += exp[c];
+        }
+        let mut sum_loss = 0f32;
+        for c in 0..C {
+            let scaled = exp[c] / sum_exp;
+            sum_loss += (scaled - (c == true_class) as u8 as f32).powi(2);
+        }
+        sum_loss
+    }
+    /// `weights.counts_loss(&input, &counts)`` is equivalent to
+    ///
+    /// ```
+    ///counts
+    ///    .iter()
+    ///    .enumerate()
+    ///    .map(|(class, count)| weights.loss(&input, class) * *count as f32)
+    ///    .sum()
+    ///```
+    /// except that floating point is imprecise so it often won't actualy be the same.
+    fn counts_loss(&self, input: &I, counts: &[u32; C]) -> f32 {
+        let (total_sum_loss, losses_diffs) = {
+            let (exp, sum_exp) = {
+                let mut exp = <[f32; C]>::default();
+                let mut sum_exp = 0f32;
+                for c in 0..C {
+                    exp[c] = input.bit_float_mul_acc(&self[c]).exp();
+                    sum_exp += exp[c];
+                }
+                (exp, sum_exp)
+            };
+            let mut losses_diffs = <[f32; C]>::default();
+            let mut total_sum_loss = 0f32;
+            for c in 0..C {
+                let scaled = exp[c] / sum_exp;
+                let loss_0 = scaled.powi(2);
+                let loss_1 = (scaled - 1f32).powi(2);
+                losses_diffs[c] = loss_1 - loss_0;
+                total_sum_loss += loss_0;
+            }
+            (total_sum_loss, losses_diffs)
+        };
+        let mut sum_loss = 0f32;
+        for c in 0..C {
+            sum_loss += (total_sum_loss + losses_diffs[c]) * counts[c] as f32;
+        }
+        sum_loss
+    }
+    //fn count_decend(&mut self, inputs: &Vec<(I, [u32; C])>, cur_sum_loss: &mut u64, iters: usize) {
+    //    let mut rng = rand::thread_rng();
+    //    let noise: Vec<<f32 as Element<I::BitShape>>::Array> = (0..C + iters)
+    //        .map(|_| <f32 as Element<I::BitShape>>::Array::noise(&mut rng, -0.1, 0.1))
+    //        .collect();
+    //}
+    fn new() -> Self {
+        let mut rng = rand::thread_rng();
+        <[<f32 as Element<I::BitShape>>::Array; C]>::noise(&mut rng, -1f32, 1f32)
     }
 }
-// 0.19212
+
+trait Noise {
+    fn noise<RNG: Rng>(rng: &mut RNG, min: f32, max: f32) -> Self;
+}
+
+impl Noise for f32 {
+    fn noise<RNG: Rng>(rng: &mut RNG, min: f32, max: f32) -> f32 {
+        rng.gen_range(min, max)
+    }
+}
+
+impl<T: Noise, const L: usize> Noise for [T; L]
+where
+    [T; L]: Default,
+{
+    fn noise<RNG: Rng>(rng: &mut RNG, min: f32, max: f32) -> [T; L] {
+        let mut target = <[T; L]>::default();
+        for i in 0..L {
+            target[i] = T::noise(rng, min, max);
+        }
+        target
+    }
+}
