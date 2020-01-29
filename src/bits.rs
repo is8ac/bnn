@@ -100,27 +100,54 @@ where
 
 pub trait Classify<Example, Patch, ClassesShape>
 where
-    u32: Element<ClassesShape>,
+    f32: Element<ClassesShape>,
     ClassesShape: Shape,
 {
-    fn activations(&self, input: &Example) -> <u32 as Element<ClassesShape>>::Array;
+    fn activations(&self, input: &Example) -> <f32 as Element<ClassesShape>>::Array;
     fn max_class(&self, input: &Example) -> usize;
 }
 
-impl<I: Distance, const C: usize> Classify<I, (), [(); C]> for [I; C]
+//impl<I: Distance, const C: usize> Classify<I, (), [(); C]> for [I; C]
+//where
+//    [u32; C]: Default,
+//{
+//    fn activations(&self, example: &I) -> [u32; C] {
+//        let mut target = <[u32; C]>::default();
+//        for c in 0..C {
+//            target[c] = self[c].distance(&example);
+//        }
+//        target
+//    }
+//    fn max_class(&self, input: &I) -> usize {
+//        let activations = <Self as Classify<I, (), [(); C]>>::activations(self, input);
+//        let mut max_act = 0_u32;
+//        let mut max_class = 0_usize;
+//        for c in 0..C {
+//            if activations[c] >= max_act {
+//                max_act = activations[c];
+//                max_class = c;
+//            }
+//        }
+//        max_class
+//    }
+//}
+
+impl<I: BitArray + BFMA, const C: usize> Classify<I, (), [(); C]>
+    for [<f32 as Element<I::BitShape>>::Array; C]
 where
-    [u32; C]: Default,
+    [f32; C]: Default,
+    f32: Element<I::BitShape>,
 {
-    fn activations(&self, example: &I) -> [u32; C] {
-        let mut target = <[u32; C]>::default();
+    fn activations(&self, example: &I) -> [f32; C] {
+        let mut target = <[f32; C]>::default();
         for c in 0..C {
-            target[c] = self[c].distance(&example);
+            target[c] = example.bfma(&self[c]);
         }
         target
     }
     fn max_class(&self, input: &I) -> usize {
         let activations = <Self as Classify<I, (), [(); C]>>::activations(self, input);
-        let mut max_act = 0_u32;
+        let mut max_act = 0_f32;
         let mut max_class = 0_usize;
         for c in 0..C {
             if activations[c] >= max_act {
@@ -137,46 +164,6 @@ impl<T: BitMul<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
 {
     fn apply(&self, input: &I) -> O {
         self.bit_mul(&Preprocessor::preprocess(input))
-    }
-}
-
-// bit input, float weights and float output.
-pub trait FloatMul<S: Shape>
-where
-    Self: BitArray,
-    f32: Element<Self::BitShape> + Element<S>,
-    <f32 as Element<Self::BitShape>>::Array: Element<S>,
-{
-    fn float_mul(
-        &self,
-        weights: &<<f32 as Element<Self::BitShape>>::Array as Element<S>>::Array,
-    ) -> <f32 as Element<S>>::Array;
-}
-
-impl<T: BitArray + BitFloatMulAcc> FloatMul<()> for T
-where
-    f32: Element<T::BitShape>,
-{
-    fn float_mul(&self, weights: &<f32 as Element<T::BitShape>>::Array) -> f32 {
-        self.bit_float_mul_acc(weights)
-    }
-}
-
-impl<S: Shape, T: BitArray + FloatMul<S>, const L: usize> FloatMul<[S; L]> for T
-where
-    f32: Element<T::BitShape> + Element<S>,
-    <f32 as Element<T::BitShape>>::Array: Element<S>,
-    [<f32 as Element<S>>::Array; L]: Default,
-{
-    fn float_mul(
-        &self,
-        weights: &[<<f32 as Element<Self::BitShape>>::Array as Element<S>>::Array; L],
-    ) -> [<f32 as Element<S>>::Array; L] {
-        let mut target = <[<f32 as Element<S>>::Array; L]>::default();
-        for i in 0..L {
-            target[i] = self.float_mul(&weights[i]);
-        }
-        target
     }
 }
 
@@ -393,22 +380,23 @@ where
     }
 }
 
-pub trait BitFloatMulAcc
+/// Bit Float Multiply Accumulate
+pub trait BFMA
 where
     Self: BitArray,
     f32: Element<Self::BitShape>,
 {
-    fn bit_float_mul_acc(&self, weights: &<f32 as Element<Self::BitShape>>::Array) -> f32;
+    fn bfma(&self, weights: &<f32 as Element<Self::BitShape>>::Array) -> f32;
 }
 
-impl<T: BitArray + BitFloatMulAcc, const L: usize> BitFloatMulAcc for [T; L]
+impl<T: BitArray + BFMA, const L: usize> BFMA for [T; L]
 where
     f32: Element<T::BitShape>,
 {
-    fn bit_float_mul_acc(&self, weights: &[<f32 as Element<T::BitShape>>::Array; L]) -> f32 {
+    fn bfma(&self, weights: &[<f32 as Element<T::BitShape>>::Array; L]) -> f32 {
         let mut sum = 0f32;
         for i in 0..L {
-            sum += self[i].bit_float_mul_acc(&weights[i]);
+            sum += self[i].bfma(&weights[i]);
         }
         sum
     }
@@ -533,8 +521,8 @@ macro_rules! for_uints {
                 (self.0 ^ rhs.0).count_ones()
             }
         }
-        impl BitFloatMulAcc for $b_type {
-            fn bit_float_mul_acc(&self, weights: &[f32; $len]) -> f32 {
+        impl BFMA for $b_type {
+            fn bfma(&self, weights: &[f32; $len]) -> f32 {
                 const SIGNS: [f32; 2] = [1f32, -1f32];
                 let mut sum = 0f32;
                 for b in 0..$len {

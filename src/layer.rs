@@ -1,9 +1,8 @@
 use crate::bits::{BitArray, BitArrayOPs, BitMul, BitWord, Distance, IndexedFlipBit};
 use crate::cluster::{ImageCountByCentroids, ImagePatchLloyds};
-use crate::count::{ElementwiseAdd, IncrementCounters};
 use crate::image2d::{AvgPool, BitPool, Concat, Image2D};
 use crate::shape::{Element, Shape};
-use crate::weight::{decend, Objective};
+use crate::weight::{decend, FloatObj, Noise};
 use bincode::{deserialize_from, serialize_into};
 use rand::distributions;
 use rand::Rng;
@@ -28,12 +27,15 @@ pub struct TrainParams {
     pub lloyds_iters: usize,
     pub weights_seed: u64,
     pub decend_window_thresh: usize,
+    pub noise_sdev: f32,
 }
 
 pub trait Layer<InputImage, PatchShape, Preprocessor, O: BitArray, OutputImage, C: Shape>
 where
     Self: Element<O::BitShape>,
     O: Element<C>,
+    f32: Element<O::BitShape>,
+    <f32 as Element<O::BitShape>>::Array: Element<C>,
 {
     fn gen(
         examples: &Vec<(InputImage, usize)>,
@@ -41,7 +43,7 @@ where
     ) -> (
         Vec<(OutputImage, usize)>,
         <Self as Element<O::BitShape>>::Array,
-        <O as Element<C>>::Array,
+        <<f32 as Element<O::BitShape>>::Array as Element<C>>::Array,
     );
 }
 
@@ -67,7 +69,7 @@ impl<
 where
     distributions::Standard: distributions::Distribution<[I; C]>
         + distributions::Distribution<I>
-        + distributions::Distribution<[O; C]>
+        + distributions::Distribution<[<f32 as Element<O::BitShape>>::Array; C]>
         + distributions::Distribution<<I as Element<O::BitShape>>::Array>,
     <I as Element<O::BitShape>>::Array: Apply<InputImage, PatchShape, Preprocessor, OutputImage>
         + Sync
@@ -76,15 +78,24 @@ where
         + IndexedFlipBit<I, O>,
     for<'de> I: serde::Deserialize<'de>,
     for<'de> [u32; C]: serde::Deserialize<'de>,
-    for<'de> (<I as Element<O::BitShape>>::Array, [O; C]): serde::Deserialize<'de>,
-    (<I as Element<O::BitShape>>::Array, [O; C]): serde::Serialize,
+    for<'de> (
+        <I as Element<O::BitShape>>::Array,
+        [<f32 as Element<O::BitShape>>::Array; C],
+    ): serde::Deserialize<'de>,
+    (
+        <I as Element<O::BitShape>>::Array,
+        [<f32 as Element<O::BitShape>>::Array; C],
+    ): serde::Serialize,
     bool: Element<I::BitShape>,
     u32: Element<I::BitShape>,
     <u32 as Element<I::BitShape>>::Array: Sync + Default,
-    <I as Element<O::BitShape>>::Array: Copy,
-    [O; C]: Objective<O, C> + Copy,
+    <I as Element<O::BitShape>>::Array: Copy + Sync,
+    [<f32 as Element<O::BitShape>>::Array; C]:
+        FloatObj<O, [(); C]> + Copy + Noise + std::fmt::Debug,
     [u32; C]: Default + serde::Serialize,
     InputImage::PixelType: Element<PatchShape>,
+    f32: Element<O::BitShape>,
+    <f32 as Element<O::BitShape>>::Array: Sync,
 {
     fn gen(
         examples: &Vec<(InputImage, usize)>,
@@ -92,7 +103,7 @@ where
     ) -> (
         Vec<(OutputImage, usize)>,
         <I as Element<O::BitShape>>::Array,
-        [O; C],
+        [<f32 as Element<O::BitShape>>::Array; C],
     ) {
         let total_start = Instant::now();
         let input_hash = {
@@ -114,10 +125,11 @@ where
 
         create_dir_all(&counts_dir).unwrap();
         let weights_path = counts_dir.join(format!(
-            "{}, seed:{}, wt:{}.weights",
+            "{}, seed:{}, sdev:{}, wt:{}.weights",
             std::any::type_name::<O>(),
             params.weights_seed,
             params.decend_window_thresh,
+            params.noise_sdev,
         ));
         let (layer_weights, aux_weights) =
             if let Some(weights_file) = File::open(&weights_path).ok() {
@@ -149,12 +161,15 @@ where
                 };
                 let mut rng = Hc128Rng::seed_from_u64(params.weights_seed);
                 let mut layer_weights: <I as Element<<O as BitArray>::BitShape>>::Array = rng.gen();
-                let mut aux_weights: [O; C] = rng.gen();
+                //let mut aux_weights: [<f32 as Element<O::BitShape>>::Array; C] = rng.gen();
+                let aux_weights =
+                    <[<f32 as Element<O::BitShape>>::Array; C]>::noise(&mut rng, params.noise_sdev);
+                //dbg!(&aux_weights);
 
                 decend(
                     &mut rng,
                     &mut layer_weights,
-                    &mut aux_weights,
+                    &aux_weights,
                     &counts,
                     params.k,
                     params.decend_window_thresh,

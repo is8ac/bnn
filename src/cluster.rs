@@ -1,11 +1,9 @@
-use crate::bits::{
-    BitArray, BitArrayOPs, BitMul, BitWord, Distance, IncrementFracCounters, IndexedFlipBit,
-};
+use crate::bits::{BitArray, BitArrayOPs, Distance, IncrementFracCounters};
 use crate::count::ElementwiseAdd;
 use crate::image2d::{Image2D, StaticImage};
 use crate::shape::{Element, Map, Shape};
 use crate::unary::Preprocess;
-use crate::weight::Objective;
+//use crate::weight::Objective;
 use rand::distributions;
 use rand::Rng;
 use rayon::prelude::*;

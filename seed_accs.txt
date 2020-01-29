@@ -1,0 +1,838 @@
+[src/bin/kmeans.rs:129] &seed_accs = [
+    (
+        0,
+        0.1174,
+    ),
+    (
+        1,
+        0.144,
+    ),
+    (
+        2,
+        0.1604,
+    ),
+    (
+        3,
+        0.13,
+    ),
+    (
+        4,
+        0.199,
+    ),
+]
+
+
+[src/bin/kmeans.rs:126] &seed_accs = [
+    (
+        0,
+        0.1556,
+    ),
+    (
+        1,
+        0.1578,
+    ),
+    (
+        2,
+        0.151,
+    ),
+    (
+        3,
+        0.1248,
+    ),
+    (
+        4,
+        0.1984,
+    ),
+]
+
+
+[src/bin/kmeans.rs:127] &seed_accs = [
+    (
+        0,
+        0.1594,
+    ),
+    (
+        1,
+        0.1676,
+    ),
+    (
+        2,
+        0.1578,
+    ),
+    (
+        3,
+        0.0936,
+    ),
+    (
+        4,
+        0.1796,
+    ),
+]
+
+
+[src/bin/kmeans.rs:132] &seed_accs = [
+    (
+        0,
+        0.1164,
+    ),
+    (
+        1,
+        0.1516,
+    ),
+    (
+        2,
+        0.127,
+    ),
+    (
+        3,
+        0.1588,
+    ),
+    (
+        4,
+        0.187,
+    ),
+]
+
+[src/bin/kmeans.rs:138] &seed_accs = [
+    (
+        0,
+        0.216,
+    ),
+    (
+        1,
+        0.2124,
+    ),
+    (
+        2,
+        0.197,
+    ),
+    (
+        3,
+        0.1754,
+    ),
+    (
+        4,
+        0.2132,
+    ),
+]
+
+[src/bin/kmeans.rs:141] &seed_accs = [
+    (
+        0,
+        0.1794,
+    ),
+    (
+        1,
+        0.1964,
+    ),
+    (
+        2,
+        0.1344,
+    ),
+    (
+        3,
+        0.15,
+    ),
+    (
+        4,
+        0.2044,
+    ),
+]
+
+[src/bin/kmeans.rs:142] &seed_accs = [
+    (
+        0,
+        0.1918,
+    ),
+    (
+        1,
+        0.2184,
+    ),
+    (
+        2,
+        0.2004,
+    ),
+    (
+        3,
+        0.2004,
+    ),
+    (
+        4,
+        0.2074,
+    ),
+]
+
+[src/bin/kmeans.rs:143] &seed_accs = [
+    (
+        0,
+        0.1804,
+    ),
+    (
+        1,
+        0.1532,
+    ),
+    (
+        2,
+        0.1458,
+    ),
+    (
+        3,
+        0.1614,
+    ),
+    (
+        4,
+        0.1158,
+    ),
+]
+
+[src/bin/kmeans.rs:194] &seed_accs = [
+    (
+        0,
+        0.1782,
+    ),
+    (
+        1,
+        0.1896,
+    ),
+    (
+        2,
+        0.2192,
+    ),
+    (
+        3,
+        0.1594,
+    ),
+    (
+        4,
+        0.201,
+    ),
+]
+
+[src/bin/kmeans.rs:204] &seed_accs = [
+    (
+        0,
+        0.2238,
+    ),
+    (
+        1,
+        0.2318,
+    ),
+    (
+        2,
+        0.1246,
+    ),
+    (
+        3,
+        0.2246,
+    ),
+    (
+        4,
+        0.2136,
+    ),
+]
+
+
+[src/bin/kmeans.rs:208] &seed_accs = [
+    (
+        0,
+        0.2088,
+    ),
+    (
+        1,
+        0.2242,
+    ),
+    (
+        2,
+        0.2222,
+    ),
+    (
+        3,
+        0.2094,
+    ),
+    (
+        4,
+        0.2152,
+    ),
+]
+
+[src/bin/kmeans.rs:192] &seed_accs = [
+    (
+        0,
+        0.2018,
+    ),
+    (
+        1,
+        0.212,
+    ),
+    (
+        2,
+        0.211,
+    ),
+    (
+        3,
+        0.1976,
+    ),
+    (
+        4,
+        0.2318,
+    ),
+]
+[src/bin/kmeans.rs:194] sum_acc / seed_accs.len() as f64 = 0.21084
+
+
+[src/bin/kmeans.rs:190] &seed_accs = [
+    (
+        0,
+        0.2028,
+    ),
+    (
+        1,
+        0.188,
+    ),
+    (
+        2,
+        0.2232,
+    ),
+    (
+        3,
+        0.227,
+    ),
+    (
+        4,
+        0.1972,
+    ),
+    (
+        5,
+        0.209,
+    ),
+    (
+        6,
+        0.2238,
+    ),
+    (
+        7,
+        0.2284,
+    ),
+    (
+        8,
+        0.1886,
+    ),
+    (
+        9,
+        0.235,
+    ),
+]
+[src/bin/kmeans.rs:192] sum_acc / seed_accs.len() as f64 = 0.2123
+
+
+[src/bin/kmeans.rs:187] acc_start.elapsed() = 1.299381531s
+0: 0.2396
+1: 0.1992
+2: 0.2268
+3: 0.196
+4: 0.1972
+5: 0.2196
+6: 0.2244
+7: 0.2132
+8: 0.2022
+9: 0.2152
+[src/bin/kmeans.rs:194] sum_acc / seed_accs.len() as f64 = 0.21334
+
+
+[src/bin/kmeans.rs:186] acc_start.elapsed() = 13.100416485s
+0: 0.17166
+1: 0.15374
+2: 0.19908
+3: 0.15638
+4: 0.17498
+5: 0.17422
+6: 0.18724
+7: 0.194
+8: 0.19184
+9: 0.14188
+[src/bin/kmeans.rs:193] sum_acc / seed_accs.len() as f64 = 0.174502
+
+k300, iter4
+[src/bin/kmeans.rs:205] acc = 0.1265
+0: 0.20522
+1: 0.20216
+2: 0.22102
+3: 0.1908
+4: 0.21188
+5: 0.20348
+6: 0.21616
+7: 0.18704
+8: 0.18076
+9: 0.1265
+[src/bin/kmeans.rs:212] sum_acc / seed_accs.len() as f64 = 0.194502
+
+k300, iter5
+[src/bin/kmeans.rs:205] acc = 0.18988
+0: 0.18934
+1: 0.1992
+2: 0.15754
+3: 0.2116
+4: 0.20614
+5: 0.18028
+6: 0.21216
+7: 0.1537
+8: 0.19314
+9: 0.18988
+[src/bin/kmeans.rs:212] sum_acc / seed_accs.len() as f64 = 0.189298
+
+
+ki2
+0: 0.17146
+1: 0.17576
+2: 0.18484
+3: 0.18418
+4: 0.1401
+5: 0.1429
+6: 0.18914
+7: 0.1419
+8: 0.21716
+9: 0.17422
+[src/bin/kmeans.rs:197] sum_acc / seed_accs.len() as f64 = 0.17216599999999999
+
+ki4:
+0: 0.19338
+1: 0.15778
+2: 0.22882
+3: 0.20334
+4: 0.20822
+5: 0.14676
+6: 0.2134
+7: 0.21214
+8: 0.18468
+9: 0.17756
+[src/bin/kmeans.rs:197] sum_acc / seed_accs.len() as f64 = 0.192608
+
+
+0: 0.22274
+1: 0.21304
+2: 0.16966
+3: 0.22162
+4: 0.18864
+5: 0.17858
+6: 0.19342
+7: 0.13682
+8: 0.2087
+9: 0.2123
+[src/bin/kmeans.rs:207] sum_acc / seed_accs.len() as f64 = 0.19455199999999997
+
+decend:4/5 depth:6
+0: 0.2013
+1: 0.18212
+2: 0.2071
+3: 0.18094
+4: 0.20798
+5: 0.19426
+6: 0.23302
+7: 0.20756
+8: 0.20444
+9: 0.19102
+[src/bin/kmeans.rs:205] sum_acc / seed_accs.len() as f64 = 0.20097399999999999
+
+decend7
+0: 0.21398
+1: 0.1802
+2: 0.18862
+3: 0.17696
+4: 0.19958
+5: 0.2051
+6: 0.21474
+7: 0.192
+8: 0.2259
+9: 0.2218
+[src/bin/kmeans.rs:197] sum_acc / seed_accs.len() as f64 = 0.20188799999999998
+
+decend8
+0: 0.17818
+1: 0.19778
+2: 0.21714
+3: 0.2124
+4: 0.20476
+5: 0.21716
+6: 0.21758
+7: 0.19384
+8: 0.23496
+9: 0.21952
+[src/bin/kmeans.rs:197] sum_acc / seed_accs.len() as f64 = 0.209332
+
+
+1/10 trainset
+0: 0.2106
+1: 0.217
+2: 0.2246
+3: 0.2252
+4: 0.2312
+5: 0.2098
+6: 0.236
+7: 0.2304
+8: 0.2342
+9: 0.2266
+[src/bin/kmeans.rs:197] sum_acc / seed_accs.len() as f64 = 0.22456
+
+
+[src/bin/kmeans.rs:75] &accs = [
+    0.22432,
+    0.18902,
+    0.23292,
+    0.22036,
+    0.22428,
+    0.2007,
+    0.21806,
+    0.22382,
+    0.23642,
+    0.22102,
+]
+[src/bin/kmeans.rs:77] sum_acc / accs.len() as f64 = 0.21909199999999998
+
+[src/bin/kmeans.rs:75] &accs = [
+    0.24754,
+    0.20502,
+    0.22132,
+    0.23194,
+    0.23442,
+    0.18836,
+    0.23706,
+    0.214,
+    0.2108,
+    0.23198,
+]
+[src/bin/kmeans.rs:77] sum_acc / accs.len() as f64 = 0.22224400000000002
+
+
+0: 0.22424
+1: 0.20922
+2: 0.23052
+3: 0.23968
+4: 0.21442
+5: 0.18166
+6: 0.20422
+7: 0.21196
+8: 0.2298
+9: 0.20932
+[src/bin/kmeans.rs:79] sum_acc / accs.len() as f64 = 0.215504
+
+[src/bin/kmeans.rs:71] acc = 0.20786
+0: 0.2192
+1: 0.21186
+2: 0.23314
+3: 0.18966
+4: 0.20706
+5: 0.1894
+6: 0.21228
+7: 0.2089
+8: 0.2299
+9: 0.20786
+[src/bin/kmeans.rs:79] sum_acc / accs.len() as f64 = 0.21092600000000003
+
+
+l2:
+li: 4
+0: 0.2515
+1: 0.239
+2: 0.256
+3: 0.261
+4: 0.241
+5: 0.2275
+6: 0.2415
+7: 0.244
+8: 0.2535
+9: 0.2415
+[src/bin/kmeans.rs:88] sum_acc / accs.len() as f64 = 0.24564999999999998
+
+li:7
+0: 0.267
+1: 0.246
+2: 0.2635
+3: 0.265
+4: 0.245
+5: 0.2645
+6: 0.2475
+7: 0.24
+8: 0.2455
+9: 0.2435
+[src/bin/kmeans.rs:88] sum_acc / accs.len() as f64 = 0.25275
+
+
+
+0: 0.246
+1: 0.256
+2: 0.2635
+3: 0.247
+4: 0.2695
+5: 0.2565
+6: 0.24
+7: 0.264
+8: 0.2405
+9: 0.262
+[src/bin/kmeans.rs:88] sum_acc / accs.len() as f64 = 0.25450000000000006
+
+
+50: 0.2734526666666667
+63: 0.37298755555555557
+79: 0.5243313333333334
+99: 0.5816788888888889
+124: 0.8171773333333333
+156: 1.0341602222222221
+196: 1.214687111111111
+245: 1.415408888888889
+307: 1.7700342222222223
+384: 2.322211777777778
+480: 2.8391515555555555
+600: 3.5579455555555555
+
+
+loading "params/1249417365549754475/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:10000, seed:0, k300, li3/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 83.806151ms
+[src/bin/kmeans.rs:56] acc = 0.0974
+[src/bin/kmeans.rs:59] l = 0
+loading "params/9708195451445571746/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:10000, seed:0, k300, li3/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 75.784203ms
+[src/bin/kmeans.rs:70] acc = 0.1651
+[src/bin/kmeans.rs:59] l = 1
+loading "params/12028447986065536570/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:10000, seed:0, k300, li3/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 72.59372ms
+[src/bin/kmeans.rs:70] acc = 0.1941
+[src/bin/kmeans.rs:59] l = 2
+loading "params/15029056683052120025/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:10000, seed:0, k300, li3/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 72.970025ms
+[src/bin/kmeans.rs:70] acc = 0.2271
+[src/bin/kmeans.rs:59] l = 3
+loading "params/1828048553932269306/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:10000, seed:0, k300, li3/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 80.236497ms
+[src/bin/kmeans.rs:70] acc = 0.2349
+[src/bin/kmeans.rs:59] l = 4
+loading "params/6412905548419236509/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:10000, seed:0, k300, li3/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 73.26136ms
+[src/bin/kmeans.rs:70] acc = 0.2371
+
+
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:0, k300, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 37.407878ms
+[src/bin/kmeans.rs:56] acc = 0.0996
+[src/bin/kmeans.rs:59] l = 0
+loading "params/14519665529272018451/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k300, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 37.412728ms
+[src/bin/kmeans.rs:70] acc = 0.169
+[src/bin/kmeans.rs:59] l = 1
+loading "params/9126496504667901783/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k300, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 37.24757ms
+[src/bin/kmeans.rs:70] acc = 0.2272
+[src/bin/kmeans.rs:59] l = 2
+loading "params/5254726296876233886/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k300, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 37.830936ms
+[src/bin/kmeans.rs:70] acc = 0.2464
+[src/bin/kmeans.rs:59] l = 3
+loading "params/5611649019838278186/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k300, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 37.080736ms
+[src/bin/kmeans.rs:70] acc = 0.2432
+
+
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 36.517967ms
+[src/bin/kmeans.rs:57] acc = 0.1224
+[src/bin/kmeans.rs:60] l = 0
+loading "params/1111900909470355253/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 45.628993ms
+[src/bin/kmeans.rs:71] acc = 0.2212
+[src/bin/kmeans.rs:60] l = 1
+loading "params/16153465236281528913/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 43.408741ms
+[src/bin/kmeans.rs:71] acc = 0.2488
+[src/bin/kmeans.rs:60] l = 2
+loading "params/1970718699441216917/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:30] acc_start.elapsed() = 39.362199ms
+[src/bin/kmeans.rs:71] acc = 0.2384
+[src/bin/kmeans.rs:60] l = 3
+[src/cluster.rs:69] e = 0
+
+
+
+loading "params/1249417365549754475/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:10000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:55] acc = 0.1241
+[src/bin/kmeans.rs:58] l = 0
+loading "params/17725545080639218857/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:10000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.1968
+[src/bin/kmeans.rs:58] l = 1
+loading "params/2017622681952819461/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:10000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.229
+[src/bin/kmeans.rs:58] l = 2
+loading "params/1139288429515704049/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:10000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2469
+[src/bin/kmeans.rs:58] l = 3
+loading "params/452701086030824530/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:10000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2334
+
+
+loading "params/1249417365549754475/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:10000, seed:0, k500, li5/[bitnn::bits::b32; 4], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:55] acc = 0.114
+[src/bin/kmeans.rs:58] l = 0
+loading "params/1241787842184147486/counts:[[[bitnn::bits::b32; 4]; 3]; 3], n:10000, seed:0, k500, li5/[bitnn::bits::b32; 4], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2524
+[src/bin/kmeans.rs:58] l = 1
+loading "params/14978658866826790133/counts:[[[bitnn::bits::b32; 4]; 3]; 3], n:10000, seed:0, k500, li5/[bitnn::bits::b32; 4], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2392
+[src/bin/kmeans.rs:58] l = 2
+loading "params/13463914203031890069/counts:[[[bitnn::bits::b32; 4]; 3]; 3], n:10000, seed:0, k500, li5/[bitnn::bits::b32; 4], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2515
+
+
+
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:0, k500, li3/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.2048
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:1, k500, li3/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.1968
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:2, k500, li3/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.2194
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:3, k500, li3/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.227
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:4, k500, li3/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.1838
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:5, k500, li3/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.1858
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:6, k500, li3/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.2254
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:7, k500, li3/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.2102
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:8, k500, li3/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.218
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:9, k500, li3/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.2072
+
+
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.0904
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:1, k500, li5/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.2382
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:2, k500, li5/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.2268
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:3, k500, li5/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.21
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:4, k500, li5/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.2044
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:5, k500, li5/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.1738
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:6, k500, li5/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.1806
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:7, k500, li5/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.2468
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:8, k500, li5/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.1926
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:9, k500, li5/[bitnn::bits::b32; 1], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:57] acc = 0.2026
+
+
+
+[src/cluster.rs:69] e = 0
+[src/cluster.rs:69] e = 1
+[src/cluster.rs:69] e = 2
+41: 0.3795611111111111
+52: 0.475882
+66: 0.4093164444444444
+83: 0.6219433333333333
+104: 0.6622064444444444
+130: 0.7548215555555555
+163: 1.2179657777777777
+204: 1.2705915555555556
+256: 1.7420084444444444
+320: 2.2851477777777776
+400: 2.814892888888889
+500: 3.637462888888889
+[src/bin/kmeans.rs:55] acc = 0.2048
+
+
+
+
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 5]; 5], n:5000, seed:0, k1000, li7/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:55] acc = 0.2252
+[src/bin/kmeans.rs:58] l = 0
+loading "params/8054515245402604334/counts:[[[bitnn::bits::b32; 2]; 5]; 5], n:5000, seed:0, k1000, li7/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2708
+[src/bin/kmeans.rs:58] l = 1
+loading "params/6856707683184943958/counts:[[[bitnn::bits::b32; 2]; 5]; 5], n:5000, seed:0, k1000, li7/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2684
+[src/bin/kmeans.rs:58] l = 2
+loading "params/3240000629321033825/counts:[[[bitnn::bits::b32; 2]; 5]; 5], n:5000, seed:0, k1000, li7/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2678
+[src/bin/kmeans.rs:58] l = 3
+[src/cluster.rs:69] e = 0
+
+
+bit aux:
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:55] acc = 0.229
+[src/bin/kmeans.rs:58] l = 0
+loading "params/959283645088200583/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2532
+[src/bin/kmeans.rs:58] l = 1
+loading "params/7502651683821654573/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2474
+[src/bin/kmeans.rs:58] l = 2
+loading "params/14844352950869604836/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2414
+[src/bin/kmeans.rs:58] l = 3
+loading "params/13655827757132115108/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2346
+[src/bin/kmeans.rs:58] l = 4
+loading "params/4188185521519858479/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, wt:50.weights" from disk
+[src/bin/kmeans.rs:69] acc = 0.2374
+
+float aux flat:
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:1, wt:50.weights" from disk
+[src/bin/kmeans.rs:62] acc = 0.1976
+[src/bin/kmeans.rs:65] l = 0
+loading "params/2164282683995207884/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:1, wt:50.weights" from disk
+[src/bin/kmeans.rs:77] acc = 0.1372
+[src/bin/kmeans.rs:65] l = 1
+loading "params/3023709111847562991/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:1, wt:50.weights" from disk
+[src/bin/kmeans.rs:77] acc = 0.1158
+[src/bin/kmeans.rs:65] l = 2
+[src/cluster.rs:69] e = 0
+
+float aux normal:
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:2, wt:50.weights" from disk
+[src/bin/kmeans.rs:62] acc = 0.1498
+[src/bin/kmeans.rs:65] l = 0
+loading "params/6669064326318916597/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:2, wt:50.weights" from disk
+[src/bin/kmeans.rs:77] acc = 0.1014
+[src/bin/kmeans.rs:65] l = 1
+loading "params/5584125640278259718/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:2, wt:50.weights" from disk
+[src/bin/kmeans.rs:77] acc = 0.1056
+[src/bin/kmeans.rs:65] l = 2
+
+
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, sdev:10, wt:0.05.weights" from disk
+[src/bin/kmeans.rs:63] acc = 0.238
+[src/bin/kmeans.rs:66] l = 0
+loading "params/2946255167475743070/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, sdev:10, wt:0.05.weights" from disk
+[src/bin/kmeans.rs:78] acc = 0.2694
+[src/bin/kmeans.rs:66] l = 1
+loading "params/5542520379522424244/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, sdev:10, wt:0.05.weights" from disk
+[src/bin/kmeans.rs:78] acc = 0.2628
+[src/bin/kmeans.rs:66] l = 2
+loading "params/11102607105618813722/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k500, li5/[bitnn::bits::b32; 2], seed:0, sdev:10, wt:0.05.weights" from disk
+[src/bin/kmeans.rs:78] acc = 0.2654
+[src/bin/kmeans.rs:66] l = 3
+[src/cluster.rs:69] e = 0
+
+
+
+loading "params/3899265349730347251/counts:[[[bitnn::bits::b32; 3]; 3]; 3], n:5000, seed:0, k1000, li7/[bitnn::bits::b32; 2], seed:0, sdev:10, wt:0.02.weights" from disk
+[src/bin/kmeans.rs:63] acc = 0.2436
+[src/bin/kmeans.rs:66] l = 0
+loading "params/9958920274104590362/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k1000, li7/[bitnn::bits::b32; 2], seed:0, sdev:10, wt:0.02.weights" from disk
+[src/bin/kmeans.rs:78] acc = 0.2708
+[src/bin/kmeans.rs:66] l = 1
+loading "params/15904965339470613200/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k1000, li7/[bitnn::bits::b32; 2], seed:0, sdev:10, wt:0.02.weights" from disk
+[src/bin/kmeans.rs:78] acc = 0.2742
+[src/bin/kmeans.rs:66] l = 2
+loading "params/13364256804581509473/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k1000, li7/[bitnn::bits::b32; 2], seed:0, sdev:10, wt:0.02.weights" from disk
+[src/bin/kmeans.rs:78] acc = 0.2758
+[src/bin/kmeans.rs:66] l = 3
+loading "params/6584072175008945662/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:5000, seed:0, k1000, li7/[bitnn::bits::b32; 2], seed:0, sdev:10, wt:0.02.weights" from disk
+[src/bin/kmeans.rs:78] acc = 0.2754
+[src/bin/kmeans.rs:66] l = 4
+[src/cluster.rs:69] e = 0

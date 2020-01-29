@@ -1,7 +1,7 @@
 use crate::bits::{AndOr, BitWord, Classify, Distance};
 use crate::count::IncrementCounters;
 use crate::layer::Apply;
-use crate::shape::{Element, Merge, Shape, ZipMap};
+use crate::shape::{Merge, Shape, ZipMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -243,10 +243,10 @@ impl<
     > Classify<StaticImage<[[IP; Y]; X]>, (), [(); C]> for T
 where
     IP: Default + Copy,
-    [u32; C]: Default,
+    [f32; C]: Default,
 {
-    fn activations(&self, StaticImage { image }: &StaticImage<[[IP; Y]; X]>) -> [u32; C] {
-        let mut sums = <[u32; C]>::default();
+    fn activations(&self, StaticImage { image }: &StaticImage<[[IP; Y]; X]>) -> [f32; C] {
+        let mut sums = <[f32; C]>::default();
         for x in 0..X - 2 {
             for y in 0..Y - 2 {
                 let activations = self.activations(&image[x][y]);
@@ -260,7 +260,7 @@ where
     fn max_class(&self, input: &StaticImage<[[IP; Y]; X]>) -> usize {
         let activations =
             <T as Classify<StaticImage<[[IP; Y]; X]>, (), [(); C]>>::activations(self, input);
-        let mut max_act = 0_u32;
+        let mut max_act = 0_f32;
         let mut max_class = 0_usize;
         for c in 0..C {
             if activations[c] >= max_act {
