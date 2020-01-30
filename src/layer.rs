@@ -1,8 +1,9 @@
 use crate::bits::{BitArray, BitArrayOPs, BitMul, BitWord, Distance, IndexedFlipBit};
 use crate::cluster::{ImageCountByCentroids, ImagePatchLloyds};
+use crate::float::{FloatLoss, Noise};
 use crate::image2d::{AvgPool, BitPool, Concat, Image2D};
 use crate::shape::{Element, Shape};
-use crate::weight::{decend, FloatObj, Noise};
+use crate::weight::decend;
 use bincode::{deserialize_from, serialize_into};
 use rand::distributions;
 use rand::Rng;
@@ -91,7 +92,7 @@ where
     <u32 as Element<I::BitShape>>::Array: Sync + Default,
     <I as Element<O::BitShape>>::Array: Copy + Sync,
     [<f32 as Element<O::BitShape>>::Array; C]:
-        FloatObj<O, [(); C]> + Copy + Noise + std::fmt::Debug,
+        FloatLoss<O, [(); C]> + Copy + Noise + std::fmt::Debug,
     [u32; C]: Default + serde::Serialize,
     InputImage::PixelType: Element<PatchShape>,
     f32: Element<O::BitShape>,

@@ -167,6 +167,7 @@ impl<T: BitMul<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
     }
 }
 
+/// Bits input, bits matrix, and bits output
 pub trait BitMul<I, O> {
     fn bit_mul(&self, input: &I) -> O;
 }
@@ -380,6 +381,25 @@ where
     }
 }
 
+/// Bit Float Bit Vector Multiply
+/// Takes bits input, float matrix, and returns bit array output.
+pub trait BFBVM<I, O> {
+    fn bfbvm(&self, input: &I) -> O;
+}
+
+impl<I, T: BFBVM<I, O>, O, const L: usize> BFBVM<I, [O; L]> for [T; L]
+where
+    [O; L]: Default,
+{
+    fn bfbvm(&self, input: &I) -> [O; L] {
+        let mut target = <[O; L]>::default();
+        for i in 0..L {
+            target[i] = self[i].bfbvm(input);
+        }
+        target
+    }
+}
+
 /// Bit Float Multiply Accumulate
 pub trait BFMA
 where
@@ -529,6 +549,19 @@ macro_rules! for_uints {
                     sum = weights[b].mul_add(SIGNS[self.bit(b) as usize], sum);
                 }
                 sum
+            }
+        }
+        impl<I: BitArray + BFMA> BFBVM<I, $b_type>
+            for [(<f32 as Element<I::BitShape>>::Array, f32); $len]
+        where
+            f32: Element<I::BitShape>,
+        {
+            fn bfbvm(&self, input: &I) -> $b_type {
+                let mut target = $b_type(0);
+                for b in 0..$len {
+                    target |= $b_type((input.bfma(&self[b].0) + self[b].1 > 0f32) as $u_type) << b;
+                }
+                target
             }
         }
         impl<I: Distance + BitWord> BitMul<I, $b_type> for [I; $len] {
