@@ -1,21 +1,21 @@
-use crate::bits::{BitArray, BitArrayOPs, BitMul, BitWord, Distance, IndexedFlipBit};
+use crate::bits::{BitArray, BitArrayOPs, BitWord, Distance, IndexedFlipBit, BFBVM};
 use crate::cluster::{ImageCountByCentroids, ImagePatchLloyds};
-use crate::float::{FloatLoss, Noise};
+use crate::float::{FloatLoss, Mutate, Noise};
 use crate::image2d::{AvgPool, BitPool, Concat, Image2D};
 use crate::shape::{Element, Shape};
-use crate::weight::decend;
 use bincode::{deserialize_from, serialize_into};
 use rand::distributions;
 use rand::Rng;
 use rand::SeedableRng;
+use rand_distr::{Distribution, Normal};
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
+use std::f64;
 use std::fs::create_dir_all;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::time::Instant;
 
 pub trait Apply<Example, Patch, Preprocessor, Output> {
     fn apply(&self, input: &Example) -> Output;
@@ -27,25 +27,16 @@ pub struct TrainParams {
     pub k: usize,
     pub lloyds_iters: usize,
     pub weights_seed: u64,
-    pub decend_window_thresh: usize,
     pub noise_sdev: f32,
+    pub decend_iters: usize,
 }
 
-pub trait Layer<InputImage, PatchShape, Preprocessor, O: BitArray, OutputImage, C: Shape>
-where
-    Self: Element<O::BitShape>,
-    O: Element<C>,
-    f32: Element<O::BitShape>,
-    <f32 as Element<O::BitShape>>::Array: Element<C>,
-{
+pub trait Layer<InputImage, PatchShape, Preprocessor, O: BitArray, OutputImage, C: Shape> {
+    type WeightsType;
     fn gen(
         examples: &Vec<(InputImage, usize)>,
         hyper_params: TrainParams,
-    ) -> (
-        Vec<(OutputImage, usize)>,
-        <Self as Element<O::BitShape>>::Array,
-        <<f32 as Element<O::BitShape>>::Array as Element<C>>::Array,
-    );
+    ) -> (Vec<(OutputImage, usize)>, Self::WeightsType);
 }
 
 impl<
@@ -59,7 +50,6 @@ impl<
             + Distance
             + BitArray
             + BitArrayOPs
-            + serde::Serialize
             + Element<O::BitShape>
             + ImagePatchLloyds<InputImage, PatchShape, Preprocessor>
             + ImageCountByCentroids<InputImage, PatchShape, Preprocessor, [(); C]>,
@@ -68,45 +58,32 @@ impl<
         const C: usize,
     > Layer<InputImage, PatchShape, Preprocessor, O, OutputImage, [(); C]> for I
 where
-    distributions::Standard: distributions::Distribution<[I; C]>
-        + distributions::Distribution<I>
-        + distributions::Distribution<[<f32 as Element<O::BitShape>>::Array; C]>
-        + distributions::Distribution<<I as Element<O::BitShape>>::Array>,
-    <I as Element<O::BitShape>>::Array: Apply<InputImage, PatchShape, Preprocessor, OutputImage>
-        + Sync
-        + Apply<InputImage, PatchShape, Preprocessor, OutputImage>
-        + BitMul<I, O>
-        + IndexedFlipBit<I, O>,
-    for<'de> I: serde::Deserialize<'de>,
-    for<'de> [u32; C]: serde::Deserialize<'de>,
-    for<'de> (
-        <I as Element<O::BitShape>>::Array,
-        [<f32 as Element<O::BitShape>>::Array; C],
-    ): serde::Deserialize<'de>,
-    (
-        <I as Element<O::BitShape>>::Array,
-        [<f32 as Element<O::BitShape>>::Array; C],
-    ): serde::Serialize,
     bool: Element<I::BitShape>,
     u32: Element<I::BitShape>,
-    <u32 as Element<I::BitShape>>::Array: Sync + Default,
+    f32: Element<I::BitShape> + Element<O::BitShape>,
     <I as Element<O::BitShape>>::Array: Copy + Sync,
-    [<f32 as Element<O::BitShape>>::Array; C]:
-        FloatLoss<O, [(); C]> + Copy + Noise + std::fmt::Debug,
-    [u32; C]: Default + serde::Serialize,
+    <u32 as Element<I::BitShape>>::Array: Sync + Default,
+    (<f32 as Element<I::BitShape>>::Array, f32): Element<O::BitShape>,
+    <(<f32 as Element<I::BitShape>>::Array, f32) as Element<O::BitShape>>::Array:
+        Apply<InputImage, PatchShape, Preprocessor, OutputImage> + Sync + BFBVM<I, O>,
+    (I, [u32; C]): serde::Serialize + std::fmt::Debug,
+    [(<f32 as Element<O::BitShape>>::Array, f32); C]: FloatLoss<O, C> + Sync,
+    distributions::Standard: distributions::Distribution<I>,
+    for<'de> (I, [u32; C]): serde::Deserialize<'de>,
+    (
+        <(<f32 as Element<I::BitShape>>::Array, f32) as Element<O::BitShape>>::Array,
+        [(<f32 as Element<O::BitShape>>::Array, f32); C],
+    ): Default + Mutate,
     InputImage::PixelType: Element<PatchShape>,
-    f32: Element<O::BitShape>,
-    <f32 as Element<O::BitShape>>::Array: Sync,
 {
+    type WeightsType = (
+        <(<f32 as Element<I::BitShape>>::Array, f32) as Element<O::BitShape>>::Array,
+        [(<f32 as Element<O::BitShape>>::Array, f32); C],
+    );
     fn gen(
         examples: &Vec<(InputImage, usize)>,
         params: TrainParams,
-    ) -> (
-        Vec<(OutputImage, usize)>,
-        <I as Element<O::BitShape>>::Array,
-        [<f32 as Element<O::BitShape>>::Array; C],
-    ) {
-        let total_start = Instant::now();
+    ) -> (Vec<(OutputImage, usize)>, Self::WeightsType) {
         let input_hash = {
             let mut s = DefaultHasher::new();
             examples.hash(&mut s);
@@ -126,19 +103,33 @@ where
 
         create_dir_all(&counts_dir).unwrap();
         let weights_path = counts_dir.join(format!(
-            "{}, seed:{}, sdev:{}, wt:{}.weights",
+            "{}, seed:{}, sdev:{}, ds:{}.mutations",
             std::any::type_name::<O>(),
             params.weights_seed,
-            params.decend_window_thresh,
+            params.decend_iters,
             params.noise_sdev,
         ));
-        let (layer_weights, aux_weights) =
-            if let Some(weights_file) = File::open(&weights_path).ok() {
-                println!("loading {:?} from disk", &weights_path);
-                deserialize_from(weights_file).expect("can't deserialize from file")
-            } else {
-                let counts_path = counts_dir.join("counts");
-                let counts = if let Some(counts_file) = File::open(&counts_path).ok() {
+        let (layer_weights, aux_weights): Self::WeightsType = if let Some(mutation_log_file) =
+            File::open(&weights_path).ok()
+        {
+            println!("loading {:?} from disk", &weights_path);
+            let mutation_log: Vec<usize> =
+                deserialize_from(mutation_log_file).expect("can't deserialize from file");
+            let normal = Normal::new(0f32, 0.03).unwrap();
+            let mut rng = Hc128Rng::seed_from_u64(params.weights_seed);
+            let mut noise: Vec<f32> = (0..<Self::WeightsType>::NOISE_LEN + params.decend_iters)
+                .map(|_| normal.sample(&mut rng))
+                .collect();
+
+            mutation_log
+                .iter()
+                .fold(<Self::WeightsType>::default(), |weights, mutation| {
+                    weights.mutate(&noise[*mutation..])
+                })
+        } else {
+            let counts_path = counts_dir.join("counts");
+            let counts: Vec<(I, [u32; C])> =
+                if let Some(counts_file) = File::open(&counts_path).ok() {
                     println!("loading {:?} from disk", &counts_path);
                     deserialize_from(counts_file).expect("can't deserialize counts from file")
                 } else {
@@ -160,33 +151,51 @@ where
                     serialize_into(File::create(&counts_path).unwrap(), &counts).unwrap();
                     counts
                 };
-                let mut rng = Hc128Rng::seed_from_u64(params.weights_seed);
-                let mut layer_weights: <I as Element<<O as BitArray>::BitShape>>::Array = rng.gen();
-                //let mut aux_weights: [<f32 as Element<O::BitShape>>::Array; C] = rng.gen();
-                let aux_weights =
-                    <[<f32 as Element<O::BitShape>>::Array; C]>::noise(&mut rng, params.noise_sdev);
-                //dbg!(&aux_weights);
+            dbg!(counts.len());
+            let n_examples: u64 = counts
+                .iter()
+                .map(|(_, c)| c.iter().sum::<u32>() as u64)
+                .sum();
+            dbg!(n_examples);
+            //dbg!(&counts);
+            let mut weights = <Self::WeightsType>::default();
+            let mut cur_sum_loss = f64::MAX;
+            let mut rng = Hc128Rng::seed_from_u64(params.weights_seed);
+            let normal = Normal::new(0f32, params.noise_sdev).unwrap();
+            let mut noise: Vec<f32> = (0..<Self::WeightsType>::NOISE_LEN + params.decend_iters)
+                .map(|_| normal.sample(&mut rng))
+                .collect();
+            let mut mutations_log = Vec::<usize>::new();
+            dbg!("start training");
+            for i in 0..params.decend_iters {
+                let perturbed_weights = weights.mutate(&noise[i..]);
+                let new_sum_loss: f64 = counts
+                    .par_iter()
+                    .map(|(input, class_counts)| {
+                        perturbed_weights
+                            .1
+                            .counts_loss(&perturbed_weights.0.bfbvm(input), class_counts)
+                            as f64
+                    })
+                    .sum();
+                //dbg!(new_sum_loss);
+                if new_sum_loss < cur_sum_loss {
+                    println!("{} {}", i, (new_sum_loss / n_examples as f64));
+                    cur_sum_loss = new_sum_loss;
+                    weights = perturbed_weights;
+                    mutations_log.push(i);
+                }
+            }
+            dbg!("done training");
 
-                decend(
-                    &mut rng,
-                    &mut layer_weights,
-                    &aux_weights,
-                    &counts,
-                    params.k,
-                    params.decend_window_thresh,
-                );
-                serialize_into(
-                    File::create(&weights_path).unwrap(),
-                    &(layer_weights, aux_weights),
-                )
-                .unwrap();
-                (layer_weights, aux_weights)
-            };
+            serialize_into(File::create(&weights_path).unwrap(), &mutations_log).unwrap();
+            weights
+        };
         let new_examples: Vec<_> = examples
             .par_iter()
             .map(|(image, class)| {
                 (
-                    <<I as Element<O::BitShape>>::Array as Apply<
+                    <<(<f32 as Element<I::BitShape>>::Array, f32) as Element<O::BitShape>>::Array as Apply<
                         InputImage,
                         PatchShape,
                         Preprocessor,
@@ -196,7 +205,7 @@ where
                 )
             })
             .collect();
-        (new_examples, layer_weights, aux_weights)
+        (new_examples, (layer_weights, aux_weights))
     }
 }
 

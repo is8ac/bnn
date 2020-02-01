@@ -44,16 +44,13 @@ where
 }
 
 /// bit input, float weights and float softmax loss.
-pub trait FloatLoss<I: BitArray, C: Shape>
-where
-    u32: Element<C>,
-{
+pub trait FloatLoss<I: BitArray, const C: usize> {
     fn loss(&self, input: &I, true_class: usize) -> f32;
     ///// Given a list of the number of times that this input is of each class, compute the loss.
-    fn counts_loss(&self, input: &I, classes_counts: &<u32 as Element<C>>::Array) -> f32;
+    fn counts_loss(&self, input: &I, classes_counts: &[u32; C]) -> f32;
 }
 
-impl<I: BitArray + BFMA, const C: usize> FloatLoss<I, [(); C]>
+impl<I: BitArray + BFMA, const C: usize> FloatLoss<I, C>
     for [(<f32 as Element<I::BitShape>>::Array, f32); C]
 where
     f32: Element<I::BitShape>,

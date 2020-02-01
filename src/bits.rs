@@ -1,6 +1,6 @@
-use crate::layer::Apply;
 /// the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
+use crate::layer::Apply;
 use crate::shape::{Element, Shape, ZipMap};
 use crate::unary::Preprocess;
 use rand::distributions::{Distribution, Standard};
@@ -21,83 +21,6 @@ impl<I, O, T: IndexedFlipBit<I, O>, const L: usize> IndexedFlipBit<I, [O; L]> fo
     }
 }
 
-pub trait IncrementCooccurrenceMatrix<T: BitArray>
-where
-    Self: BitArray,
-    u32: Element<Self::BitShape>,
-    [(usize, <u32 as Element<Self::BitShape>>::Array); 2]: Element<T::BitShape>,
-    u32: Element<T::BitShape>,
-{
-    fn increment_cooccurrence_matrix(
-        &self,
-        counters_matrix: &mut <[(usize, <u32 as Element<Self::BitShape>>::Array); 2] as Element<
-            T::BitShape,
-        >>::Array,
-        target: &T,
-    );
-}
-
-impl<I: IncrementCooccurrenceMatrix<T> + BitArray, T: BitArray + BitArrayOPs, const L: usize>
-    IncrementCooccurrenceMatrix<[T; L]> for I
-where
-    bool: Element<T::BitShape>,
-    u32: Element<T::BitShape>,
-    bool: Element<I::BitShape>,
-    u32: Element<I::BitShape>,
-    [(usize, <u32 as Element<Self::BitShape>>::Array); 2]: Element<T::BitShape>,
-    [T; L]: Default,
-{
-    fn increment_cooccurrence_matrix(
-        &self,
-        counters_matrix: &mut [<[(usize, <u32 as Element<Self::BitShape>>::Array); 2] as Element<T::BitShape>>::Array; L],
-        target: &[T; L],
-    ) {
-        for w in 0..L {
-            self.increment_cooccurrence_matrix(&mut counters_matrix[w], &target[w]);
-        }
-    }
-}
-
-/// Increment the elements of a matrix of counters to count the number of times that the bits are different.
-pub trait IncrementHammingDistanceMatrix<T: BitArray>
-where
-    Self: BitArray,
-    u32: Element<Self::BitShape>,
-    <u32 as Element<Self::BitShape>>::Array: Element<T::BitShape>,
-    u32: Element<T::BitShape>,
-{
-    fn increment_hamming_distance_matrix(
-        &self,
-        counters_matrix: &mut <<u32 as Element<Self::BitShape>>::Array as Element<T::BitShape>>::Array,
-        target: &T,
-    );
-}
-
-impl<
-        I: IncrementHammingDistanceMatrix<T> + BitArray,
-        T: BitArray + BitArrayOPs,
-        const L: usize,
-    > IncrementHammingDistanceMatrix<[T; L]> for I
-where
-    bool: Element<T::BitShape>,
-    u32: Element<T::BitShape>,
-    bool: Element<I::BitShape>,
-    u32: Element<I::BitShape>,
-    <u32 as Element<Self::BitShape>>::Array: Element<T::BitShape>,
-    [T; L]: Default,
-{
-    fn increment_hamming_distance_matrix(
-        &self,
-        counters_matrix: &mut [<<u32 as Element<Self::BitShape>>::Array as Element<T::BitShape>>::Array;
-                 L],
-        target: &[T; L],
-    ) {
-        for w in 0..L {
-            self.increment_hamming_distance_matrix(&mut counters_matrix[w], &target[w]);
-        }
-    }
-}
-
 pub trait Classify<Example, Patch, ClassesShape>
 where
     f32: Element<ClassesShape>,
@@ -107,33 +30,8 @@ where
     fn max_class(&self, input: &Example) -> usize;
 }
 
-//impl<I: Distance, const C: usize> Classify<I, (), [(); C]> for [I; C]
-//where
-//    [u32; C]: Default,
-//{
-//    fn activations(&self, example: &I) -> [u32; C] {
-//        let mut target = <[u32; C]>::default();
-//        for c in 0..C {
-//            target[c] = self[c].distance(&example);
-//        }
-//        target
-//    }
-//    fn max_class(&self, input: &I) -> usize {
-//        let activations = <Self as Classify<I, (), [(); C]>>::activations(self, input);
-//        let mut max_act = 0_u32;
-//        let mut max_class = 0_usize;
-//        for c in 0..C {
-//            if activations[c] >= max_act {
-//                max_act = activations[c];
-//                max_class = c;
-//            }
-//        }
-//        max_class
-//    }
-//}
-
 impl<I: BitArray + BFMA, const C: usize> Classify<I, (), [(); C]>
-    for [<f32 as Element<I::BitShape>>::Array; C]
+    for [(<f32 as Element<I::BitShape>>::Array, f32); C]
 where
     [f32; C]: Default,
     f32: Element<I::BitShape>,
@@ -141,7 +39,7 @@ where
     fn activations(&self, example: &I) -> [f32; C] {
         let mut target = <[f32; C]>::default();
         for c in 0..C {
-            target[c] = example.bfma(&self[c]);
+            target[c] = example.bfma(&self[c].0) + self[c].1;
         }
         target
     }
@@ -159,13 +57,13 @@ where
     }
 }
 
-impl<T: BitMul<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
-    Apply<I, (), Preprocessor, O> for T
-{
-    fn apply(&self, input: &I) -> O {
-        self.bit_mul(&Preprocessor::preprocess(input))
-    }
-}
+//impl<T: BitMul<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
+//    Apply<I, (), Preprocessor, O> for T
+//{
+//    fn apply(&self, input: &I) -> O {
+//        self.bit_mul(&Preprocessor::preprocess(input))
+//    }
+//}
 
 /// Bits input, bits matrix, and bits output
 pub trait BitMul<I, O> {
@@ -378,6 +276,14 @@ where
             target[i] = self[i].bit_or(&rhs[i]);
         }
         target
+    }
+}
+
+impl<T: BFBVM<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
+    Apply<I, (), Preprocessor, O> for T
+{
+    fn apply(&self, input: &I) -> O {
+        self.bfbvm(&Preprocessor::preprocess(input))
     }
 }
 
@@ -672,48 +578,14 @@ macro_rules! for_uints {
                 self.0.hash(state);
             }
         }
-        impl<I: BitArray + BitArrayOPs> IncrementHammingDistanceMatrix<$b_type> for I
-        where
-            bool: Element<I::BitShape>,
-            u32: Element<I::BitShape>,
-        {
-            fn increment_hamming_distance_matrix(
-                &self,
-                counters_matrix: &mut [<u32 as Element<Self::BitShape>>::Array; <$b_type>::BIT_LEN],
-                target: &$b_type,
-            ) {
-                for i in 0..<$b_type>::BIT_LEN {
-                    self.flipped_increment_counters(target.bit(i), &mut counters_matrix[i]);
-                }
-            }
-        }
-        impl<I: BitArray + BitArrayOPs> IncrementCooccurrenceMatrix<$b_type> for I
-        where
-            bool: Element<I::BitShape>,
-            u32: Element<I::BitShape>,
-        {
-            fn increment_cooccurrence_matrix(
-                &self,
-                counters_matrix: &mut [[(usize, <u32 as Element<Self::BitShape>>::Array); 2];
-                         <$b_type>::BIT_LEN],
-                target: &$b_type,
-            ) {
-                for i in 0..<$b_type>::BIT_LEN {
-                    counters_matrix[i][!target.bit(i) as usize].0 += 1;
-                    self.increment_counters(&mut counters_matrix[i][!target.bit(i) as usize].1);
-                }
-            }
-        }
     };
 }
 
-//for_uints!(b2, u8, 2, "{:02b}");
-//for_uints!(b4, u8, 4, "{:04b}");
 for_uints!(b8, u8, 8, "{:08b}");
 for_uints!(b16, u16, 16, "{:016b}");
 for_uints!(b32, u32, 32, "{:032b}");
-for_uints!(b64, u64, 64, "{:064b}");
-for_uints!(b128, u128, 128, "{:0128b}");
+//for_uints!(b64, u64, 64, "{:064b}");
+//for_uints!(b128, u128, 128, "{:0128b}");
 
 pub trait AndOr {
     type Val;
@@ -726,19 +598,5 @@ impl<T: BitArray + BitStates + ArrayBitAnd + ArrayBitOr> AndOr for [T; 2] {
     const IDENTITY: Self = [T::ONES, T::ZEROS];
     fn andor(&self, val: &Self::Val) -> Self {
         [self[0].bit_and(val), self[1].bit_or(val)]
-    }
-}
-
-pub trait PrintTritWord {
-    fn print_trit_array(&self);
-}
-
-impl<T: PrintTritWord, const L: usize> PrintTritWord for [T; L] {
-    fn print_trit_array(&self) {
-        print!("[");
-        for i in 0..L {
-            self[i].print_trit_array();
-        }
-        print!("]");
     }
 }

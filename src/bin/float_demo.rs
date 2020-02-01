@@ -32,42 +32,61 @@ fn main() {
         ([b8(0b0101_1100), b8(0b1100_0000)], [0, 0, 0, 90, 0]),
         ([b8(0b1110_0010), b8(0b0101_0101)], [0, 1, 0, 0, 70]),
     ];
-    let seed_losses: Vec<f64> = (0..10)
-        .map(|seed| {
-            let mut rng = Hc128Rng::seed_from_u64(seed);
-            let mut params = <(WeightsType, ObjectiveType)>::default();
+    let mutations = {
+        let mut rng = Hc128Rng::seed_from_u64(0);
+        let mut params = <(WeightsType, ObjectiveType)>::default();
 
-            let mut cur_sum_loss: f64 = inputs
+        let mut cur_sum_loss: f64 = inputs
+            .iter()
+            .map(|(input, counts)| params.1.counts_loss(&params.0.bfbvm(input), counts) as f64)
+            .sum();
+        dbg!(cur_sum_loss / inputs.len() as f64);
+
+        let normal = Normal::new(0f32, 0.03).unwrap();
+        let mut noise: Vec<f32> = (0..WeightsType::NOISE_LEN + ObjectiveType::NOISE_LEN + ITERS)
+            .map(|_| normal.sample(&mut rng))
+            .collect();
+        let mut n_updates = 0;
+        let mut mutations = Vec::<usize>::new();
+        for i in 0..ITERS {
+            let perturbed_params = params.mutate(&noise[i..]);
+            let new_sum_loss: f64 = inputs
                 .iter()
-                .map(|(input, counts)| params.1.counts_loss(&params.0.bfbvm(input), counts) as f64)
+                .map(|(input, counts)| {
+                    let hidden = perturbed_params.0.bfbvm(input);
+                    perturbed_params.1.counts_loss(&hidden, counts) as f64
+                })
                 .sum();
-            dbg!(cur_sum_loss / inputs.len() as f64);
-
-            let normal = Normal::new(0f32, 0.03).unwrap();
-            let mut noise: Vec<f32> = (0..WeightsType::NOISE_LEN + ObjectiveType::NOISE_LEN)
-                .map(|_| normal.sample(&mut rng))
-                .collect();
-            let mut n_updates = 0;
-            for i in 0..ITERS {
-                noise.push(normal.sample(&mut rng));
-                let perturbed_params = params.mutate(&noise[i..]);
-                let new_sum_loss: f64 = inputs
-                    .iter()
-                    .map(|(input, counts)| {
-                        let hidden = perturbed_params.0.bfbvm(input);
-                        perturbed_params.1.counts_loss(&hidden, counts) as f64
-                    })
-                    .sum();
-                if new_sum_loss < cur_sum_loss {
-                    println!("{} {}", i, new_sum_loss / inputs.len() as f64);
-                    cur_sum_loss = new_sum_loss;
-                    params = perturbed_params;
-                    n_updates += 1;
-                }
+            if new_sum_loss < cur_sum_loss {
+                println!("{} {}", i, new_sum_loss / inputs.len() as f64);
+                cur_sum_loss = new_sum_loss;
+                params = perturbed_params;
+                mutations.push(i);
+                n_updates += 1;
             }
-            dbg!(n_updates);
-            cur_sum_loss / inputs.len() as f64
-        })
+        }
+        dbg!(n_updates);
+        let acc = cur_sum_loss / inputs.len() as f64;
+        dbg!(acc);
+        mutations
+    };
+
+    let normal = Normal::new(0f32, 0.03).unwrap();
+    let mut rng = Hc128Rng::seed_from_u64(0);
+    let mut noise: Vec<f32> = (0..WeightsType::NOISE_LEN + ObjectiveType::NOISE_LEN + ITERS)
+        .map(|_| normal.sample(&mut rng))
         .collect();
-    dbg!(seed_losses);
+    let reconstituted_params = mutations.iter().fold(
+        <(WeightsType, ObjectiveType)>::default(),
+        |prms, mutation| prms.mutate(&noise[*mutation..]),
+    );
+    let mut cur_sum_loss: f64 = inputs
+        .iter()
+        .map(|(input, counts)| {
+            reconstituted_params
+                .1
+                .counts_loss(&reconstituted_params.0.bfbvm(input), counts) as f64
+        })
+        .sum();
+    dbg!(cur_sum_loss / inputs.len() as f64);
 }

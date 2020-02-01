@@ -1,7 +1,7 @@
 use crate::bits::{AndOr, BitWord, Classify, Distance};
 use crate::count::IncrementCounters;
 use crate::layer::Apply;
-use crate::shape::{Merge, Shape, ZipMap};
+use crate::shape::{Element, Merge, Shape, ZipMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -35,6 +35,7 @@ impl<P: BitWord, const X: usize, const Y: usize> fmt::Display for StaticImage<[[
         Ok(())
     }
 }
+
 impl<const X: usize, const Y: usize> fmt::Display for StaticImage<[[[u8; 3]; Y]; X]> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for b in 0..3 {
@@ -269,5 +270,42 @@ where
             }
         }
         max_class
+    }
+}
+
+pub trait PatchFold<B, PatchShape: Shape>
+where
+    Self: Image2D,
+    Self::PixelType: Element<PatchShape>,
+{
+    fn patch_fold<F: Fn(B, &<Self::PixelType as Element<PatchShape>>::Array) -> B>(
+        &self,
+        acc: B,
+        fold_fn: F,
+    ) -> B;
+}
+
+impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usize>
+    PatchFold<B, [[(); PY]; PX]> for StaticImage<[[P; X]; Y]>
+where
+    [[P; PY]; PX]: Default,
+{
+    fn patch_fold<F: Fn(B, &<P as Element<[[(); PY]; PX]>>::Array) -> B>(
+        &self,
+        mut acc: B,
+        fold_fn: F,
+    ) -> B {
+        for x in 0..(X - (PX / 2) * 2) {
+            for y in 0..(X - (PY / 2) * 2) {
+                let mut patch = <[[P; PY]; PX]>::default();
+                for px in 0..PX {
+                    for py in 0..PY {
+                        patch[px][py] = self.image[x + px][y + py];
+                    }
+                }
+                acc = fold_fn(acc, &patch);
+            }
+        }
+        acc
     }
 }

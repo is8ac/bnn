@@ -1,49 +1,11 @@
 use crate::bits::{BitArray, BitArrayOPs, Distance, IncrementFracCounters};
 use crate::count::ElementwiseAdd;
-use crate::image2d::{Image2D, StaticImage};
+use crate::image2d::{Image2D, PatchFold};
 use crate::shape::{Element, Map, Shape};
 use crate::unary::Preprocess;
-//use crate::weight::Objective;
 use rand::distributions;
 use rand::Rng;
 use rayon::prelude::*;
-
-pub trait PatchFold<B, PatchShape: Shape>
-where
-    Self: Image2D,
-    Self::PixelType: Element<PatchShape>,
-{
-    fn patch_fold<F: Fn(B, &<Self::PixelType as Element<PatchShape>>::Array) -> B>(
-        &self,
-        acc: B,
-        fold_fn: F,
-    ) -> B;
-}
-
-impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usize>
-    PatchFold<B, [[(); PY]; PX]> for StaticImage<[[P; X]; Y]>
-where
-    [[P; PY]; PX]: Default,
-{
-    fn patch_fold<F: Fn(B, &<P as Element<[[(); PY]; PX]>>::Array) -> B>(
-        &self,
-        mut acc: B,
-        fold_fn: F,
-    ) -> B {
-        for x in 0..(X - (PX / 2) * 2) {
-            for y in 0..(X - (PY / 2) * 2) {
-                let mut patch = <[[P; PY]; PX]>::default();
-                for px in 0..PX {
-                    for py in 0..PY {
-                        patch[px][py] = self.image[x + px][y + py];
-                    }
-                }
-                acc = fold_fn(acc, &patch);
-            }
-        }
-        acc
-    }
-}
 
 pub trait ImagePatchLloyds<Image: Image2D, PatchShape, Preprocessor>
 where
