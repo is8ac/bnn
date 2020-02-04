@@ -69,7 +69,7 @@ pub mod cifar {
     pub fn load_images_from_base(
         base_path: &Path,
         n: usize,
-    ) -> Vec<(StaticImage<[[[u8; 3]; 32]; 32]>, usize)> {
+    ) -> Vec<(StaticImage<[u8; 3], 32, 32>, usize)> {
         if n > 50000 {
             panic!("n must be <= 50,000");
         }
@@ -80,7 +80,7 @@ pub mod cifar {
 
                 let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
                 let mut label: [u8; 1] = [0; 1];
-                let mut images: Vec<(StaticImage<[[[u8; 3]; 32]; 32]>, usize)> = Vec::new();
+                let mut images: Vec<(StaticImage<[u8; 3], 32, 32>, usize)> = Vec::new();
                 for _ in 0..10000 {
                     file.read_exact(&mut label).expect("can't read label");
                     file.read_exact(&mut image_bytes)

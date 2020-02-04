@@ -6,19 +6,22 @@ use crate::shape::{Element, Map, Merge, Shape, ZipMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-pub struct StaticImage<Image> {
-    pub image: Image,
+pub struct StaticImage<P, const X: usize, const Y: usize> {
+    pub image: [[P; Y]; X],
 }
 
-impl<Image: Default> Default for StaticImage<Image> {
+impl<P, const X: usize, const Y: usize> Default for StaticImage<P, X, Y>
+where
+    [[P; Y]; X]: Default,
+{
     fn default() -> Self {
         StaticImage {
-            image: Image::default(),
+            image: <[[P; Y]; X]>::default(),
         }
     }
 }
 
-impl<P: fmt::Debug, const X: usize, const Y: usize> fmt::Debug for StaticImage<[[P; Y]; X]> {
+impl<P: fmt::Debug, const X: usize, const Y: usize> fmt::Debug for StaticImage<P, X, Y> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for y in 0..Y {
             for x in 0..X {
@@ -30,7 +33,7 @@ impl<P: fmt::Debug, const X: usize, const Y: usize> fmt::Debug for StaticImage<[
     }
 }
 
-impl<P: BitWord, const X: usize, const Y: usize> fmt::Display for StaticImage<[[P; Y]; X]> {
+impl<P: BitWord, const X: usize, const Y: usize> fmt::Display for StaticImage<P, X, Y> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for b in 0..P::BIT_LEN {
             for y in 0..Y {
@@ -45,7 +48,7 @@ impl<P: BitWord, const X: usize, const Y: usize> fmt::Display for StaticImage<[[
     }
 }
 
-impl<const X: usize, const Y: usize> fmt::Display for StaticImage<[[[u8; 3]; Y]; X]> {
+impl<const X: usize, const Y: usize> fmt::Display for StaticImage<[u8; 3], X, Y> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for b in 0..3 {
             for y in 0..Y {
@@ -69,13 +72,12 @@ impl<
         const Y: usize,
         const PX: usize,
         const PY: usize,
-    > Apply<StaticImage<[[IP; Y]; X]>, [[(); PY]; PX], Preprocessor, StaticImage<[[OP; Y]; X]>>
-    for T
+    > Apply<StaticImage<IP, X, Y>, [[(); PY]; PX], Preprocessor, StaticImage<OP, X, Y>> for T
 where
     [[IP; PY]; PX]: Default,
     [[OP; Y]; X]: Default,
 {
-    fn apply(&self, image: &StaticImage<[[IP; Y]; X]>) -> StaticImage<[[OP; Y]; X]> {
+    fn apply(&self, image: &StaticImage<IP, X, Y>) -> StaticImage<OP, X, Y> {
         let mut target = StaticImage {
             image: <[[OP; Y]; X]>::default(),
         };
@@ -94,7 +96,7 @@ where
     }
 }
 
-impl<P, const X: usize, const Y: usize> Hash for StaticImage<[[P; Y]; X]>
+impl<P, const X: usize, const Y: usize> Hash for StaticImage<P, X, Y>
 where
     [[P; Y]; X]: Hash,
 {
@@ -104,7 +106,7 @@ where
 }
 
 impl<Pixel: Copy, P, Accumulator, const X: usize, const Y: usize>
-    IncrementCounters<[[(); 3]; 3], P, Accumulator> for StaticImage<[[Pixel; Y]; X]>
+    IncrementCounters<[[(); 3]; 3], P, Accumulator> for StaticImage<Pixel, X, Y>
 where
     [[Pixel; 3]; 3]: Default + IncrementCounters<(), P, Accumulator>,
 {
@@ -131,11 +133,11 @@ pub trait Concat<A, B> {
 }
 
 impl<A, B, O: Merge<A, B>, const X: usize, const Y: usize>
-    Concat<StaticImage<[[A; Y]; X]>, StaticImage<[[B; Y]; X]>> for StaticImage<[[O; Y]; X]>
+    Concat<StaticImage<A, X, Y>, StaticImage<B, X, Y>> for StaticImage<O, X, Y>
 where
     [[(); Y]; X]: ZipMap<A, B, O>,
 {
-    fn concat(a: &StaticImage<[[A; Y]; X]>, b: &StaticImage<[[B; Y]; X]>) -> Self {
+    fn concat(a: &StaticImage<A, X, Y>, b: &StaticImage<B, X, Y>) -> Self {
         StaticImage {
             image: <[[(); Y]; X] as ZipMap<A, B, O>>::zip_map(&a.image, &b.image, |a, b| {
                 O::merge(a, b)
@@ -152,18 +154,18 @@ where
     type ImageShape;
 }
 
-impl<P, const X: usize, const Y: usize> Image2D for StaticImage<[[P; Y]; X]> {
+impl<P, const X: usize, const Y: usize> Image2D for StaticImage<P, X, Y> {
     type PixelType = P;
-    type ImageShape = StaticImage<[[(); Y]; X]>;
+    type ImageShape = StaticImage<(), X, Y>;
 }
 
-impl<const X: usize, const Y: usize> Shape for StaticImage<[[(); Y]; X]> {
+impl<const X: usize, const Y: usize> Shape for StaticImage<(), X, Y> {
     const N: usize = X * Y;
     type Index = [usize; 2];
 }
 
-impl<P, const X: usize, const Y: usize> Element<StaticImage<[[(); Y]; X]>> for P {
-    type Array = StaticImage<[[P; X]; Y]>;
+impl<P, const X: usize, const Y: usize> Element<StaticImage<(), X, Y>> for P {
+    type Array = StaticImage<P, X, Y>;
 }
 
 impl<P, const X: usize, const Y: usize> Image2D for [[P; Y]; X] {
@@ -184,6 +186,12 @@ pub trait BitPool {
     fn andor_pool(input: &Self::Input) -> Self;
 }
 
+pub trait AvgPool {
+    type Pooled;
+    fn avg_pool(&self) -> Self::Pooled;
+}
+
+/*
 macro_rules! andorpool {
     ($x_size:expr, $y_size:expr) => {
         impl<Pixel: Copy + AndOr + Default> BitPool
@@ -216,10 +224,6 @@ andorpool!(16, 16);
 andorpool!(8, 8);
 andorpool!(4, 4);
 
-pub trait AvgPool {
-    type Pooled;
-    fn avg_pool(&self) -> Self::Pooled;
-}
 
 macro_rules! impl_avgpool {
     ($x_size:expr, $y_size:expr) => {
@@ -252,9 +256,10 @@ impl_avgpool!(32, 32);
 impl_avgpool!(16, 16);
 impl_avgpool!(8, 8);
 impl_avgpool!(4, 4);
+*/
 
 impl<P: BitArray + IncrementFracCounters, const X: usize, const Y: usize, const C: usize>
-    Classify<StaticImage<[[P; Y]; X]>, [(); C]> for [<f32 as Element<P::BitShape>>::Array; C]
+    Classify<StaticImage<P, X, Y>, [(); C]> for [<f32 as Element<P::BitShape>>::Array; C]
 where
     Self: FFFVMM<[f32; C], InputType = <f32 as Element<P::BitShape>>::Array>,
     [f32; C]: Default,
@@ -263,7 +268,7 @@ where
     u32: Element<P::BitShape>,
     <u32 as Element<P::BitShape>>::Array: Default,
 {
-    fn max_class(&self, input: &StaticImage<[[P; Y]; X]>) -> usize {
+    fn max_class(&self, input: &StaticImage<P, X, Y>) -> usize {
         let channel_counts = {
             let mut counts = <(usize, <u32 as Element<P::BitShape>>::Array)>::default();
             for x in 0..X {
@@ -305,7 +310,7 @@ where
 }
 
 impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usize>
-    PatchFold<B, [[(); PY]; PX]> for StaticImage<[[P; X]; Y]>
+    PatchFold<B, [[(); PY]; PX]> for StaticImage<P, X, Y>
 where
     [[P; PY]; PX]: Default,
 {
@@ -341,14 +346,14 @@ where
 
 impl<
         I,
-        O: Element<StaticImage<[[(); Y]; X]>, Array = StaticImage<[[O; Y]; X]>>,
+        O: Element<StaticImage<(), X, Y>, Array = StaticImage<O, X, Y>>,
         const X: usize,
         const Y: usize,
-    > PixelMap<O> for StaticImage<[[I; Y]; X]>
+    > PixelMap<O> for StaticImage<I, X, Y>
 where
-    StaticImage<[[O; Y]; X]>: Default,
+    StaticImage<O, X, Y>: Default,
 {
-    fn pixel_map<F: Fn(&I) -> O>(&self, map_fn: F) -> StaticImage<[[O; Y]; X]> {
+    fn pixel_map<F: Fn(&I) -> O>(&self, map_fn: F) -> StaticImage<O, X, Y> {
         let mut target = StaticImage::default();
         for x in 0..X {
             for y in 0..Y {
@@ -356,5 +361,33 @@ where
             }
         }
         target
+    }
+}
+
+pub trait GlobalPool<O> {
+    fn global_pool(&self) -> O;
+}
+
+impl<P: BitArray + IncrementFracCounters, const X: usize, const Y: usize>
+    GlobalPool<<f32 as Element<P::BitShape>>::Array> for StaticImage<P, X, Y>
+where
+    u32: Element<P::BitShape>,
+    f32: Element<P::BitShape>,
+    <u32 as Element<P::BitShape>>::Array: Default,
+    P::BitShape: Map<u32, f32>,
+{
+    fn global_pool(&self) -> <f32 as Element<P::BitShape>>::Array {
+        let mut counters = <(usize, <u32 as Element<P::BitShape>>::Array)>::default();
+        for x in 0..X {
+            for y in 0..Y {
+                self.image[x][y].increment_frac_counters(&mut counters);
+            }
+        }
+        let n = counters.0 as f32;
+        let float_hidden =
+            <<P as BitArray>::BitShape as Map<u32, f32>>::map(&counters.1, |&count| {
+                count as f32 / n
+            });
+        float_hidden
     }
 }

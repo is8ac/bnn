@@ -17,8 +17,8 @@ use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-pub trait Apply<Example, Patch, Preprocessor, Output> {
-    fn apply(&self, input: &Example) -> Output;
+pub trait Apply<Input, Patch, Preprocessor, Output> {
+    fn apply(&self, input: &Input) -> Output;
 }
 
 #[derive(Copy, Clone, Debug)]
