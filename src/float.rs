@@ -1,7 +1,71 @@
-use crate::bits::{BitArray, BFMA};
+use crate::bits::{BitArray, Classify, BFMA};
 use crate::shape::{Element, Shape};
 use rand_core::RngCore;
 use rand_distr::{Distribution, Normal};
+
+impl<I: FMA, const C: usize> Classify<I, [(); C]> for [I; C]
+where
+    [f32; C]: Default,
+{
+    fn max_class(&self, input: &I) -> usize {
+        let mut max_act = 0_f32;
+        let mut max_class = 0_usize;
+        for c in 0..C {
+            let act = input.fma(&self[c]);
+            if act >= max_act {
+                max_act = act;
+                max_class = c;
+            }
+        }
+        max_class
+    }
+}
+
+pub trait FMA {
+    fn fma(&self, rhs: &Self) -> f32;
+}
+
+impl FMA for f32 {
+    fn fma(&self, &rhs: &f32) -> f32 {
+        self * rhs
+    }
+}
+
+impl<T: FMA, const L: usize> FMA for [T; L] {
+    fn fma(&self, rhs: &[T; L]) -> f32 {
+        let mut target = 0f32;
+        for i in 0..L {
+            target += self[i].fma(&rhs[i]);
+        }
+        target
+    }
+}
+
+pub trait FFFVMM<O> {
+    type InputType;
+    fn fffvmm(&self, input: &Self::InputType) -> O;
+}
+
+impl<T: FMA> FFFVMM<f32> for T {
+    type InputType = T;
+    fn fffvmm(&self, input: &T) -> f32 {
+        self.fma(input)
+    }
+}
+
+impl<I, O, T: FFFVMM<O, InputType = I>, const L: usize> FFFVMM<[O; L]> for [T; L]
+where
+    [O; L]: Default,
+{
+    type InputType = I;
+    fn fffvmm(&self, input: &I) -> [O; L] {
+        let mut target = <[O; L]>::default();
+        for i in 0..L {
+            target[i] = self[i].fffvmm(input);
+        }
+        target
+    }
+}
 
 // bit input, float weights and float output.
 pub trait BFFVM<S: Shape>
@@ -40,6 +104,30 @@ where
             target[i] = self.float_mul(&weights[i]);
         }
         target
+    }
+}
+
+pub trait SoftMaxLoss {
+    fn softmax_loss(&self, true_class: usize) -> f32;
+}
+
+impl<const C: usize> SoftMaxLoss for [f32; C]
+where
+    [f32; C]: Default,
+{
+    fn softmax_loss(&self, true_class: usize) -> f32 {
+        let mut exp = <[f32; C]>::default();
+        let mut sum_exp = 0f32;
+        for c in 0..C {
+            exp[c] = self[c].exp();
+            sum_exp += exp[c];
+        }
+        let mut sum_loss = 0f32;
+        for c in 0..C {
+            let scaled = exp[c] / sum_exp;
+            sum_loss += (scaled - (c == true_class) as u8 as f32).powi(2);
+        }
+        sum_loss
     }
 }
 

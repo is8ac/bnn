@@ -1,12 +1,21 @@
-use crate::bits::{AndOr, BitWord, Classify, Distance};
+use crate::bits::{AndOr, BitArray, BitWord, Classify, IncrementFracCounters};
 use crate::count::IncrementCounters;
+use crate::float::FFFVMM;
 use crate::layer::Apply;
-use crate::shape::{Element, Merge, Shape, ZipMap};
+use crate::shape::{Element, Map, Merge, Shape, ZipMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
 pub struct StaticImage<Image> {
     pub image: Image,
+}
+
+impl<Image: Default> Default for StaticImage<Image> {
+    fn default() -> Self {
+        StaticImage {
+            image: Image::default(),
+        }
+    }
 }
 
 impl<P: fmt::Debug, const X: usize, const Y: usize> fmt::Debug for StaticImage<[[P; Y]; X]> {
@@ -145,7 +154,16 @@ where
 
 impl<P, const X: usize, const Y: usize> Image2D for StaticImage<[[P; Y]; X]> {
     type PixelType = P;
-    type ImageShape = [[(); Y]; X];
+    type ImageShape = StaticImage<[[(); Y]; X]>;
+}
+
+impl<const X: usize, const Y: usize> Shape for StaticImage<[[(); Y]; X]> {
+    const N: usize = X * Y;
+    type Index = [usize; 2];
+}
+
+impl<P, const X: usize, const Y: usize> Element<StaticImage<[[(); Y]; X]>> for P {
+    type Array = StaticImage<[[P; X]; Y]>;
 }
 
 impl<P, const X: usize, const Y: usize> Image2D for [[P; Y]; X] {
@@ -235,34 +253,35 @@ impl_avgpool!(16, 16);
 impl_avgpool!(8, 8);
 impl_avgpool!(4, 4);
 
-impl<
-        T: Classify<IP, (), [(); C]>,
-        IP: Distance,
-        const X: usize,
-        const Y: usize,
-        const C: usize,
-    > Classify<StaticImage<[[IP; Y]; X]>, (), [(); C]> for T
+impl<P: BitArray + IncrementFracCounters, const X: usize, const Y: usize, const C: usize>
+    Classify<StaticImage<[[P; Y]; X]>, [(); C]> for [<f32 as Element<P::BitShape>>::Array; C]
 where
-    IP: Default + Copy,
+    Self: FFFVMM<[f32; C], InputType = <f32 as Element<P::BitShape>>::Array>,
     [f32; C]: Default,
+    P::BitShape: Map<u32, f32>,
+    f32: Element<P::BitShape>,
+    u32: Element<P::BitShape>,
+    <u32 as Element<P::BitShape>>::Array: Default,
 {
-    fn activations(&self, StaticImage { image }: &StaticImage<[[IP; Y]; X]>) -> [f32; C] {
-        let mut sums = <[f32; C]>::default();
-        for x in 0..X - 2 {
-            for y in 0..Y - 2 {
-                let activations = self.activations(&image[x][y]);
-                for c in 0..C {
-                    sums[c] += activations[c];
+    fn max_class(&self, input: &StaticImage<[[P; Y]; X]>) -> usize {
+        let channel_counts = {
+            let mut counts = <(usize, <u32 as Element<P::BitShape>>::Array)>::default();
+            for x in 0..X {
+                for y in 0..Y {
+                    input.image[x][y].increment_frac_counters(&mut counts);
                 }
             }
-        }
-        sums
-    }
-    fn max_class(&self, input: &StaticImage<[[IP; Y]; X]>) -> usize {
-        let activations =
-            <T as Classify<StaticImage<[[IP; Y]; X]>, (), [(); C]>>::activations(self, input);
+            counts
+        };
+        let n = channel_counts.0 as f32;
+        let float_hidden =
+            <<P as BitArray>::BitShape as Map<u32, f32>>::map(&channel_counts.1, |&count| {
+                count as f32 / n
+            });
+        let activations = self.fffvmm(&float_hidden);
         let mut max_act = 0_f32;
         let mut max_class = 0_usize;
+
         for c in 0..C {
             if activations[c] >= max_act {
                 max_act = activations[c];
@@ -307,5 +326,35 @@ where
             }
         }
         acc
+    }
+}
+
+pub trait PixelMap<O: Element<Self::ImageShape>>
+where
+    Self: Image2D,
+{
+    fn pixel_map<F: Fn(&Self::PixelType) -> O>(
+        &self,
+        map_fn: F,
+    ) -> <O as Element<Self::ImageShape>>::Array;
+}
+
+impl<
+        I,
+        O: Element<StaticImage<[[(); Y]; X]>, Array = StaticImage<[[O; Y]; X]>>,
+        const X: usize,
+        const Y: usize,
+    > PixelMap<O> for StaticImage<[[I; Y]; X]>
+where
+    StaticImage<[[O; Y]; X]>: Default,
+{
+    fn pixel_map<F: Fn(&I) -> O>(&self, map_fn: F) -> StaticImage<[[O; Y]; X]> {
+        let mut target = StaticImage::default();
+        for x in 0..X {
+            for y in 0..Y {
+                target.image[x][y] = map_fn(&self.image[x][y]);
+            }
+        }
+        target
     }
 }

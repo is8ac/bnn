@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 macro_rules! to_unary {
     ($name:ident, $b_type:ty, $len:expr) => {
-        fn $name(input: u8) -> $b_type {
+        pub fn $name(input: u8) -> $b_type {
             !(<$b_type>::ONES << (input / (256 / $len) as u8) as usize)
         }
     };

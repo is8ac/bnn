@@ -21,49 +21,17 @@ impl<I, O, T: IndexedFlipBit<I, O>, const L: usize> IndexedFlipBit<I, [O; L]> fo
     }
 }
 
-pub trait Classify<Example, Patch, ClassesShape>
-where
-    f32: Element<ClassesShape>,
-    ClassesShape: Shape,
-{
-    fn activations(&self, input: &Example) -> <f32 as Element<ClassesShape>>::Array;
-    fn max_class(&self, input: &Example) -> usize;
+pub trait Classify<Input, C: Shape> {
+    fn max_class(&self, input: &Input) -> usize;
 }
 
-impl<I: BitArray + BFMA, const C: usize> Classify<I, (), [(); C]>
-    for [(<f32 as Element<I::BitShape>>::Array, f32); C]
-where
-    [f32; C]: Default,
-    f32: Element<I::BitShape>,
+impl<T: BitMul<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
+    Apply<I, (), Preprocessor, O> for T
 {
-    fn activations(&self, example: &I) -> [f32; C] {
-        let mut target = <[f32; C]>::default();
-        for c in 0..C {
-            target[c] = example.bfma(&self[c].0) + self[c].1;
-        }
-        target
-    }
-    fn max_class(&self, input: &I) -> usize {
-        let activations = <Self as Classify<I, (), [(); C]>>::activations(self, input);
-        let mut max_act = 0_f32;
-        let mut max_class = 0_usize;
-        for c in 0..C {
-            if activations[c] >= max_act {
-                max_act = activations[c];
-                max_class = c;
-            }
-        }
-        max_class
+    fn apply(&self, input: &I) -> O {
+        self.bit_mul(&Preprocessor::preprocess(input))
     }
 }
-
-//impl<T: BitMul<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
-//    Apply<I, (), Preprocessor, O> for T
-//{
-//    fn apply(&self, input: &I) -> O {
-//        self.bit_mul(&Preprocessor::preprocess(input))
-//    }
-//}
 
 /// Bits input, bits matrix, and bits output
 pub trait BitMul<I, O> {
@@ -279,13 +247,13 @@ where
     }
 }
 
-impl<T: BFBVM<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
-    Apply<I, (), Preprocessor, O> for T
-{
-    fn apply(&self, input: &I) -> O {
-        self.bfbvm(&Preprocessor::preprocess(input))
-    }
-}
+//impl<T: BFBVM<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
+//    Apply<I, (), Preprocessor, O> for T
+//{
+//    fn apply(&self, input: &I) -> O {
+//        self.bfbvm(&Preprocessor::preprocess(input))
+//    }
+//}
 
 /// Bit Float Bit Vector Multiply
 /// Takes bits input, float matrix, and returns bit array output.

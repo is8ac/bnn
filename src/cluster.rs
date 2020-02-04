@@ -24,12 +24,10 @@ where
     where
         distributions::Standard: distributions::Distribution<Self>,
     {
-        let mut centroids: Vec<Self> = (0..k).map(|_| rng.gen()).collect();
-        for e in 0..i {
+        (0..i).fold((0..k).map(|_| rng.gen()).collect(), |centroids, e| {
             dbg!(e);
-            centroids = Self::avgs(examples, &centroids);
-        }
-        centroids
+            Self::avgs(examples, &centroids)
+        })
     }
 }
 
@@ -101,74 +99,70 @@ where
     }
 }
 
-pub trait ImageCountByCentroids<Image, PatchShape, Preprocessor, C: Shape>
+/// examples is of length `n`.
+/// centroids is of length `k`.
+/// The return Vec is of length `n`.
+/// Each element is a pair of (bag, class).
+/// The Vec<(u16, u32)> bag is of length `k`.
+/// The u16 is the index into the centroids. The u32 is the number of patches in that cell.
+/// The bag will be filtered of empty cells.
+/// k must never be < 2^16 !!!
+pub trait CentroidCountPerImage<Image, PatchShape, Preprocessor, C: Shape>
 where
     Self: Sized,
     u32: Element<C>,
 {
-    fn count_by_centroids(
+    fn centroid_count_per_image(
         examples: &Vec<(Image, usize)>,
         centroids: &Vec<Self>,
-    ) -> Vec<(Self, <u32 as Element<C>>::Array)>;
+    ) -> Vec<(Vec<(u16, u32)>, usize)>;
 }
 
 impl<
         T: Sized + Distance + Copy + Send + Sync,
-        Image: PatchFold<Vec<<u32 as Element<[(); C]>>::Array>, PatchShape> + Image2D + Sync,
+        Image: PatchFold<Vec<u32>, PatchShape> + Image2D + Sync,
         PatchShape: Shape,
         Preprocessor: Preprocess<<Image::PixelType as Element<PatchShape>>::Array, Output = T>,
         const C: usize,
-    > ImageCountByCentroids<Image, PatchShape, Preprocessor, [(); C]> for T
+    > CentroidCountPerImage<Image, PatchShape, Preprocessor, [(); C]> for T
 where
-    u32: Element<[(); C], Array = [u32; C]>,
     Image::PixelType: Element<PatchShape>,
     [u32; C]: Default,
 {
-    fn count_by_centroids(
+    fn centroid_count_per_image(
         examples: &Vec<(Image, usize)>,
         centroids: &Vec<Self>,
-    ) -> Vec<(Self, <u32 as Element<[(); C]>>::Array)> {
+    ) -> Vec<(Vec<(u16, u32)>, usize)> {
+        assert!(centroids.len() < 2usize.pow(16));
         examples
             .par_iter()
-            .fold(
-                || {
-                    (0..centroids.len())
-                        .map(|_| <[u32; C]>::default())
-                        .collect()
-                },
-                |acc, (image, class)| {
-                    <Image as PatchFold<_, PatchShape>>::patch_fold(
-                        image,
-                        acc,
-                        |mut sub_acc, patch| {
-                            let preprocesed = Preprocessor::preprocess(patch);
-                            let closest_centroid = centroids
-                                .iter()
-                                .map(|centroid| preprocesed.distance(centroid))
-                                .enumerate()
-                                .min_by_key(|(_, count)| *count)
-                                .unwrap()
-                                .0;
-                            sub_acc[closest_centroid][*class] += 1;
-                            sub_acc
-                        },
-                    )
-                },
-            )
-            .reduce(
-                || {
-                    (0..centroids.len())
-                        .map(|_| <[u32; C]>::default())
-                        .collect()
-                },
-                |mut a, b| {
-                    a.elementwise_add(&b);
-                    a
-                },
-            )
-            .iter()
-            .zip(centroids.iter())
-            .map(|(counts, centroid)| (*centroid, *counts))
+            .map(|(image, class)| {
+                let counts = <Image as PatchFold<Vec<u32>, PatchShape>>::patch_fold(
+                    image,
+                    vec![0u32; centroids.len()],
+                    |mut counts, patch| {
+                        let preprocesed = Preprocessor::preprocess(patch);
+                        let closest_centroid = centroids
+                            .iter()
+                            .map(|centroid| preprocesed.distance(centroid))
+                            .enumerate()
+                            .min_by_key(|(_, count)| *count)
+                            .unwrap()
+                            .0;
+                        counts[closest_centroid] += 1;
+                        counts
+                    },
+                );
+                (
+                    counts
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, c)| *c > 0)
+                        .map(|(i, c)| (i as u16, *c))
+                        .collect(),
+                    *class,
+                )
+            })
             .collect()
     }
 }
