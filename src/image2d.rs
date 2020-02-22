@@ -63,33 +63,36 @@ impl<const X: usize, const Y: usize> fmt::Display for StaticImage<[u8; 3], X, Y>
     }
 }
 
-impl<
-        Preprocessor,
-        T: Apply<[[IP; PY]; PX], (), Preprocessor, OP>,
-        IP: Default + Copy,
-        OP,
-        const X: usize,
-        const Y: usize,
-        const PX: usize,
-        const PY: usize,
-    > Apply<StaticImage<IP, X, Y>, [[(); PY]; PX], Preprocessor, StaticImage<OP, X, Y>> for T
+pub trait Conv2D<PatchShape: Shape, O>
 where
-    [[IP; PY]; PX]: Default,
-    [[OP; Y]; X]: Default,
+    Self: Image2D,
+    Self::PixelType: Element<PatchShape>,
 {
-    fn apply(&self, image: &StaticImage<IP, X, Y>) -> StaticImage<OP, X, Y> {
-        let mut target = StaticImage {
-            image: <[[OP; Y]; X]>::default(),
-        };
+    type OutputType;
+    fn conv2d<F: Fn(&<Self::PixelType as Element<PatchShape>>::Array) -> O>(
+        &self,
+        map_fn: F,
+    ) -> Self::OutputType;
+}
+
+impl<I: Copy, O, const X: usize, const Y: usize, const PX: usize, const PY: usize>
+    Conv2D<[[(); PY]; PX], O> for StaticImage<I, X, Y>
+where
+    [[I; PY]; PX]: Default,
+    StaticImage<O, X, Y>: Default,
+{
+    type OutputType = StaticImage<O, X, Y>;
+    fn conv2d<F: Fn(&[[I; PY]; PX]) -> O>(&self, map_fn: F) -> Self::OutputType {
+        let mut target = StaticImage::<O, X, Y>::default();
         for x in 0..(X - (PX / 2) * 2) {
             for y in 0..(Y - (PY / 2) * 2) {
-                let mut patch = <[[IP; PY]; PX]>::default();
+                let mut patch = <[[I; PY]; PX]>::default();
                 for px in 0..PX {
                     for py in 0..PY {
-                        patch[px][py] = image.image[x + px][y + py]
+                        patch[px][py] = self.image[x + px][y + py];
                     }
                 }
-                target.image[x + (PX / 2)][y + (PY / 2)] = self.apply(&patch);
+                target.image[x + (PX / 2)][y + (PY / 2)] = map_fn(&patch);
             }
         }
         target
@@ -375,6 +378,7 @@ where
     f32: Element<P::BitShape>,
     <u32 as Element<P::BitShape>>::Array: Default,
     P::BitShape: Map<u32, f32>,
+    <f32 as Element<P::BitShape>>::Array: std::fmt::Debug,
 {
     fn global_pool(&self) -> <f32 as Element<P::BitShape>>::Array {
         let mut counters = <(usize, <u32 as Element<P::BitShape>>::Array)>::default();
@@ -383,11 +387,32 @@ where
                 self.image[x][y].increment_frac_counters(&mut counters);
             }
         }
-        let n = counters.0 as f32;
+        let n = counters.0 as f32 / 2f32;
         let float_hidden =
             <<P as BitArray>::BitShape as Map<u32, f32>>::map(&counters.1, |&count| {
-                count as f32 / n
+                (count as f32 - n) / n
             });
+        //dbg!(&float_hidden);
         float_hidden
+    }
+}
+
+pub trait PixelFold<B, PatchShape>
+where
+    Self: Image2D,
+{
+    fn pixel_fold<F: Fn(B, &Self::PixelType) -> B>(&self, acc: B, fold_fn: F) -> B;
+}
+
+impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usize>
+    PixelFold<B, [[(); PY]; PX]> for StaticImage<P, X, Y>
+{
+    fn pixel_fold<F: Fn(B, &P) -> B>(&self, mut acc: B, fold_fn: F) -> B {
+        for x in 0..(X - (PX / 2) * 2) {
+            for y in 0..(X - (PY / 2) * 2) {
+                acc = fold_fn(acc, &self.image[x + PX / 2][y + PY / 2]);
+            }
+        }
+        acc
     }
 }

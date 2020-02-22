@@ -26,6 +26,11 @@ impl<T: ElementwiseAdd> ElementwiseAdd for Vec<T> {
         }
     }
 }
+impl ElementwiseAdd for f32 {
+    fn elementwise_add(&mut self, other: &f32) {
+        *self += other;
+    }
+}
 
 impl ElementwiseAdd for u32 {
     fn elementwise_add(&mut self, other: &u32) {

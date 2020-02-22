@@ -1,5 +1,6 @@
 pub mod mnist {
     use crate::bits::b32;
+    use crate::image2d::StaticImage;
     use std::fs::File;
     use std::io::prelude::*;
     use std::path::Path;
@@ -39,20 +40,20 @@ pub mod mnist {
         images
     }
 
-    pub fn load_images_u8(path: &Path, size: usize) -> Vec<[[u8; 28]; 28]> {
+    pub fn load_images_u8(path: &Path, size: usize) -> Vec<StaticImage<u8, 28, 28>> {
         let mut file = File::open(&path).expect("can't open images");
         let mut header: [u8; 16] = [0; 16];
         file.read_exact(&mut header).expect("can't read header");
 
         let mut images_bytes: [u8; 784] = [0; 784];
 
-        let mut images: Vec<[[u8; 28]; 28]> = Vec::new();
+        let mut images: Vec<StaticImage<u8, 28, 28>> = Vec::new();
         for _ in 0..size {
             file.read_exact(&mut images_bytes)
                 .expect("can't read images");
-            let mut image = [[0_u8; 28]; 28];
+            let mut image = StaticImage::default();
             for p in 0..784 {
-                image[p / 28][p % 28] = images_bytes[p];
+                image.image[p / 28][p % 28] = images_bytes[p];
             }
             images.push(image);
         }

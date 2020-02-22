@@ -7,7 +7,7 @@ use rand::distributions;
 use rand::Rng;
 use rayon::prelude::*;
 
-pub trait ImagePatchLloyds<Image: Image2D, PatchShape, Preprocessor>
+pub trait ImagePatchLloyds<Image: Image2D, PatchShape>
 where
     Self: BitArray,
     PatchShape: Shape,
@@ -35,11 +35,10 @@ impl<
         T: Distance + BitArray + IncrementFracCounters + BitArrayOPs + Sync,
         Image: PatchFold<Vec<(usize, <u32 as Element<T::BitShape>>::Array)>, PatchShape> + Image2D + Sync,
         PatchShape: Shape,
-        Preprocessor: Preprocess<<Image::PixelType as Element<PatchShape>>::Array, Output = T>,
-    > ImagePatchLloyds<Image, PatchShape, Preprocessor> for T
+    > ImagePatchLloyds<Image, PatchShape> for T
 where
     u32: Element<T::BitShape>,
-    Image::PixelType: Element<PatchShape>,
+    Image::PixelType: Element<PatchShape, Array = T>,
     <u32 as Element<<T as BitArray>::BitShape>>::Array: Default + Sync + Send + ElementwiseAdd,
     T::BitShape: Map<u32, bool>,
     bool: Element<T::BitShape>,
@@ -61,15 +60,14 @@ where
                         image,
                         acc,
                         |mut sub_acc, patch| {
-                            let preprocesed = Preprocessor::preprocess(patch);
                             let closest_centroid = centroids
                                 .iter()
-                                .map(|centroid| preprocesed.distance(centroid))
+                                .map(|centroid| patch.distance(centroid))
                                 .enumerate()
                                 .min_by_key(|(_, count)| *count)
                                 .unwrap()
                                 .0;
-                            preprocesed.increment_frac_counters(&mut sub_acc[closest_centroid]);
+                            patch.increment_frac_counters(&mut sub_acc[closest_centroid]);
                             sub_acc
                         },
                     )
@@ -107,7 +105,7 @@ where
 /// The u16 is the index into the centroids. The u32 is the number of patches in that cell.
 /// The bag will be filtered of empty cells.
 /// k must never be < 2^16 !!!
-pub trait CentroidCountPerImage<Image, PatchShape, Preprocessor, C: Shape>
+pub trait CentroidCountPerImage<Image, PatchShape, C: Shape>
 where
     Self: Sized,
     u32: Element<C>,
@@ -122,11 +120,10 @@ impl<
         T: Sized + Distance + Copy + Send + Sync,
         Image: PatchFold<Vec<u32>, PatchShape> + Image2D + Sync,
         PatchShape: Shape,
-        Preprocessor: Preprocess<<Image::PixelType as Element<PatchShape>>::Array, Output = T>,
         const C: usize,
-    > CentroidCountPerImage<Image, PatchShape, Preprocessor, [(); C]> for T
+    > CentroidCountPerImage<Image, PatchShape, [(); C]> for T
 where
-    Image::PixelType: Element<PatchShape>,
+    Image::PixelType: Element<PatchShape, Array = T>,
     [u32; C]: Default,
 {
     fn centroid_count_per_image(
@@ -141,10 +138,9 @@ where
                     image,
                     vec![0u32; centroids.len()],
                     |mut counts, patch| {
-                        let preprocesed = Preprocessor::preprocess(patch);
                         let closest_centroid = centroids
                             .iter()
-                            .map(|centroid| preprocesed.distance(centroid))
+                            .map(|centroid| patch.distance(centroid))
                             .enumerate()
                             .min_by_key(|(_, count)| *count)
                             .unwrap()

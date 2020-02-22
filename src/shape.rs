@@ -18,10 +18,10 @@ impl<T: Shape, const L: usize> Shape for [T; L] {
     type Index = (usize, T::Index);
 }
 
-impl<T: Shape> Shape for Box<T> {
-    const N: usize = T::N;
-    type Index = T::Index;
-}
+//impl<T: Shape> Shape for Box<T> {
+//    const N: usize = T::N;
+//    type Index = T::Index;
+//}
 
 /// Given an element and a shape, get the array.
 ///
@@ -44,9 +44,9 @@ impl<T: Element<S>, S: Shape, const L: usize> Element<[S; L]> for T {
     type Array = [T::Array; L];
 }
 
-impl<T: Element<S>, S: Shape> Element<Box<S>> for T {
-    type Array = Box<T::Array>;
-}
+//impl<T: Element<S>, S: Shape> Element<Box<S>> for T {
+//    type Array = Box<T::Array>;
+//}
 
 pub trait MapMut<I: Element<Self>, O: Element<Self>>
 where
@@ -79,15 +79,15 @@ impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>, const L: usize> MapM
     }
 }
 
-impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>> MapMut<I, O> for Box<S> {
-    fn map_mut<F: Fn(&mut O, &I)>(
-        target: &mut <O as Element<Self>>::Array,
-        input: &<I as Element<Self>>::Array,
-        map_fn: F,
-    ) {
-        <S as MapMut<I, O>>::map_mut(target, &input, &map_fn);
-    }
-}
+//impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>> MapMut<I, O> for Box<S> {
+//    fn map_mut<F: Fn(&mut O, &I)>(
+//        target: &mut <O as Element<Self>>::Array,
+//        input: &<I as Element<Self>>::Array,
+//        map_fn: F,
+//    ) {
+//        <S as MapMut<I, O>>::map_mut(target, &input, &map_fn);
+//    }
+//}
 
 pub trait Map<I: Element<Self>, O: Element<Self>>
 where
@@ -214,18 +214,18 @@ impl<
     }
 }
 
-impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>> ZipMapMut<A, B, O>
-    for Box<S>
-{
-    fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
-        target: &mut <O as Element<Self>>::Array,
-        a: &<A as Element<Self>>::Array,
-        b: &<B as Element<Self>>::Array,
-        map_fn: F,
-    ) {
-        S::zip_map_mut(target, &a, &b, &map_fn);
-    }
-}
+//impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>> ZipMapMut<A, B, O>
+//    for Box<S>
+//{
+//    fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
+//        target: &mut <O as Element<Self>>::Array,
+//        a: &<A as Element<Self>>::Array,
+//        b: &<B as Element<Self>>::Array,
+//        map_fn: F,
+//    ) {
+//        S::zip_map_mut(target, &a, &b, &map_fn);
+//    }
+//}
 
 pub trait ZipMap<A: Element<Self>, B: Element<Self>, O: Element<Self>>
 where

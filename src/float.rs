@@ -2,6 +2,7 @@ use crate::bits::{BitArray, Classify, BFMA};
 use crate::shape::{Element, Shape};
 use rand_core::RngCore;
 use rand_distr::{Distribution, Normal};
+use std::marker::PhantomData;
 
 impl<I: FMA, const C: usize> Classify<I, [(); C]> for [I; C]
 where
@@ -41,6 +42,39 @@ impl<T: FMA, const L: usize> FMA for [T; L] {
     }
 }
 
+pub trait FFFVMMtanh<O> {
+    type InputType;
+    fn fffvmm_tanh(&self, input: &Self::InputType) -> O;
+}
+
+impl<T: FMA> FFFVMMtanh<f32> for T {
+    type InputType = T;
+    fn fffvmm_tanh(&self, input: &T) -> f32 {
+        self.fma(input).tanh()
+    }
+}
+
+impl<T: FMA> FFFVMMtanh<f32> for (T, f32) {
+    type InputType = T;
+    fn fffvmm_tanh(&self, input: &T) -> f32 {
+        (self.0.fma(input) + self.1).tanh()
+    }
+}
+
+impl<I, O, T: FFFVMMtanh<O, InputType = I>, const L: usize> FFFVMMtanh<[O; L]> for [T; L]
+where
+    [O; L]: Default,
+{
+    type InputType = I;
+    fn fffvmm_tanh(&self, input: &I) -> [O; L] {
+        let mut target = <[O; L]>::default();
+        for i in 0..L {
+            target[i] = self[i].fffvmm_tanh(input);
+        }
+        target
+    }
+}
+
 pub trait FFFVMM<O> {
     type InputType;
     fn fffvmm(&self, input: &Self::InputType) -> O;
@@ -50,6 +84,13 @@ impl<T: FMA> FFFVMM<f32> for T {
     type InputType = T;
     fn fffvmm(&self, input: &T) -> f32 {
         self.fma(input)
+    }
+}
+
+impl<T: FMA> FFFVMM<f32> for (T, f32) {
+    type InputType = T;
+    fn fffvmm(&self, input: &T) -> f32 {
+        self.0.fma(input) + self.1
     }
 }
 
@@ -236,17 +277,42 @@ pub trait Mutate {
 
 impl Mutate for f32 {
     const NOISE_LEN: usize = 1;
+    #[inline(always)]
     fn mutate(&self, noise: &[f32]) -> Self {
         self + noise[0]
+    }
+}
+
+impl<T> Mutate for PhantomData<T> {
+    const NOISE_LEN: usize = 0;
+    #[inline(always)]
+    fn mutate(&self, noise: &[f32]) -> Self {
+        PhantomData::default()
     }
 }
 
 impl<A: Mutate, B: Mutate> Mutate for (A, B) {
     const NOISE_LEN: usize = A::NOISE_LEN + B::NOISE_LEN;
     fn mutate(&self, noise: &[f32]) -> Self {
+        assert_eq!(noise.len(), Self::NOISE_LEN);
         (
-            self.0.mutate(&noise[0..]),
-            self.1.mutate(&noise[A::NOISE_LEN..]),
+            self.0.mutate(&noise[0..A::NOISE_LEN]),
+            self.1
+                .mutate(&noise[A::NOISE_LEN..A::NOISE_LEN + B::NOISE_LEN]),
+        )
+    }
+}
+
+impl<A: Mutate, B: Mutate, C: Mutate> Mutate for (A, B, C) {
+    const NOISE_LEN: usize = A::NOISE_LEN + B::NOISE_LEN + C::NOISE_LEN;
+    fn mutate(&self, noise: &[f32]) -> Self {
+        (
+            self.0.mutate(&noise[0..A::NOISE_LEN]),
+            self.1
+                .mutate(&noise[A::NOISE_LEN..A::NOISE_LEN + B::NOISE_LEN]),
+            self.2.mutate(
+                &noise[A::NOISE_LEN + B::NOISE_LEN..A::NOISE_LEN + B::NOISE_LEN + C::NOISE_LEN],
+            ),
         )
     }
 }
@@ -257,6 +323,7 @@ where
 {
     const NOISE_LEN: usize = T::NOISE_LEN * L;
     fn mutate(&self, noise: &[f32]) -> [T; L] {
+        assert_eq!(noise.len(), Self::NOISE_LEN);
         let mut target = <[T; L]>::default();
         for i in 0..L {
             target[i] = self[i].mutate(&noise[i * T::NOISE_LEN..(i + 1) * T::NOISE_LEN]);

@@ -3,7 +3,7 @@
 use bitnn::bits::{b32, BitArray, BitWord, Classify};
 use bitnn::datasets::cifar;
 use bitnn::image2d::{PixelMap, StaticImage};
-use bitnn::layer::{Layer, TrainParams};
+use bitnn::layer::{ConvLayer, TrainParams};
 use bitnn::shape::Element;
 use bitnn::unary::{to_10, Identity};
 use rayon::prelude::*;
@@ -46,44 +46,41 @@ fn main() {
 
     let train_params = TrainParams {
         lloyds_seed: 0,
-        k: 1000,
+        k: 400,
         lloyds_iters: 7,
 
         weights_init_seed: 0,
 
         minibatch_shuff_seed: 0,
-        descend_minibatch_max: 1000,
+        descend_minibatch_max: 300,
         descend_minibatch_threshold: 3,
 
         descend_rate: 0.8,
 
         aux_seed: 0,
-        aux_sdev: 0.5,
+        aux_sdev: 0.3,
     };
-    let (bit_examples_32, (layer_weights, aux_weights)) = <[[b32; 3]; 3] as Layer<
-        StaticImage<[[b32; 32]; 32]>,
+    let (bit_examples_32, (layer_weights, aux_weights)) = <[[b32; 3]; 3] as ConvLayer<
+        StaticImage<b32, 32, 32>,
         [[(); 3]; 3],
-        Identity,
         [b32; 2],
-        StaticImage<[[[b32; 2]; 32]; 32]>,
+        StaticImage<[b32; 2], 32, 32>,
         [(); 10],
     >>::gen(&unary_examples, train_params);
     let acc =
-        avg_acc::<[b32; 2], StaticImage<[[[b32; 2]; 32]; 32]>, 10>(&bit_examples_32, &aux_weights);
+        avg_acc::<[b32; 2], StaticImage<[b32; 2], 32, 32>, 10>(&bit_examples_32, &aux_weights);
     dbg!(acc);
 
     let bit_examples_32 = (0..5).fold(bit_examples_32, |examples, l| {
         dbg!(l);
-        let (examples, (layer_weights, aux_weights)) = <[[[b32; 2]; 3]; 3] as Layer<
-            StaticImage<[[[b32; 2]; 32]; 32]>,
+        let (examples, (layer_weights, aux_weights)) = <[[[b32; 2]; 3]; 3] as ConvLayer<
+            StaticImage<[b32; 2], 32, 32>,
             [[(); 3]; 3],
-            Identity,
             [b32; 2],
-            StaticImage<[[[b32; 2]; 32]; 32]>,
+            StaticImage<[b32; 2], 32, 32>,
             [(); 10],
         >>::gen(&examples, train_params);
-        let acc =
-            avg_acc::<[b32; 2], StaticImage<[[[b32; 2]; 32]; 32]>, 10>(&examples, &aux_weights);
+        let acc = avg_acc::<[b32; 2], StaticImage<[b32; 2], 32, 32>, 10>(&examples, &aux_weights);
         dbg!(acc);
         examples
     });

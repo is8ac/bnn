@@ -836,3 +836,713 @@ loading "params/6584072175008945662/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:50
 [src/bin/kmeans.rs:78] acc = 0.2754
 [src/bin/kmeans.rs:66] l = 4
 [src/cluster.rs:69] e = 0
+
+
+init 1.0
+[src/bin/float_demo.rs:78] seed_losses = [
+    17.730729699134827,
+    13.832001090049744,
+    16.266995191574097,
+    14.280309200286865,
+    27.511250376701355,
+    18.50651788711548,
+    18.92423963546753,
+    16.824041604995728,
+    15.39049482345581,
+    14.175255537033081,
+]
+
+init: 0.1
+[src/bin/float_demo.rs:78] seed_losses = [
+    13.302878618240356,
+    13.311203360557556,
+    13.40792429447174,
+    13.328095555305481,
+    13.229812264442444,
+    13.349364161491394,
+    13.331831932067871,
+    13.25237786769867,
+    13.215107679367065,
+    13.248469471931458,
+]
+
+
+init: 0
+[src/bin/float_demo.rs:75] seed_losses = [
+    13.277732372283936,
+    13.339405059814453,
+    13.362826704978943,
+    13.263792157173157,
+    13.275313973426819,
+    13.29188859462738,
+    13.298945546150208,
+    13.265311241149902,
+    13.280999779701233,
+    13.280817031860352,
+]
+
+20000 updates
+[src/bin/float_demo.rs:75] seed_losses = [
+    13.400952219963074,
+    13.443044781684875,
+    13.40387213230133,
+    13.450137972831726,
+    13.36470103263855,
+    13.383550643920898,
+    13.550930380821228,
+    13.358935594558716,
+    13.365536212921143,
+    13.36098599433899,
+]
+
+
+
+loading "params/15330994974913615678/counts:[[bitnn::bits::b32; 3]; 3], n:1000, seed:0, k1000, li7/[bitnn::bits::b32; 2], wseed:0, aux_seed:0, aux_sdev:0.5, shuffseed:0, minibatch(1000-3):0.8.mutations" from disk
+[src/bin/mlnn.rs:73] acc = 0.301
+[src/bin/mlnn.rs:76] l = 0
+loading "params/1499281353684895564/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:1000, seed:0, k1000, li7/[bitnn::bits::b32; 2], wseed:0, aux_seed:0, aux_sdev:0.5, shuffseed:0, minibatch(1000-3):0.8.mutations" from disk
+[src/bin/mlnn.rs:87] acc = 0.296
+[src/bin/mlnn.rs:76] l = 1
+loading "params/9852541790314062576/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:1000, seed:0, k1000, li7/[bitnn::bits::b32; 2], wseed:0, aux_seed:0, aux_sdev:0.5, shuffseed:0, minibatch(1000-3):0.8.mutations" from disk
+[src/bin/mlnn.rs:87] acc = 0.28
+[src/bin/mlnn.rs:76] l = 2
+loading "params/14785439962918934889/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:1000, seed:0, k1000, li7/[bitnn::bits::b32; 2], wseed:0, aux_seed:0, aux_sdev:0.5, shuffseed:0, minibatch(1000-3):0.8.mutations" from disk
+[src/bin/mlnn.rs:87] acc = 0.279
+[src/bin/mlnn.rs:76] l = 3
+loading "params/8011738998659897686/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:1000, seed:0, k1000, li7/[bitnn::bits::b32; 2], wseed:0, aux_seed:0, aux_sdev:0.5, shuffseed:0, minibatch(1000-3):0.8.mutations" from disk
+[src/bin/mlnn.rs:87] acc = 0.273
+[src/bin/mlnn.rs:76] l = 4
+loading "params/17207656014395544369/counts:[[[bitnn::bits::b32; 2]; 3]; 3], n:1000, seed:0, k1000, li7/counts" from disk
+
+
+i:294 0: 0.16092936044733505
+[src/bin/mnist_es.rs:118] n_correct = 57
+[src/bin/mnist_es.rs:119] n_correct as f64 / N_EXAMPLES as f64 = 0.95
+real	19m40.266s
+
+
+ut of 2: i:299 2: 0.23466496096923947
+[src/bin/mnist_es.rs:120] n_correct = 88
+[src/bin/mnist_es.rs:121] n_correct as f64 / N_EXAMPLES as f64 = 0.88
+
+
+0.05 0.995
+src/bin/mnist_es.rs:56] seed_accs = [
+    0.84,
+    0.87,
+    0.93,
+    0.93,
+    0.86,
+    0.91,
+    0.82,
+    0.91,
+    0.82,
+    0.84,
+]
+
+0.05 0.99
+src/bin/mnist_es.rs:56] seed_accs = [
+    0.89,
+    0.86,
+    0.93,
+    0.89,
+    0.92,
+    0.98,
+    0.93,
+    0.94,
+    0.86,
+    0.86,
+]
+
+
+
+0.1 0.99
+[src/bin/mnist_es.rs:56] &seed_accs = [
+    0.85,
+    0.91,
+    0.92,
+    0.83,
+    0.79,
+    0.8,
+    0.9,
+    0.89,
+    0.91,
+    0.89,
+]
+[src/bin/mnist_es.rs:58] sum_acc / seed_accs.len() as f64 = 0.8690000000000001
+
+
+0.07, 0.99
+[src/bin/mnist_es.rs:50] n_correct = 90
+[src/bin/mnist_es.rs:51] n_correct as f64 / N_EXAMPLES as f64 = 0.9
+[src/bin/mnist_es.rs:56] &seed_accs = [
+    0.85,
+    0.88,
+    0.96,
+    0.85,
+    0.82,
+    0.87,
+    0.87,
+    0.94,
+    0.96,
+    0.9,
+]
+[src/bin/mnist_es.rs:58] sum_acc / seed_accs.len() as f64 = 0.89
+
+
+
+32, 300, 0.06, 0.993
+[src/bin/mnist_es.rs:50] n_correct = 91
+[src/bin/mnist_es.rs:51] n_correct as f64 / N_EXAMPLES as f64 = 0.91
+[src/bin/mnist_es.rs:56] &seed_accs = [
+    0.88,
+    0.9,
+    0.89,
+    0.92,
+    0.86,
+    0.88,
+    0.75,
+    0.85,
+    0.94,
+    0.91,
+]
+[src/bin/mnist_es.rs:58] sum_acc / seed_accs.len() as f64 = 0.8779999999999999
+
+real	2m56.736s
+
+
+
+
+32, 300, 0.07, 0.99
+src/bin/mnist_es.rs:50] n_correct = 229
+[src/bin/mnist_es.rs:51] n_correct as f64 / N_EXAMPLES as f64 = 0.7633333333333333
+[src/bin/mnist_es.rs:56] &seed_accs = [
+    0.85,
+    0.8266666666666667,
+    0.79,
+    0.75,
+    0.8166666666666667,
+    0.8466666666666667,
+    0.8066666666666666,
+    0.8166666666666667,
+    0.7566666666666667,
+    0.7633333333333333,
+]
+[src/bin/mnist_es.rs:58] sum_acc / seed_accs.len() as f64 = 0.8023333333333333
+
+
+
+n300, 32, 500, 0.07, 0.99
+[src/bin/mnist_es.rs:50] n_correct = 248
+[src/bin/mnist_es.rs:51] n_correct as f64 / N_EXAMPLES as f64 = 0.8266666666666667
+[src/bin/mnist_es.rs:56] &seed_accs = [
+    0.8933333333333333,
+    0.8666666666666667,
+    0.85,
+    0.7966666666666666,
+    0.8266666666666667,
+    0.8833333333333333,
+    0.87,
+    0.8866666666666667,
+    0.7866666666666666,
+    0.8266666666666667,
+]
+[src/bin/mnist_es.rs:58] sum_acc / seed_accs.len() as f64 = 0.8486666666666665
+
+
+[src/bin/mnist_es.rs:56] &seed_accs = [
+    0.8466666666666667,
+    0.79,
+    0.84,
+    0.85,
+    0.7966666666666666,
+    0.8733333333333333,
+    0.8933333333333333,
+    0.84,
+    0.8333333333333334,
+    0.8266666666666667,
+]
+[src/bin/mnist_es.rs:58] sum_acc / seed_accs.len() as f64 = 0.8389999999999999
+
+n300, 32, 500, 0.06, 0.993
+src/bin/mnist_es.rs:50] n_correct = 259
+[src/bin/mnist_es.rs:51] n_correct as f64 / N_EXAMPLES as f64 = 0.8633333333333333
+[src/bin/mnist_es.rs:56] &seed_accs = [
+    0.8266666666666667,
+    0.84,
+    0.7833333333333333,
+    0.88,
+    0.8333333333333334,
+    0.89,
+    0.89,
+    0.89,
+    0.8633333333333333,
+    0.8633333333333333,
+]
+[src/bin/mnist_es.rs:58] sum_acc / seed_accs.len() as f64 = 0.8559999999999999
+
+
+n500 32, 1000, 0.06, 0.993
+[src/bin/mnist_es.rs:50] n_correct = 419
+[src/bin/mnist_es.rs:51] n_correct as f64 / N_EXAMPLES as f64 = 0.838
+[src/bin/mnist_es.rs:56] &seed_accs = [
+    0.87,
+    0.898,
+    0.868,
+    0.9,
+    0.892,
+    0.892,
+    0.896,
+    0.882,
+    0.92,
+    0.838,
+]
+[src/bin/mnist_es.rs:58] sum_acc / seed_accs.len() as f64 = 0.8855999999999999
+
+
+999   0 sdev:0.0001 loss: 0.20907
+[src/bin/mnist_es.rs:50] n_correct = 430
+[src/bin/mnist_es.rs:51] n_correct as f64 / N_EXAMPLES as f64 = 0.86
+[src/bin/mnist_es.rs:56] &seed_accs = [
+    0.864,
+    0.826,
+    0.856,
+    0.84,
+    0.842,
+    0.888,
+    0.848,
+    0.868,
+    0.854,
+    0.86,
+]
+[src/bin/mnist_es.rs:58] sum_acc / seed_accs.len() as f64 = 0.8545999999999999
+
+real	25m5.541s
+user	155m23.775s
+sys	0m36.195s
+
+
+n50: 64, 500, 0.06, 0.993
+999 159 sdev:0.0001 loss: 0.12190
+[src/bin/mnist_es.rs:50] n_correct = 461
+[src/bin/mnist_es.rs:51] n_correct as f64 / N_EXAMPLES as f64 = 0.922
+[src/bin/mnist_es.rs:56] &seed_accs = [
+    0.922,
+    0.896,
+    0.93,
+    0.94,
+    0.938,
+    0.934,
+    0.928,
+    0.944,
+    0.914,
+    0.922,
+]
+[src/bin/mnist_es.rs:58] sum_acc / seed_accs.len() as f64 = 0.9268000000000001
+
+real	45m5.368s
+user	1302m9.184s
+sys	6m55.155s
+
+
+
+#CIFAR conv es:
+
+n100: 128, 500, 0.06, 0.993
+50%
+
+
+n100: 256, 500, 0.07, 0.995
+62%
+65%
+65%
+
+
+n200: 256, 500, 0.07, 0.995
+499  34 sdev:0.0057 loss: 0.69999
+[src/bin/cifar_conv_es.rs:44] n_correct = 91
+[src/bin/cifar_conv_es.rs:45] n_correct as f64 / N_EXAMPLES as f64 = 0.455
+[src/bin/cifar_conv_es.rs:50] &seed_accs = [
+    0.475,
+    0.51,
+    0.455,
+]
+[src/bin/cifar_conv_es.rs:52] sum_acc / seed_accs.len() as f64 = 0.48
+[isaac@d7arch bitnn]$
+
+
+n400: 256, 500, 0.07, 0.995
+40.75%
+
+n400: 31, 1000, 0.07, 0.996
+
+999  19 sdev:0.0013 loss: 0.74381
+[src/bin/cifar_conv_es.rs:44] n_correct = 155
+[src/bin/cifar_conv_es.rs:45] n_correct as f64 / N_EXAMPLES as f64 = 0.3875
+[src/bin/cifar_conv_es.rs:50] &seed_accs = [
+    0.3825,
+    0.3925,
+    0.3875,
+]
+[src/bin/cifar_conv_es.rs:52] sum_acc / seed_accs.len() as f64 = 0.3875
+
+
+n800: 31, 1000, 0.07, 0.995
+999  20 sdev:0.0005 loss: 0.79429
+[src/bin/cifar_conv_es.rs:44] n_correct = 267
+[src/bin/cifar_conv_es.rs:45] n_correct as f64 / N_EXAMPLES as f64 = 0.33375
+[src/bin/cifar_conv_es.rs:50] &seed_accs = [
+    0.3375,
+    0.34625,
+    0.33375,
+]
+[src/bin/cifar_conv_es.rs:52] sum_acc / seed_accs.len() as f64 = 0.33916666666666667
+
+real	106m44.121s
+user	3203m26.173s
+sys	2m29.008s
+
+
+
+
+n100: 31, 1000, 0.07, 0.995
+999   6 sdev:0.0005 loss: 0.65854
+[src/bin/cifar_conv_es.rs:44] n_correct = 56
+[src/bin/cifar_conv_es.rs:45] n_correct as f64 / N_EXAMPLES as f64 = 0.56
+[src/bin/cifar_conv_es.rs:50] &seed_accs = [
+    0.55,
+    0.52,
+    0.56,
+]
+[src/bin/cifar_conv_es.rs:52] sum_acc / seed_accs.len() as f64 = 0.5433333333333333
+
+real	13m42.464s
+user	404m37.405s
+sys	0m55.370s
+
+
+n100: 31, 500, 0.07, 0.995
+499   8 sdev:0.0057 loss: 0.68790
+[src/bin/cifar_conv_es.rs:44] n_correct = 51
+[src/bin/cifar_conv_es.rs:45] n_correct as f64 / N_EXAMPLES as f64 = 0.51
+[src/bin/cifar_conv_es.rs:50] &seed_accs = [
+    0.49,
+    0.51,
+    0.51,
+]
+[src/bin/cifar_conv_es.rs:52] sum_acc / seed_accs.len() as f64 = 0.5033333333333333
+
+real	6m52.750s
+user	200m58.135s
+sys	0m34.149s
+[isaac@d7arch bitnn]$
+
+
+
+
+##full float conv MLNN:
+n100:
+1: loss: 0.69164, acc: 0.49
+2: loss: 0.58892, acc: 0.64
+3: loss: 0.42690, acc: 0.72
+4: loss: 0.33279, acc: 0.77
+5: loss: 0.26730, acc: 0.83
+6: loss: 0.21953, acc: 0.87
+7: loss: 0.17785, acc: 0.89
+
+
+
+
+
+
+
+
+
+Finished release [optimized] target(s) in 41.85s
+   Running `target/release/cifar_conv_es`
+loading "params/float_3chan/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:57] i = 0
+loading "params/float_3chan/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 36
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.72
+[src/bin/cifar_conv_es.rs:100] acc = 0.72
+[src/bin/cifar_conv_es.rs:57] i = 1
+loading "params/float_3chan/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 41
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.82
+[src/bin/cifar_conv_es.rs:100] acc = 0.82
+[src/bin/cifar_conv_es.rs:57] i = 2
+loading "params/float_3chan/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 43
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.86
+[src/bin/cifar_conv_es.rs:100] acc = 0.86
+[src/bin/cifar_conv_es.rs:57] i = 3
+loading "params/float_3chan/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 45
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.9
+[src/bin/cifar_conv_es.rs:100] acc = 0.9
+[src/bin/cifar_conv_es.rs:57] i = 4
+loading "params/float_3chan/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 46
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.92
+[src/bin/cifar_conv_es.rs:100] acc = 0.92
+[src/bin/cifar_conv_es.rs:57] i = 5
+loading "params/float_3chan/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n50, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 46
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.92
+[src/bin/cifar_conv_es.rs:100] acc = 0.92
+
+
+
+
+
+Finished release [optimized] target(s) in 0.04s
+  Running `target/release/cifar_conv_es`
+loading "params/float_3chan/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:57] i = 0
+loading "params/float_3chan/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 64
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.64
+[src/bin/cifar_conv_es.rs:100] acc = 0.64
+[src/bin/cifar_conv_es.rs:57] i = 1
+loading "params/float_3chan/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 77
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.77
+[src/bin/cifar_conv_es.rs:100] acc = 0.77
+[src/bin/cifar_conv_es.rs:57] i = 2
+loading "params/float_3chan/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 82
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.82
+[src/bin/cifar_conv_es.rs:100] acc = 0.82
+[src/bin/cifar_conv_es.rs:57] i = 3
+loading "params/float_3chan/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 88
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.88
+[src/bin/cifar_conv_es.rs:100] acc = 0.88
+[src/bin/cifar_conv_es.rs:57] i = 4
+loading "params/float_3chan/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 91
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.91
+[src/bin/cifar_conv_es.rs:100] acc = 0.91
+[src/bin/cifar_conv_es.rs:57] i = 5
+loading "params/float_3chan/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/[(); 32], n100, seed:0, n_iters:600, noise_sdev:0.07, noise_decay_rate:0.995.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:97] n_correct = 94
+[src/bin/cifar_conv_es.rs:98] n_correct as f64 / N_EXAMPLES as f64 = 0.94
+[src/bin/cifar_conv_es.rs:100] acc = 0.94
+[isaac@d7arch bitnn]$
+
+
+
+
+
+
+Finished release [optimized] target(s) in 0.78s
+   Running `target/release/cifar_conv_es`
+loading "params/float_3chan/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:58] i = 0
+loading "params/float_3chan/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 357
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.357
+[src/bin/cifar_conv_es.rs:101] acc = 0.357
+[src/bin/cifar_conv_es.rs:58] i = 1
+loading "params/float_3chan/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 378
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.378
+[src/bin/cifar_conv_es.rs:101] acc = 0.378
+[src/bin/cifar_conv_es.rs:58] i = 2
+loading "params/float_3chan/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 398
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.398
+[src/bin/cifar_conv_es.rs:101] acc = 0.398
+[src/bin/cifar_conv_es.rs:58] i = 3
+loading "params/float_3chan/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 408
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.408
+[src/bin/cifar_conv_es.rs:101] acc = 0.408
+[src/bin/cifar_conv_es.rs:58] i = 4
+loading "params/float_3chan/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 446
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.446
+[src/bin/cifar_conv_es.rs:101] acc = 0.446
+[src/bin/cifar_conv_es.rs:58] i = 5
+loading "params/float_3chan/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 465
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.465
+[src/bin/cifar_conv_es.rs:101] acc = 0.465
+[src/bin/cifar_conv_es.rs:58] i = 6
+loading "params/float_3chan/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 492
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.492
+[src/bin/cifar_conv_es.rs:101] acc = 0.492
+[src/bin/cifar_conv_es.rs:58] i = 7
+loading "params/float_3chan/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n1000, seed:0, n_workers:8, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 491
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.491
+[src/bin/cifar_conv_es.rs:101] acc = 0.491
+[src/bin/cifar_conv_es.rs:58] i = 8
+[src/layer.rs:343]
+0   8 sdev:0.0599 loss: 0.89758
+1   4 sdev:0.0598 loss: 0.89506
+
+
+
+
+
+
+
+Finished release [optimized] target(s) in 0.78s
+  Running `target/release/cifar_conv_es`
+loading "params/float_3chan/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:58] i = 0
+loading "params/float_3chan/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 54
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.54
+[src/bin/cifar_conv_es.rs:101] acc = 0.54
+[src/bin/cifar_conv_es.rs:58] i = 1
+loading "params/float_3chan/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 60
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.6
+[src/bin/cifar_conv_es.rs:101] acc = 0.6
+[src/bin/cifar_conv_es.rs:58] i = 2
+loading "params/float_3chan/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 67
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.67
+[src/bin/cifar_conv_es.rs:101] acc = 0.67
+[src/bin/cifar_conv_es.rs:58] i = 3
+loading "params/float_3chan/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 69
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.69
+[src/bin/cifar_conv_es.rs:101] acc = 0.69
+[src/bin/cifar_conv_es.rs:58] i = 4
+loading "params/float_3chan/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 75
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.75
+[src/bin/cifar_conv_es.rs:101] acc = 0.75
+[src/bin/cifar_conv_es.rs:58] i = 5
+loading "params/float_3chan/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 80
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.8
+[src/bin/cifar_conv_es.rs:101] acc = 0.8
+[src/bin/cifar_conv_es.rs:58] i = 6
+loading "params/float_3chan/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n100, seed:0, n_workers:4, n_iters:1000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:98] n_correct = 84
+[src/bin/cifar_conv_es.rs:99] n_correct as f64 / N_EXAMPLES as f64 = 0.84
+[src/bin/cifar_conv_es.rs:101] acc = 0.84
+[src/bin/cifar_conv_es.rs:58] i = 7
+[src/layer.rs:343]
+0   4 sdev:0.0599 loss: 0.89988
+1   3 sdev:0.0598 loss: 0.89428
+
+
+
+
+Finished release [optimized] target(s) in 0.78s
+ Running `target/release/cifar_conv_es`
+loading "params/float_unary/[(); 32], n200, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:69] i = 0
+loading "params/float_unary/[(); 32], n200, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n200, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:109] n_correct = 135
+[src/bin/cifar_conv_es.rs:110] n_correct as f64 / N_EXAMPLES as f64 = 0.675
+[src/bin/cifar_conv_es.rs:112] acc = 0.675
+[src/bin/cifar_conv_es.rs:69] i = 1
+loading "params/float_unary/[(); 32], n200, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n200, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n200, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:109] n_correct = 153
+[src/bin/cifar_conv_es.rs:110] n_correct as f64 / N_EXAMPLES as f64 = 0.765
+[src/bin/cifar_conv_es.rs:112] acc = 0.765
+[src/bin/cifar_conv_es.rs:69] i = 2
+[src/layer.rs:343]
+0   8 sdev:0.0599 loss: 0.89992
+1   3 sdev:0.0598 loss: 0.89755
+
+
+
+
+
+Finished release [optimized] target(s) in 0.78s
+   Running `target/release/cifar_conv_es`
+[src/bin/cifar_conv_es.rs:56] &hyper_params = FullFloatConvLayerParams {
+  seed: 0,
+  n_workers: 8,
+  n_iters: 2000,
+  noise_sdev: 0.06,
+  sdev_decay_rate: 0.998,
+}
+loading "params/float_unary/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:71] i = 0
+loading "params/float_unary/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 223
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.5575
+[src/bin/cifar_conv_es.rs:114] acc = 0.5575
+[src/bin/cifar_conv_es.rs:71] i = 1
+loading "params/float_unary/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 249
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.6225
+[src/bin/cifar_conv_es.rs:114] acc = 0.6225
+[src/bin/cifar_conv_es.rs:71] i = 2
+loading "params/float_unary/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 265
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.6625
+[src/bin/cifar_conv_es.rs:114] acc = 0.6625
+[src/bin/cifar_conv_es.rs:71] i = 3
+loading "params/float_unary/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 283
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.7075
+[src/bin/cifar_conv_es.rs:114] acc = 0.7075
+[src/bin/cifar_conv_es.rs:71] i = 4
+loading "params/float_unary/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n400, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 290
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.725
+[src/bin/cifar_conv_es.rs:114] acc = 0.725
+[src/bin/cifar_conv_es.rs:71] i = 5
+[src/layer.rs:344]
+0   8 sdev:0.0599 loss: 0.89644
+1   3 sdev:0.0598 loss: 0.89375
+
+
+
+
+
+Finished release [optimized] target(s) in 0.78s
+ Running `target/release/cifar_conv_es`
+[src/bin/cifar_conv_es.rs:56] &hyper_params = FullFloatConvLayerParams {
+seed: 0,
+n_workers: 8,
+n_iters: 2000,
+noise_sdev: 0.06,
+sdev_decay_rate: 0.998,
+}
+loading "params/float_unary/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:71] i = 0
+loading "params/float_unary/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 358
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.4475
+[src/bin/cifar_conv_es.rs:114] acc = 0.4475
+[src/bin/cifar_conv_es.rs:71] i = 1
+loading "params/float_unary/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 410
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.5125
+[src/bin/cifar_conv_es.rs:114] acc = 0.5125
+[src/bin/cifar_conv_es.rs:71] i = 2
+loading "params/float_unary/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 448
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.56
+[src/bin/cifar_conv_es.rs:114] acc = 0.56
+[src/bin/cifar_conv_es.rs:71] i = 3
+loading "params/float_unary/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 475
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.59375
+[src/bin/cifar_conv_es.rs:114] acc = 0.59375
+[src/bin/cifar_conv_es.rs:71] i = 4
+loading "params/float_unary/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 504
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.63
+[src/bin/cifar_conv_es.rs:114] acc = 0.63
+[src/bin/cifar_conv_es.rs:71] i = 5
+loading "params/float_unary/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/[(); 32], n800, seed:0, n_workers:8, n_iters:2000, noise_sdev:0.06, noise_decay_rate:0.998.params/float_weights.prms" from disk
+[src/bin/cifar_conv_es.rs:111] n_correct = 517
+[src/bin/cifar_conv_es.rs:112] n_correct as f64 / N_EXAMPLES as f64 = 0.64625
+[src/bin/cifar_conv_es.rs:114] acc = 0.64625
+[src/bin/cifar_conv_es.rs:71] i = 6
+[src/layer.rs:344]
+0   8 sdev:0.0599 loss: 0.89822
+1   3 sdev:0.0598 loss: 0.89391

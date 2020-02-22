@@ -1,3 +1,4 @@
+use crate::float::FMA;
 /// the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
 use crate::layer::Apply;
@@ -25,13 +26,11 @@ pub trait Classify<Input, C: Shape> {
     fn max_class(&self, input: &Input) -> usize;
 }
 
-impl<T: BitMul<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
-    Apply<I, (), Preprocessor, O> for T
-{
-    fn apply(&self, input: &I) -> O {
-        self.bit_mul(&Preprocessor::preprocess(input))
-    }
-}
+//impl<T: BitMul<I, O>, I, O> Apply<I, O> for <I as Element<O>>::Array {
+//    fn apply(&self, input: &I) -> O {
+//        self.bit_mul(&input)
+//    }
+//}
 
 /// Bits input, bits matrix, and bits output
 pub trait BitMul<I, O> {
@@ -93,6 +92,26 @@ impl_bitstats_for_array!(1);
 impl_bitstats_for_array!(2);
 impl_bitstats_for_array!(3);
 impl_bitstats_for_array!(4);
+
+pub trait BitMap<E: Element<Self::BitShape>>
+where
+    Self: BitArray,
+{
+    fn bit_map<F: Fn(bool) -> E>(&self, map_fn: F) -> <E as Element<Self::BitShape>>::Array;
+}
+
+impl<T: BitMap<E>, E: Element<T::BitShape>, const L: usize> BitMap<E> for [T; L]
+where
+    [<E as Element<T::BitShape>>::Array; L]: Default,
+{
+    fn bit_map<F: Fn(bool) -> E>(&self, map_fn: F) -> [<E as Element<T::BitShape>>::Array; L] {
+        let mut target = <[<E as Element<T::BitShape>>::Array; L]>::default();
+        for i in 0..L {
+            target[i] = self[i].bit_map(&map_fn);
+        }
+        target
+    }
+}
 
 /// A collection of bits which has a shape.
 pub trait BitArrayOPs
@@ -247,28 +266,45 @@ where
     }
 }
 
-//impl<T: BFBVM<Preprocessor::Output, O>, I, O, Preprocessor: Preprocess<I>>
-//    Apply<I, (), Preprocessor, O> for T
-//{
-//    fn apply(&self, input: &I) -> O {
-//        self.bfbvm(&Preprocessor::preprocess(input))
-//    }
-//}
-
 /// Bit Float Bit Vector Multiply
 /// Takes bits input, float matrix, and returns bit array output.
-pub trait BFBVM<I, O> {
-    fn bfbvm(&self, input: &I) -> O;
+pub trait FFBVM<I, O> {
+    fn ffbvm(&self, input: &I) -> O;
 }
 
-impl<I, T: BFBVM<I, O>, O, const L: usize> BFBVM<I, [O; L]> for [T; L]
+impl<I, T: FFBVM<I, O>, O, const L: usize> FFBVM<I, [O; L]> for [T; L]
 where
     [O; L]: Default,
 {
-    fn bfbvm(&self, input: &I) -> [O; L] {
+    fn ffbvm(&self, input: &I) -> [O; L] {
         let mut target = <[O; L]>::default();
         for i in 0..L {
-            target[i] = self[i].bfbvm(input);
+            target[i] = self[i].ffbvm(input);
+        }
+        target
+    }
+}
+
+impl<T: FFBVM<I, O>, I, O> Apply<I, O> for T {
+    fn apply(&self, input: &I) -> O {
+        self.ffbvm(input)
+    }
+}
+
+/// Bit Float Bit Vector Multiply
+/// Takes bits input, float matrix, and returns bit array output.
+pub trait BFBVMM<I, O> {
+    fn bfbvmm(&self, input: &I) -> O;
+}
+
+impl<I, T: BFBVMM<I, O>, O, const L: usize> BFBVMM<I, [O; L]> for [T; L]
+where
+    [O; L]: Default,
+{
+    fn bfbvmm(&self, input: &I) -> [O; L] {
+        let mut target = <[O; L]>::default();
+        for i in 0..L {
+            target[i] = self[i].bfbvmm(input);
         }
         target
     }
@@ -360,6 +396,18 @@ macro_rules! for_uints {
                 self.0.count_ones()
             }
         }
+        impl<E> BitMap<E> for $b_type
+        where
+            [E; $len]: Default,
+        {
+            fn bit_map<F: Fn(bool) -> E>(&self, map_fn: F) -> [E; $len] {
+                let mut target = <[E; $len]>::default();
+                for b in 0..$len {
+                    target[b] = map_fn(self.bit(b));
+                }
+                target
+            }
+        }
 
         impl BitWord for $b_type {
             const BIT_LEN: usize = $len;
@@ -425,12 +473,22 @@ macro_rules! for_uints {
                 sum
             }
         }
-        impl<I: BitArray + BFMA> BFBVM<I, $b_type>
+        impl<I: FMA> FFBVM<I, $b_type> for [(I, f32); $len] {
+            fn ffbvm(&self, input: &I) -> $b_type {
+                let mut target = $b_type(0);
+                for b in 0..$len {
+                    target |= $b_type((input.fma(&self[b].0) + self[b].1 > 0f32) as $u_type) << b;
+                }
+                target
+            }
+        }
+
+        impl<I: BitArray + BFMA> BFBVMM<I, $b_type>
             for [(<f32 as Element<I::BitShape>>::Array, f32); $len]
         where
             f32: Element<I::BitShape>,
         {
-            fn bfbvm(&self, input: &I) -> $b_type {
+            fn bfbvmm(&self, input: &I) -> $b_type {
                 let mut target = $b_type(0);
                 for b in 0..$len {
                     target |= $b_type((input.bfma(&self[b].0) + self[b].1 > 0f32) as $u_type) << b;
@@ -550,7 +608,7 @@ macro_rules! for_uints {
 }
 
 for_uints!(b8, u8, 8, "{:08b}");
-for_uints!(b16, u16, 16, "{:016b}");
+//for_uints!(b16, u16, 16, "{:016b}");
 for_uints!(b32, u32, 32, "{:032b}");
 //for_uints!(b64, u64, 64, "{:064b}");
 //for_uints!(b128, u128, 128, "{:0128b}");
