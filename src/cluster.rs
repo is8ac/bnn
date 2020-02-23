@@ -2,7 +2,6 @@ use crate::bits::{BitArray, BitArrayOPs, Distance, IncrementFracCounters};
 use crate::count::ElementwiseAdd;
 use crate::image2d::{Image2D, PatchFold};
 use crate::shape::{Element, Map, Shape};
-use crate::unary::Preprocess;
 use rand::distributions;
 use rand::Rng;
 use rayon::prelude::*;
@@ -11,7 +10,7 @@ pub trait ImagePatchLloyds<Image: Image2D, PatchShape>
 where
     Self: BitArray,
     PatchShape: Shape,
-    u32: Element<Self::BitShape>,
+    //u32: Element<Self::BitShape>,
     Image::PixelType: Element<PatchShape>,
 {
     fn avgs(examples: &Vec<(Image, usize)>, centroids: &Vec<Self>) -> Vec<Self>;
@@ -101,10 +100,9 @@ where
 /// centroids is of length `k`.
 /// The return Vec is of length `n`.
 /// Each element is a pair of (bag, class).
-/// The Vec<(u16, u32)> bag is of length `k`.
-/// The u16 is the index into the centroids. The u32 is the number of patches in that cell.
+/// The Vec<(u32, u32)> bag is of length `k`.
+/// The u32 is the index into the centroids. The u32 is the number of patches in that cell.
 /// The bag will be filtered of empty cells.
-/// k must never be < 2^16 !!!
 pub trait CentroidCountPerImage<Image, PatchShape, C: Shape>
 where
     Self: Sized,
@@ -113,7 +111,7 @@ where
     fn centroid_count_per_image(
         examples: &Vec<(Image, usize)>,
         centroids: &Vec<Self>,
-    ) -> Vec<(Vec<(u16, u32)>, usize)>;
+    ) -> Vec<(Vec<(u32, u32)>, usize)>;
 }
 
 impl<
@@ -129,8 +127,7 @@ where
     fn centroid_count_per_image(
         examples: &Vec<(Image, usize)>,
         centroids: &Vec<Self>,
-    ) -> Vec<(Vec<(u16, u32)>, usize)> {
-        assert!(centroids.len() < 2usize.pow(16));
+    ) -> Vec<(Vec<(u32, u32)>, usize)> {
         examples
             .par_iter()
             .map(|(image, class)| {
@@ -154,11 +151,48 @@ where
                         .iter()
                         .enumerate()
                         .filter(|&(_, c)| *c > 0)
-                        .map(|(i, c)| (i as u16, *c))
+                        .map(|(i, c)| (i as u32, *c))
                         .collect(),
                     *class,
                 )
             })
             .collect()
+    }
+}
+
+pub trait NullCluster<Image, PatchShape>
+where
+    Self: Sized,
+{
+    fn null_cluster(examples: &Vec<(Image, usize)>) -> Vec<Self>;
+}
+
+impl<
+        T: Sized + Copy + Send + Sync,
+        Image: PatchFold<Vec<T>, PatchShape> + Image2D + Sync,
+        PatchShape: Shape,
+    > NullCluster<Image, PatchShape> for T
+where
+    Image::PixelType: Element<PatchShape, Array = T>,
+{
+    fn null_cluster(examples: &Vec<(Image, usize)>) -> Vec<Self> {
+        examples
+            .par_iter()
+            .fold(
+                || Vec::new(),
+                |mut acc, (image, _)| {
+                    image.patch_fold(acc, |mut a, patch| {
+                        a.push(*patch);
+                        a
+                    })
+                },
+            )
+            .reduce(
+                || Vec::new(),
+                |mut a, mut b| {
+                    a.append(&mut b);
+                    a
+                },
+            )
     }
 }

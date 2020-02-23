@@ -1,7 +1,6 @@
-use crate::bits::{AndOr, BitArray, BitWord, Classify, IncrementFracCounters};
+use crate::bits::{BitArray, BitWord, Classify, IncrementFracCounters};
 use crate::count::IncrementCounters;
 use crate::float::FFFVMM;
-use crate::layer::Apply;
 use crate::shape::{Element, Map, Merge, Shape, ZipMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};

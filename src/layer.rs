@@ -1,8 +1,8 @@
-use crate::bits::{BitArray, BitArrayOPs, BitMul, BitWord, Distance, BFBVMM};
-use crate::cluster::{CentroidCountPerImage, ImagePatchLloyds};
-use crate::descend::{DescendFloat, DescendMod2, OneHiddenLayerConvPooledModel};
+use crate::bits::{BitArray, BitArrayOPs, BitMap, BitMul, BitWord, Distance, BFBVMM};
+use crate::cluster::{CentroidCountPerImage, ImagePatchLloyds, NullCluster};
+use crate::descend::{DescendFloat, DescendMod2};
 use crate::float::{FFFVMMtanh, Noise};
-use crate::image2d::{AvgPool, BitPool, Concat, Conv2D, Image2D, StaticImage};
+use crate::image2d::{AvgPool, BitPool, Concat, Conv2D, Image2D, PixelMap, StaticImage};
 use crate::shape::{Element, Shape};
 use bincode::{deserialize_from, serialize_into};
 use rand::distributions;
@@ -132,7 +132,7 @@ where
             (weights, aux_weights)
         } else {
             let counts_path = counts_dir.join("counts");
-            let (centroids, image_patch_bags): (Vec<I>, Vec<(Vec<(u16, u32)>, usize)>) =
+            let (centroids, image_patch_bags): (Vec<I>, Vec<(Vec<(u32, u32)>, usize)>) =
                 if let Some(counts_file) = File::open(&counts_path).ok() {
                     println!("loading {:?} from disk", &counts_path);
                     deserialize_from(counts_file).expect("can't deserialize counts from file")
@@ -372,15 +372,14 @@ pub trait BFBConvLayer<ImageShape, I, PatchShape, C: Shape> {
     type ObjType;
     fn gen(
         examples: &Vec<(Self::InputImage, usize)>,
-        dataset_name: &Path,
         hyper_params: &FullFloatConvLayerParams,
     ) -> (
-        (Vec<(Self::OutputImage, usize)>, PathBuf),
+        Vec<(Self::OutputImage, usize)>,
         (Self::FloatWeightsType, Self::ObjType),
     );
 }
 
-impl<I: BitArray, O: BitArray, const C: usize>
+impl<I: BitArray + BitMap<f32>, O: BitArray, const C: usize>
     BFBConvLayer<StaticImage<(), 32, 32>, I, [[(); 3]; 3], [(); C]> for O
 where
     f32: Element<O::BitShape> + Element<I::BitShape>,
@@ -392,7 +391,7 @@ where
         <([[<f32 as Element<I::BitShape>>::Array; 3]; 3], f32) as Element<O::BitShape>>::Array,
         [(<f32 as Element<O::BitShape>>::Array, f32); C],
         PhantomData<O::BitShape>,
-    ): DescendFloat<StaticImage<I, 32, 32>, [(); C]>,
+    ): DescendFloat<StaticImage<<f32 as Element<I::BitShape>>::Array, 32, 32>, [(); C]>,
 
     for<'de> (
         <([[<f32 as Element<I::BitShape>>::Array; 3]; 3], f32) as Element<O::BitShape>>::Array,
@@ -406,8 +405,22 @@ where
     ([[I; 3]; 3], f32): Element<O::BitShape>,
     StaticImage<I, 32, 32>: Sync
         + Conv2D<[[(); 3]; 3], O, OutputType = StaticImage<O, 32, 32>>
-        + Image2D<PixelType = I>,
+        + Image2D<PixelType = I>
+        + PixelMap<<f32 as Element<I::BitShape>>::Array>
+        + Image2D<ImageShape = StaticImage<(), 32, 32>>
+        + Hash,
     StaticImage<O, 32, 32>: Sync + Send,
+    <f32 as Element<I::BitShape>>::Array: Element<
+        StaticImage<(), 32, 32>,
+        Array = StaticImage<<f32 as Element<I::BitShape>>::Array, 32, 32>,
+    >,
+    StaticImage<<f32 as Element<I::BitShape>>::Array, 32, 32>: Sync + Send,
+    <<f32 as Element<I::BitShape>>::Array as Element<StaticImage<(), 32usize, 32usize>>>::Array:
+        Send,
+    [[I; 3]; 3]: ImagePatchLloyds<StaticImage<I, 32, 32>, [[(); 3]; 3]>
+        + CentroidCountPerImage<StaticImage<I, 32, 32>, [[(); 3]; 3], [(); C]>
+        + NullCluster<StaticImage<I, 32, 32>, [[(); 3]; 3]>,
+    rand::distributions::Standard: rand::distributions::Distribution<[[I; 3]; 3]>,
 {
     type InputImage = StaticImage<I, 32, 32>;
     type OutputImage = StaticImage<O, 32, 32>;
@@ -416,13 +429,20 @@ where
     type ObjType = [(<f32 as Element<O::BitShape>>::Array, f32); C];
     fn gen(
         examples: &Vec<(Self::InputImage, usize)>,
-        dataset_name: &Path,
         params: &FullFloatConvLayerParams,
     ) -> (
-        (Vec<(Self::OutputImage, usize)>, PathBuf),
+        Vec<(Self::OutputImage, usize)>,
         (Self::FloatWeightsType, Self::ObjType),
     ) {
-        let dataset_name = dataset_name.join(format!(
+        let input_hash = {
+            let mut s = DefaultHasher::new();
+            examples.hash(&mut s);
+            s.finish()
+        };
+        let dataset_path = format!("params/{}", input_hash);
+        let dataset_path = &Path::new(&dataset_path);
+
+        let dataset_name = dataset_path.join(format!(
             "{}, n{}, seed:{}, n_workers:{}, n_iters:{}, noise_sdev:{}, noise_decay_rate:{}.params",
             std::any::type_name::<O>(),
             examples.len(),
@@ -440,13 +460,44 @@ where
                 deserialize_from(weights_file).expect("can't deserialize weights from file")
             } else {
                 let mut rng = Hc128Rng::seed_from_u64(0);
+                //let centroids =
+                //    <[[I; 3]; 3] as ImagePatchLloyds<Self::InputImage, [[(); 3]; 3]>>::lloyds(
+                //        &mut rng, &examples, 100, 10,
+                //    );
+                let centroids =
+                    <[[I; 3]; 3] as NullCluster<Self::InputImage, [[(); 3]; 3]>>::null_cluster(
+                        &examples,
+                    );
+
+                let patch_bags = <[[I; 3]; 3] as CentroidCountPerImage<
+                    Self::InputImage,
+                    [[(); 3]; 3],
+                    [(); C],
+                >>::centroid_count_per_image(&examples, &centroids);
+
+                let float_examples: Vec<(
+                    StaticImage<<f32 as Element<I::BitShape>>::Array, 32, 32>,
+                    usize,
+                )> = examples
+                    .par_iter()
+                    .map(|(image, class)| {
+                        (
+                            image.pixel_map(|p| p.bit_map(|sign| if sign { -1f32 } else { 1f32 })),
+                            *class,
+                        )
+                    })
+                    .collect();
+                let mut rng = Hc128Rng::seed_from_u64(0);
                 let (weights, obj, _) = <(
                     Self::FloatWeightsType,
                     Self::ObjType,
                     PhantomData<O::BitShape>,
-                ) as DescendFloat<StaticImage<I, 32, 32>, [(); C]>>::train(
+                ) as DescendFloat<
+                    StaticImage<<f32 as Element<I::BitShape>>::Array, 32, 32>,
+                    [(); C],
+                >>::train(
                     &mut rng,
-                    &examples,
+                    &float_examples,
                     params.n_workers,
                     params.n_iters,
                     params.noise_sdev,
@@ -462,6 +513,6 @@ where
             .par_iter()
             .map(|(image, class)| (image.conv2d(|patch| weights.0.bfbvmm(patch)), *class))
             .collect();
-        ((new_examples, dataset_name), weights)
+        (new_examples, weights)
     }
 }

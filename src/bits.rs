@@ -3,7 +3,6 @@ use crate::float::FMA;
 /// and arrays of bits.
 use crate::layer::Apply;
 use crate::shape::{Element, Shape, ZipMap};
-use crate::unary::Preprocess;
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use serde::{Deserialize, Serialize};

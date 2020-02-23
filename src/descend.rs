@@ -1,13 +1,11 @@
 use crate::bits::{BitArray, BitMul, BitWord, IncrementFracCounters, IndexedFlipBit};
 use crate::count::ElementwiseAdd;
-use crate::float::{FFFVMMtanh, Mutate, SoftMaxLoss, FFFVMM};
-use crate::image2d::{Conv2D, GlobalPool, Image2D, PixelFold, StaticImage};
+use crate::float::{BFFVMMtanh, FFFVMMtanh, Mutate, SoftMaxLoss, FFFVMM};
+use crate::image2d::{Conv2D, Image2D, PixelFold, StaticImage};
 use crate::shape::{Element, Map, Shape};
 use rand::seq::SliceRandom;
-use rand::{distributions, Rng, SeedableRng};
-use rand_core::RngCore;
+use rand::Rng;
 use rand_distr::{Distribution, Normal};
-use rand_hc::Hc128Rng;
 use rayon::prelude::*;
 use std::f64;
 use std::marker::PhantomData;
@@ -22,7 +20,7 @@ where
         rng: &mut R,
         aux_weights: &<<f32 as Element<O::BitShape>>::Array as Element<C>>::Array,
         centroids: &Vec<I>,
-        examples: &[(Vec<(u16, u32)>, usize)],
+        examples: &[(Vec<(u32, u32)>, usize)],
         window_size: usize,
         window_thresh: usize,
         rate: f64,
@@ -31,7 +29,7 @@ where
         &self,
         aux_weights: &<<f32 as Element<O::BitShape>>::Array as Element<C>>::Array,
         centroids: &Vec<I>,
-        examples: &[(Vec<(u16, u32)>, usize)],
+        examples: &[(Vec<(u32, u32)>, usize)],
     ) -> f64;
 }
 
@@ -55,7 +53,7 @@ where
         rng: &mut RNG,
         aux_weights: &[<f32 as Element<O::BitShape>>::Array; C],
         centroids: &Vec<I>,
-        examples: &[(Vec<(u16, u32)>, usize)],
+        examples: &[(Vec<(u32, u32)>, usize)],
         window_size: usize,
         window_thresh: usize,
         rate: f64,
@@ -102,7 +100,7 @@ where
         &self,
         aux_weights: &[<f32 as Element<O::BitShape>>::Array; C],
         centroids: &Vec<I>,
-        examples: &[(Vec<(u16, u32)>, usize)],
+        examples: &[(Vec<(u32, u32)>, usize)],
     ) -> f64 {
         let centroid_acts: Vec<O> = centroids
             .par_iter()
@@ -421,5 +419,138 @@ where
         let n = pooled.0 as f32;
         let avgs = <H as Map<f32, f32>>::map(&pooled.1, |x| x / n);
         self.1.fffvmm(&avgs)
+    }
+}
+
+pub trait DescendFloatCentroidsPatchBag<I, C: Shape> {
+    type LayerType;
+    type AuxType;
+    fn float_descend(
+        model: &mut (Self::LayerType, Self::AuxType),
+        centroids: &Vec<I>,
+        examples: &[(Vec<(u32, u32)>, usize)],
+        noise: &[f32],
+        cur_loss: &mut f64,
+        n_workers: usize,
+    ) -> usize;
+    fn train<R: Rng>(
+        rng: &mut R,
+        centroids: &Vec<I>,
+        examples: &[(Vec<(u32, u32)>, usize)],
+        n_workers: usize,
+        n_iters: usize,
+        noise_sdev: f32,
+        sdev_decay_rate: f32,
+    ) -> (Self::LayerType, Self::AuxType);
+}
+
+impl<H: Shape + Map<f32, f32>, I: BitArray + BFFVMMtanh<H> + Sync, const C: usize>
+    DescendFloatCentroidsPatchBag<I, [(); C]> for H
+where
+    [f32; C]: SoftMaxLoss,
+    f32: Element<I::BitShape> + Element<H>,
+    (<f32 as Element<I::BitShape>>::Array, f32): Element<H>,
+    (
+        <(<f32 as Element<I::BitShape>>::Array, f32) as Element<H>>::Array,
+        [(<f32 as Element<H>>::Array, f32); C],
+    ): Mutate + Sync + Default,
+    <f32 as Element<H>>::Array: Send + Default + ElementwiseAdd + Sync,
+    [(<f32 as Element<H>>::Array, f32); C]:
+        FFFVMM<[f32; C], InputType = <f32 as Element<H>>::Array>,
+{
+    type LayerType = <(<f32 as Element<I::BitShape>>::Array, f32) as Element<H>>::Array;
+    type AuxType = [(<f32 as Element<H>>::Array, f32); C];
+    fn float_descend(
+        model: &mut (Self::LayerType, Self::AuxType),
+        centroids: &Vec<I>,
+        examples: &[(Vec<(u32, u32)>, usize)],
+        noise: &[f32],
+        cur_loss: &mut f64,
+        n_workers: usize,
+    ) -> usize {
+        assert_eq!(
+            noise.len(),
+            <(Self::LayerType, Self::AuxType)>::NOISE_LEN + n_workers
+        );
+        let worker_ids: Vec<_> = (0..n_workers).collect();
+        let worker_losses: Vec<(usize, f64)> = worker_ids
+            .par_iter()
+            .map(|&worker_id| {
+                let perturbed_model = model.mutate(&noise[worker_id..]);
+                let acts: Vec<<f32 as Element<H>>::Array> = centroids
+                    .par_iter()
+                    .map(|patch| patch.bffvmm_tanh(&model.0))
+                    .collect();
+                let new_loss: f64 = examples
+                    .par_iter()
+                    .map(|(bag, class)| {
+                        let pooled = bag.iter().fold(
+                            (0usize, <f32 as Element<H>>::Array::default()),
+                            |mut acc, (patch_index, patch_weight)| {
+                                acc.0 += 1;
+                                acc.1.elementwise_add(&acts[*patch_index as usize]);
+                                acc
+                            },
+                        );
+                        let n = pooled.0 as f32;
+                        let avgs = <H as Map<f32, f32>>::map(&pooled.1, |x| x / n);
+                        let acts = model.1.fffvmm(&avgs);
+                        acts.softmax_loss(*class) as f64
+                    })
+                    .sum();
+                (worker_id, new_loss)
+            })
+            .filter(|&(_, l)| l < *cur_loss)
+            .collect();
+
+        if let Some(&(best_seed, new_loss)) = worker_losses
+            .iter()
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        {
+            *cur_loss = new_loss;
+            *model = model.mutate(
+                &noise[best_seed..best_seed + <(Self::LayerType, Self::AuxType)>::NOISE_LEN],
+            );
+        } else {
+            //println!("miss: {} seeds", worker_losses.len());
+        }
+        worker_losses.len()
+    }
+    fn train<R: Rng>(
+        rng: &mut R,
+        centroids: &Vec<I>,
+        examples: &[(Vec<(u32, u32)>, usize)],
+        n_workers: usize,
+        n_iters: usize,
+        noise_sdev: f32,
+        sdev_decay_rate: f32,
+    ) -> (Self::LayerType, Self::AuxType) {
+        let mut model = <(Self::LayerType, Self::AuxType)>::default();
+
+        let mut cur_loss = f64::MAX;
+        let mut cur_sdev = noise_sdev;
+        for i in 0..n_iters {
+            cur_sdev *= sdev_decay_rate;
+            let normal = Normal::new(0f32, cur_sdev).unwrap();
+            let noise: Vec<f32> = (0..<(Self::LayerType, Self::AuxType)>::NOISE_LEN + n_workers)
+                .map(|_| normal.sample(rng))
+                .collect();
+            let n_good_seeds = H::float_descend(
+                &mut model,
+                &centroids,
+                &examples,
+                &noise,
+                &mut cur_loss,
+                n_workers,
+            );
+            println!(
+                "{:3} {:3} sdev:{:.4} loss: {:.5}",
+                i,
+                n_good_seeds,
+                cur_sdev,
+                cur_loss / examples.len() as f64
+            );
+        }
+        model
     }
 }

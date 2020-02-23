@@ -109,40 +109,40 @@ where
 }
 
 // bit input, float weights and float output.
-pub trait BFFVM<S: Shape>
+pub trait BFFVMMtanh<S: Shape>
 where
     Self: BitArray,
     f32: Element<Self::BitShape> + Element<S>,
-    <f32 as Element<Self::BitShape>>::Array: Element<S>,
+    (<f32 as Element<Self::BitShape>>::Array, f32): Element<S>,
 {
-    fn float_mul(
+    fn bffvmm_tanh(
         &self,
-        weights: &<<f32 as Element<Self::BitShape>>::Array as Element<S>>::Array,
+        weights: &<(<f32 as Element<Self::BitShape>>::Array, f32) as Element<S>>::Array,
     ) -> <f32 as Element<S>>::Array;
 }
 
-impl<T: BitArray + BFMA> BFFVM<()> for T
+impl<T: BitArray + BFMA> BFFVMMtanh<()> for T
 where
     f32: Element<T::BitShape>,
 {
-    fn float_mul(&self, weights: &<f32 as Element<T::BitShape>>::Array) -> f32 {
-        self.bfma(weights)
+    fn bffvmm_tanh(&self, weights: &(<f32 as Element<T::BitShape>>::Array, f32)) -> f32 {
+        (self.bfma(&weights.0) + weights.1).tanh()
     }
 }
 
-impl<S: Shape, T: BitArray + BFFVM<S>, const L: usize> BFFVM<[S; L]> for T
+impl<S: Shape, T: BitArray + BFFVMMtanh<S>, const L: usize> BFFVMMtanh<[S; L]> for T
 where
     f32: Element<T::BitShape> + Element<S>,
-    <f32 as Element<T::BitShape>>::Array: Element<S>,
+    (<f32 as Element<T::BitShape>>::Array, f32): Element<S>,
     [<f32 as Element<S>>::Array; L]: Default,
 {
-    fn float_mul(
+    fn bffvmm_tanh(
         &self,
-        weights: &[<<f32 as Element<Self::BitShape>>::Array as Element<S>>::Array; L],
+        weights: &[<(<f32 as Element<Self::BitShape>>::Array, f32) as Element<S>>::Array; L],
     ) -> [<f32 as Element<S>>::Array; L] {
         let mut target = <[<f32 as Element<S>>::Array; L]>::default();
         for i in 0..L {
-            target[i] = self.float_mul(&weights[i]);
+            target[i] = self.bffvmm_tanh(&weights[i]);
         }
         target
     }
