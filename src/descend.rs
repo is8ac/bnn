@@ -9,6 +9,7 @@ use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 use std::f64;
 use std::marker::PhantomData;
+use std::time::{Duration, Instant};
 
 pub trait DescendMod2<I: Element<O::BitShape>, O: BitArray, C: Shape>
 where
@@ -422,9 +423,15 @@ where
     }
 }
 
-pub trait DescendFloatCentroidsPatchBag<I, C: Shape> {
-    type LayerType;
-    type AuxType;
+pub trait DescendFloatCentroidsPatchBag<I: BitArray, C: Shape>
+where
+    Self: Sized + Shape,
+    f32: Element<I::BitShape> + Element<Self>,
+    (<f32 as Element<Self>>::Array, f32): Element<C>,
+    (<f32 as Element<I::BitShape>>::Array, f32): Element<Self>,
+{
+    type LayerType = <(<f32 as Element<I::BitShape>>::Array, f32) as Element<Self>>::Array;
+    type AuxType = <(<f32 as Element<Self>>::Array, f32) as Element<C>>::Array;
     fn float_descend(
         model: &mut (Self::LayerType, Self::AuxType),
         centroids: &Vec<I>,
@@ -441,25 +448,28 @@ pub trait DescendFloatCentroidsPatchBag<I, C: Shape> {
         n_iters: usize,
         noise_sdev: f32,
         sdev_decay_rate: f32,
-    ) -> (Self::LayerType, Self::AuxType);
+    ) -> (
+        <(<f32 as Element<I::BitShape>>::Array, f32) as Element<Self>>::Array,
+        <(<f32 as Element<Self>>::Array, f32) as Element<C>>::Array,
+    );
 }
 
 impl<H: Shape + Map<f32, f32>, I: BitArray + BFFVMMtanh<H> + Sync, const C: usize>
     DescendFloatCentroidsPatchBag<I, [(); C]> for H
 where
-    [f32; C]: SoftMaxLoss,
+    [f32; C]: SoftMaxLoss + std::fmt::Debug,
     f32: Element<I::BitShape> + Element<H>,
     (<f32 as Element<I::BitShape>>::Array, f32): Element<H>,
     (
         <(<f32 as Element<I::BitShape>>::Array, f32) as Element<H>>::Array,
         [(<f32 as Element<H>>::Array, f32); C],
     ): Mutate + Sync + Default,
-    <f32 as Element<H>>::Array: Send + Default + ElementwiseAdd + Sync,
+    <f32 as Element<H>>::Array: Send + Default + ElementwiseAdd + Sync + std::fmt::Debug,
     [(<f32 as Element<H>>::Array, f32); C]:
         FFFVMM<[f32; C], InputType = <f32 as Element<H>>::Array>,
 {
-    type LayerType = <(<f32 as Element<I::BitShape>>::Array, f32) as Element<H>>::Array;
-    type AuxType = [(<f32 as Element<H>>::Array, f32); C];
+    type LayerType = <(<f32 as Element<I::BitShape>>::Array, f32) as Element<Self>>::Array;
+    type AuxType = <(<f32 as Element<Self>>::Array, f32) as Element<[(); C]>>::Array;
     fn float_descend(
         model: &mut (Self::LayerType, Self::AuxType),
         centroids: &Vec<I>,
@@ -476,28 +486,37 @@ where
         let worker_losses: Vec<(usize, f64)> = worker_ids
             .par_iter()
             .map(|&worker_id| {
-                let perturbed_model = model.mutate(&noise[worker_id..]);
+                let perturbed_model = model.mutate(
+                    &noise[worker_id..worker_id + <(Self::LayerType, Self::AuxType)>::NOISE_LEN],
+                );
+                let acts_start = Instant::now();
                 let acts: Vec<<f32 as Element<H>>::Array> = centroids
                     .par_iter()
-                    .map(|patch| patch.bffvmm_tanh(&model.0))
+                    .map(|patch| patch.bffvmm_tanh(&perturbed_model.0))
                     .collect();
+                //dbg!(acts_start.elapsed());
+                let loss_start = Instant::now();
                 let new_loss: f64 = examples
                     .par_iter()
                     .map(|(bag, class)| {
                         let pooled = bag.iter().fold(
                             (0usize, <f32 as Element<H>>::Array::default()),
-                            |mut acc, (patch_index, patch_weight)| {
-                                acc.0 += 1;
-                                acc.1.elementwise_add(&acts[*patch_index as usize]);
+                            |mut acc, &(patch_index, patch_weight)| {
+                                acc.0 += patch_weight as usize;
+                                acc.1.weighted_elementwise_add(
+                                    &acts[patch_index as usize],
+                                    patch_weight,
+                                );
                                 acc
                             },
                         );
                         let n = pooled.0 as f32;
                         let avgs = <H as Map<f32, f32>>::map(&pooled.1, |x| x / n);
-                        let acts = model.1.fffvmm(&avgs);
+                        let acts = perturbed_model.1.fffvmm(&avgs);
                         acts.softmax_loss(*class) as f64
                     })
                     .sum();
+                //dbg!(loss_start.elapsed());
                 (worker_id, new_loss)
             })
             .filter(|&(_, l)| l < *cur_loss)
@@ -544,7 +563,7 @@ where
                 n_workers,
             );
             println!(
-                "{:3} {:3} sdev:{:.4} loss: {:.5}",
+                "{:4} {:4} sdev:{:.6} loss: {:.7}",
                 i,
                 n_good_seeds,
                 cur_sdev,

@@ -17,14 +17,6 @@ use std::path::Path;
 
 const N_EXAMPLES: usize = 800;
 
-fn float_channel_rgb(input: [u8; 3]) -> [f32; 3] {
-    let mut target = [0f32; 3];
-    for c in 0..3 {
-        target[c] = (input[c] as f32 - 128f32) / 128f32;
-    }
-    target
-}
-
 fn float_channel_unary(input: [u8; 3]) -> [f32; 32] {
     (to_10(input[0]) | (to_10(input[1]) << 10) | (to_10(input[2]) << 20)).bit_map(|sign| {
         if sign {

@@ -1,6 +1,6 @@
 use crate::bits::{BitArray, BitArrayOPs, BitMap, BitMul, BitWord, Distance, BFBVMM};
 use crate::cluster::{CentroidCountPerImage, ImagePatchLloyds, NullCluster};
-use crate::descend::{DescendFloat, DescendMod2};
+use crate::descend::{DescendFloat, DescendFloatCentroidsPatchBag, DescendMod2};
 use crate::float::{FFFVMMtanh, Noise};
 use crate::image2d::{AvgPool, BitPool, Concat, Conv2D, Image2D, PixelMap, StaticImage};
 use crate::shape::{Element, Shape};
@@ -143,6 +143,7 @@ where
                         &examples,
                         params.k,
                         params.lloyds_iters,
+                        0,
                     );
 
                     let patch_bags = <I as CentroidCountPerImage<
@@ -372,7 +373,7 @@ pub trait BFBConvLayer<ImageShape, I, PatchShape, C: Shape> {
     type ObjType;
     fn gen(
         examples: &Vec<(Self::InputImage, usize)>,
-        hyper_params: &FullFloatConvLayerParams,
+        hyper_params: &BFBConvLayerParams,
     ) -> (
         Vec<(Self::OutputImage, usize)>,
         (Self::FloatWeightsType, Self::ObjType),
@@ -382,25 +383,24 @@ pub trait BFBConvLayer<ImageShape, I, PatchShape, C: Shape> {
 impl<I: BitArray + BitMap<f32>, O: BitArray, const C: usize>
     BFBConvLayer<StaticImage<(), 32, 32>, I, [[(); 3]; 3], [(); C]> for O
 where
-    f32: Element<O::BitShape> + Element<I::BitShape>,
-    ([[<f32 as Element<I::BitShape>>::Array; 3]; 3], f32): Element<O::BitShape>,
-    <([[<f32 as Element<I::BitShape>>::Array; 3]; 3], f32) as Element<O::BitShape>>::Array:
-        BFBVMM<[[I; 3]; 3], O> + Sync + Copy,
-    [(<f32 as Element<O::BitShape>>::Array, f32); C]: Sync + Copy,
+    f32: Element<O::BitShape> + Element<I::BitShape> + Element<<[[I; 3]; 3] as BitArray>::BitShape>,
     (
-        <([[<f32 as Element<I::BitShape>>::Array; 3]; 3], f32) as Element<O::BitShape>>::Array,
-        [(<f32 as Element<O::BitShape>>::Array, f32); C],
-        PhantomData<O::BitShape>,
-    ): DescendFloat<StaticImage<<f32 as Element<I::BitShape>>::Array, 32, 32>, [(); C]>,
-
+        <f32 as Element<<[[I; 3]; 3] as BitArray>::BitShape>>::Array,
+        f32,
+    ): Element<O::BitShape>,
+    <(
+        <f32 as Element<<[[I; 3]; 3] as BitArray>::BitShape>>::Array,
+        f32,
+    ) as Element<O::BitShape>>::Array: BFBVMM<[[I; 3]; 3], O> + Sync + Copy,
+    [(<f32 as Element<O::BitShape>>::Array, f32); C]: Sync + Copy,
     for<'de> (
-        <([[<f32 as Element<I::BitShape>>::Array; 3]; 3], f32) as Element<O::BitShape>>::Array,
+        <(
+            <f32 as Element<<[[I; 3]; 3] as BitArray>::BitShape>>::Array,
+            f32,
+        ) as Element<O::BitShape>>::Array,
         [(<f32 as Element<O::BitShape>>::Array, f32); C],
     ): serde::Deserialize<'de>,
-    (
-        <([[<f32 as Element<I::BitShape>>::Array; 3]; 3], f32) as Element<O::BitShape>>::Array,
-        [(<f32 as Element<O::BitShape>>::Array, f32); C],
-    ): serde::Serialize,
+    O::BitShape: DescendFloatCentroidsPatchBag<[[I; 3]; 3], [(); C]>,
 
     ([[I; 3]; 3], f32): Element<O::BitShape>,
     StaticImage<I, 32, 32>: Sync
@@ -415,6 +415,13 @@ where
         Array = StaticImage<<f32 as Element<I::BitShape>>::Array, 32, 32>,
     >,
     StaticImage<<f32 as Element<I::BitShape>>::Array, 32, 32>: Sync + Send,
+    (
+        <(
+            <f32 as Element<<[[I; 3]; 3] as BitArray>::BitShape>>::Array,
+            f32,
+        ) as Element<<O as BitArray>::BitShape>>::Array,
+        [(<f32 as Element<<O as BitArray>::BitShape>>::Array, f32); C],
+    ): serde::Serialize,
     <<f32 as Element<I::BitShape>>::Array as Element<StaticImage<(), 32usize, 32usize>>>::Array:
         Send,
     [[I; 3]; 3]: ImagePatchLloyds<StaticImage<I, 32, 32>, [[(); 3]; 3]>
@@ -424,12 +431,14 @@ where
 {
     type InputImage = StaticImage<I, 32, 32>;
     type OutputImage = StaticImage<O, 32, 32>;
-    type FloatWeightsType =
-        <([[<f32 as Element<I::BitShape>>::Array; 3]; 3], f32) as Element<O::BitShape>>::Array;
+    type FloatWeightsType = <(
+        <f32 as Element<<[[I; 3]; 3] as BitArray>::BitShape>>::Array,
+        f32,
+    ) as Element<O::BitShape>>::Array;
     type ObjType = [(<f32 as Element<O::BitShape>>::Array, f32); C];
     fn gen(
         examples: &Vec<(Self::InputImage, usize)>,
-        params: &FullFloatConvLayerParams,
+        params: &BFBConvLayerParams,
     ) -> (
         Vec<(Self::OutputImage, usize)>,
         (Self::FloatWeightsType, Self::ObjType),
@@ -443,7 +452,7 @@ where
         let dataset_path = &Path::new(&dataset_path);
 
         let dataset_name = dataset_path.join(format!(
-            "{}, n{}, seed:{}, n_workers:{}, n_iters:{}, noise_sdev:{}, noise_decay_rate:{}.params",
+            "{}, n{}, seed:{}, n_workers:{}, n_iters:{}, noise_sdev:{}, noise_decay_rate:{} {}, k:{}, li:{} lpt:{}.params",
             std::any::type_name::<O>(),
             examples.len(),
             params.seed,
@@ -451,6 +460,10 @@ where
             params.n_iters,
             params.noise_sdev,
             params.sdev_decay_rate,
+            params.cluster,
+            params.k,
+            params.lloyds_iters,
+            params.lloyds_prune_threshold,
         ));
         create_dir_all(&dataset_name).unwrap();
         let weights_path = &dataset_name.join("float_weights.prms");
@@ -460,14 +473,22 @@ where
                 deserialize_from(weights_file).expect("can't deserialize weights from file")
             } else {
                 let mut rng = Hc128Rng::seed_from_u64(0);
-                //let centroids =
-                //    <[[I; 3]; 3] as ImagePatchLloyds<Self::InputImage, [[(); 3]; 3]>>::lloyds(
-                //        &mut rng, &examples, 100, 10,
-                //    );
-                let centroids =
+                let centroids = if params.cluster {
+                    println!("clustering");
+                    <[[I; 3]; 3] as ImagePatchLloyds<Self::InputImage, [[(); 3]; 3]>>::lloyds(
+                        &mut rng,
+                        &examples,
+                        params.k,
+                        params.lloyds_iters,
+                        params.lloyds_prune_threshold,
+                    )
+                } else {
+                    println!("not clustering");
                     <[[I; 3]; 3] as NullCluster<Self::InputImage, [[(); 3]; 3]>>::null_cluster(
                         &examples,
-                    );
+                    )
+                };
+                dbg!(centroids.len());
 
                 let patch_bags = <[[I; 3]; 3] as CentroidCountPerImage<
                     Self::InputImage,
@@ -475,39 +496,22 @@ where
                     [(); C],
                 >>::centroid_count_per_image(&examples, &centroids);
 
-                let float_examples: Vec<(
-                    StaticImage<<f32 as Element<I::BitShape>>::Array, 32, 32>,
-                    usize,
-                )> = examples
-                    .par_iter()
-                    .map(|(image, class)| {
-                        (
-                            image.pixel_map(|p| p.bit_map(|sign| if sign { -1f32 } else { 1f32 })),
-                            *class,
-                        )
-                    })
-                    .collect();
                 let mut rng = Hc128Rng::seed_from_u64(0);
-                let (weights, obj, _) = <(
-                    Self::FloatWeightsType,
-                    Self::ObjType,
-                    PhantomData<O::BitShape>,
-                ) as DescendFloat<
-                    StaticImage<<f32 as Element<I::BitShape>>::Array, 32, 32>,
-                    [(); C],
-                >>::train(
-                    &mut rng,
-                    &float_examples,
-                    params.n_workers,
-                    params.n_iters,
-                    params.noise_sdev,
-                    params.sdev_decay_rate,
-                );
+                let weights =
+                    <O::BitShape as DescendFloatCentroidsPatchBag<[[I; 3]; 3], [(); C]>>::train(
+                        &mut rng,
+                        &centroids,
+                        &patch_bags,
+                        params.n_workers,
+                        params.n_iters,
+                        params.noise_sdev,
+                        params.sdev_decay_rate,
+                    );
 
                 dbg!("done training");
 
-                serialize_into(File::create(&weights_path).unwrap(), &(weights, obj)).unwrap();
-                (weights, obj)
+                serialize_into(File::create(&weights_path).unwrap(), &weights).unwrap();
+                weights
             };
         let new_examples: Vec<(StaticImage<O, 32, 32>, usize)> = examples
             .par_iter()
@@ -515,4 +519,17 @@ where
             .collect();
         (new_examples, weights)
     }
+}
+
+#[derive(Debug)]
+pub struct BFBConvLayerParams {
+    pub seed: u64,
+    pub n_workers: usize,
+    pub n_iters: usize,
+    pub noise_sdev: f32,
+    pub sdev_decay_rate: f32,
+    pub cluster: bool,
+    pub k: usize,
+    pub lloyds_iters: usize,
+    pub lloyds_prune_threshold: usize,
 }

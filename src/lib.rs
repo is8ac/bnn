@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![feature(const_generics)]
 #![deny(unreachable_pub)]
+#![feature(associated_type_defaults)]
 
 pub mod bits;
 pub mod cluster;

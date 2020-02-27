@@ -13,25 +13,36 @@ where
     //u32: Element<Self::BitShape>,
     Image::PixelType: Element<PatchShape>,
 {
-    fn avgs(examples: &Vec<(Image, usize)>, centroids: &Vec<Self>) -> Vec<Self>;
+    fn avgs(
+        examples: &Vec<(Image, usize)>,
+        centroids: &Vec<Self>,
+        prune_threshold: usize,
+    ) -> Vec<Self>;
     fn lloyds<RNG: Rng>(
         rng: &mut RNG,
         examples: &Vec<(Image, usize)>,
         k: usize,
         i: usize,
+        prune_threshold: usize,
     ) -> Vec<Self>
     where
         distributions::Standard: distributions::Distribution<Self>,
     {
         (0..i).fold((0..k).map(|_| rng.gen()).collect(), |centroids, e| {
-            dbg!(e);
-            Self::avgs(examples, &centroids)
+            let centroids = Self::avgs(examples, &centroids, prune_threshold);
+            println!(
+                "{}: n:{} {}",
+                e,
+                centroids.len(),
+                centroids.len() as f64 / k as f64
+            );
+            centroids
         })
     }
 }
 
 impl<
-        T: Distance + BitArray + IncrementFracCounters + BitArrayOPs + Sync,
+        T: Distance + BitArray + IncrementFracCounters + BitArrayOPs + Sync + Send,
         Image: PatchFold<Vec<(usize, <u32 as Element<T::BitShape>>::Array)>, PatchShape> + Image2D + Sync,
         PatchShape: Shape,
     > ImagePatchLloyds<Image, PatchShape> for T
@@ -42,7 +53,7 @@ where
     T::BitShape: Map<u32, bool>,
     bool: Element<T::BitShape>,
 {
-    fn avgs(examples: &Vec<(Image, usize)>, centroids: &Vec<T>) -> Vec<T> {
+    fn avgs(examples: &Vec<(Image, usize)>, centroids: &Vec<T>, prune_threshold: usize) -> Vec<T> {
         examples
             .par_iter()
             .fold(
@@ -85,7 +96,8 @@ where
                     a
                 },
             )
-            .iter()
+            .par_iter()
+            .filter(|(n, _)| *n > prune_threshold)
             .map(|(n, counts)| {
                 let threshold = *n as u32 / 2;
                 let bools =
@@ -180,7 +192,7 @@ where
             .par_iter()
             .fold(
                 || Vec::new(),
-                |mut acc, (image, _)| {
+                |acc, (image, _)| {
                     image.patch_fold(acc, |mut a, patch| {
                         a.push(*patch);
                         a

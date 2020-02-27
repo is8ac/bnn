@@ -286,7 +286,7 @@ impl Mutate for f32 {
 impl<T> Mutate for PhantomData<T> {
     const NOISE_LEN: usize = 0;
     #[inline(always)]
-    fn mutate(&self, noise: &[f32]) -> Self {
+    fn mutate(&self, _: &[f32]) -> Self {
         PhantomData::default()
     }
 }
