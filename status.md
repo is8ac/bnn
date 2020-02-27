@@ -25,10 +25,10 @@ This has two limitations:
 - Communication latency: Each update, the master must send a copy of the weights to all workers, and then each worker must send its updates back to the master. The weights and updates are many gigabytes for a moderately large model.
 
 ### Many updates
-The number of updates requires increases with number of layers.
+The number of updates required increases with number of layers.
 Theoretically worse case, it is exponential with number of layers.
 In practice, for a variety of reasons, it it is not nearly so bad, but still, it is superlinear with number of layers.
-After great effort, some Google people trained resent50 to 76% in 2500 updates. This was a lot of work. They used a mini-batch size of 65536.
+After great effort, some Google people trained resnet50 to 76% in 2500 updates. This was a lot of work. They used a mini-batch size of 65536.
 
 
 # Goals
@@ -50,10 +50,10 @@ After great effort, some Google people trained resent50 to 76% in 2500 updates. 
 
 # Greedy layer-wise training
 - [Greedy Layerwise Learning Can Scale to ImageNet](https://arxiv.org/abs/1812.11446)
-- [Greedy Layerwise Training of Convolutional NeuralNetworks](https://dspace.mit.edu/bitstream/handle/1721.1/123128/1128279897-MIT.pdf?sequence=1&isAllowed=y)
+- [Greedy Layerwise Training of Convolutional Neural Networks](https://dspace.mit.edu/bitstream/handle/1721.1/123128/1128279897-MIT.pdf?sequence=1&isAllowed=y)
 
 In late 2018,  Belilovsky et al. said that we can train multi layer conv nets one layer at a time.
-For each layer, we construct a simple model consisting of a a single conv layer, followed by global average pooling and a single fully connected auxiliary layer.
+For each layer, we construct a simple model consisting of a single conv layer, followed by global average pooling and a single fully connected auxiliary layer.
 This simple model, we train, and then, once it is trained well, we discard the auxiliary layer and apply the conv layer to the images to produce the input for the next layer.
 At any given time, we are only solving a single hidden layer problem.
 This is nice.
@@ -82,10 +82,8 @@ As long as each example is within a small hamming distance of a centroid, cluste
 
 It is obviously silly to try to cluster whole images.
 A dog looking to the right is an entirety different set of pixels then a dog looking to the left.
-32x32 pixels contains too much meaningless information to be worth clustering in there entirety.
-Since an end to end trained convolution model depends in the exact positions of all the pixels, we cannot cluster the input when training end to end.
-
-However, a 3x3 pixel patch is far less information.
+32x32 pixels contains too much meaningless information to be worth clustering in their entirety.
+Since an end to end trained convolution model depends on the exact positions of all the pixels, we cannot cluster the input when training end to end.
 
 
 # Further implications of layer-wise training of conv nets
@@ -96,7 +94,7 @@ We multiply each patch in the bag with the convolution filter, apply tanh activa
 This does improved our situation.
 It increases our memory usage by a factor of 9.
 
-However, now our first layer is a fully connected model in 3x3 pixel patches.
+However, now our first layer is a fully connected model on 3x3 pixel patches.
 Clustering images is pointless.
 Clustering 3x3 patches is very much possible.
 
@@ -110,7 +108,7 @@ In practice, they tend to be something more like 1 hot, or few hot.
 
 Additionally, the 9 pixels are spatially close and are therefore not independent.
 
-In the early layers, pixels represent simple patters.
+In the early layers, pixels represent simple patterns.
 There are only so many different edges to be had.
 In later layers, pixels represent high level abstract concepts such as "this is a dog", or "this is not a toaster".
 This too is a fairly small space.
