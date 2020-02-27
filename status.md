@@ -129,4 +129,10 @@ This makes each image far cheaper.
 
 ## Image clustering
 Now that each example is a set of k counts, we may additionally cluster images.
-This reduces the number of image.
+This reduces the number of images.
+
+# Training on patch bags
+Now that we have reduced the problem to summing the activations of patches in different weightings, and then applying a single fully connected auxiliary layer, we can train.
+
+Evolutionary optimization does not work well with mini-batches and is too expensive for large models.
+Now I am attempting to apply backpropagation based gradient decent.
