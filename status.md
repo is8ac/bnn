@@ -5,12 +5,12 @@ This decomposes a single deep gradient decent problem into a series of shallow p
 Within a single layer, the input is an unordered set of patches; we don't need spatial information.
 Patches can be clustered.
 Now an image is a distribution of a finite set of centroids.
-This make each image cheap to train on.
+This makes each image cheap to train on.
 
 Distributions of centroids can also be clustered.
 This makes the whole set cheap to train on.
 
-Clustering parallelizes well across lots of machines with low bandwidth, high latency, connections.
+Clustering parallelizes well across lots of machines with low bandwidth, high latency connections.
 The actual gradient descent is now cheap enough to do easily on a single machine.
 
 I expect this same principal to apply to 1d conv nets on sequence data.
