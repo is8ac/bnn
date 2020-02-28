@@ -1,7 +1,23 @@
+# TL;DR:
+Multilayer conv nets can be trained one layer at a time; we don't need deep gradients.
+This decomposes a single deep gradient decent problem into a series of shallow problems.
+
+Within a single layer, the input is an unordered set of patches; we don't need spatial information.
+Patches can be clustered.
+Now an image is a distribution of a finite set of centroids.
+This make each image cheap to train on.
+
+Distributions of centroids can also be clustered.
+This makes the whole set cheap to train on.
+
+Clustering parallelizes well across lots of machines with low bandwidth, high latency, connections.
+The actual gradient descent is now cheap enough to do easily on a single machine.
+
+
 # Problem
 We want to classify examples into a finite number of classes.
-Long term, this may include sequence data as such as log messages.
-Short term examples means CIFAR10.
+Long term, this may include sequence data such as log messages.
+Short term, examples means CIFAR10.
 CIFAR10 is a set of 32x32 pixel RGB photographs.
 It has 10 classes.
 
@@ -68,7 +84,7 @@ Some are of class A, others are of class b.
 Consider that the examples are 8 bits in size.
 It is wasteful to train on all the examples individually.
 There can only be 256 different 8 bit strings.
-Far better to allocate 256 countered for each class, and then train on this summary.
+Far better to allocate 256 counters for each class, and then train on this summary.
 
 Consider instead that each example is 32 bits. Now it would take 4 billion counters per class.
 This is still barely doable on modern hardware.
@@ -81,7 +97,7 @@ As long as each example is within a small hamming distance of a centroid, cluste
 
 
 It is obviously silly to try to cluster whole images.
-A dog looking to the right is an entirety different set of pixels then a dog looking to the left.
+A dog looking to the right is an entirely different set of pixels then a dog looking to the left.
 32x32 pixels contains too much meaningless information to be worth clustering in their entirety.
 Since an end to end trained convolution model depends on the exact positions of all the pixels, we cannot cluster the input when training end to end.
 
@@ -98,7 +114,7 @@ However, now our first layer is a fully connected model on 3x3 pixel patches.
 Clustering images is pointless.
 Clustering 3x3 patches is very much possible.
 
-Assuming each pixel to be 32 bits, a 3x3 patch consists of 32*3*3=288 bits.
+Assuming each pixel to be 32 bits, a 3x3 patch consists of 32 x 3 x 3 = 288 bits.
 288 bits of a big space.
 However, we should not think of the 32 bits of a pixel as being 32 independent bits representing 32 shannons of information.
 
@@ -119,7 +135,7 @@ Whereas previously an example consisted of a bag of n_pixels patches, now it con
 
 To look at it differently, given k clusters, each image is represented as an array of k counters, summing to n_pixels, many of which will likely be 0 if they never appeared in that image.
 It is possible that two entirety different images, for example, one of a dog and another of a toaster, could be represented as nearly identical sets of centroid counts if they happen to contain the same distribution of patches.
-(In a well trained mode, the rate of such image level collisions across classes will decrease as we add layers, while the rate of image level coalitions within classes will increase until, if the model is trained to 100% accuracy, all the members of a given class will be represented by the same, or very similar, distributions of centroid counts.)
+(In a well trained model, the rate of such image level collisions across classes will decrease as we add layers, while the rate of image level collisions within classes will increase until, if the model is trained to 100% accuracy, all the members of a given class will be represented by the same, or very similar, distributions of centroid counts.)
 To compute the input to the auxiliary layer of some set of examples, first we apply the conv filter to each of the k centroids to obtain k sets of activations. This need only be done once for all images.
 Then, for each image, we need only elementwise sum the activations, weighting according to the centroid counts of that image.
 
@@ -132,5 +148,13 @@ This reduces the number of images.
 # Training on patch bags
 Now that we have reduced the problem to summing the activations of patches in different weightings, and then applying a single fully connected auxiliary layer, we can train.
 
+## End to end
+With in a single layer, we train on a proxy for the real data.
+This proxy is imprecise, it looses information.
+However we then pass the full real data through it to construct the input for the next layer.
+The next layer can compensate for the errors and distortions of the layer before it.
+Each layer, we train on a proxy for the real data, but we never train on a proxy of a proxy.
+
+# Next steps
 Evolutionary optimization does not work well with mini-batches and is too expensive for large models.
-Now I am attempting to apply backpropagation based gradient decent.
+Now I am attempting to apply backpropagation based gradient descent.
