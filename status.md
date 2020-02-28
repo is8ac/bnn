@@ -13,6 +13,9 @@ This makes the whole set cheap to train on.
 Clustering parallelizes well across lots of machines with low bandwidth, high latency, connections.
 The actual gradient descent is now cheap enough to do easily on a single machine.
 
+I expect this same principal to apply to 1d conv nets on sequence data.
+We can use it train very big models on all our log data.
+
 
 # Problem
 We want to classify examples into a finite number of classes.
@@ -149,7 +152,7 @@ This reduces the number of images.
 Now that we have reduced the problem to summing the activations of patches in different weightings, and then applying a single fully connected auxiliary layer, we can train.
 
 ## End to end
-With in a single layer, we train on a proxy for the real data.
+Within a single layer, we train on a proxy for the real data.
 This proxy is imprecise, it looses information.
 However we then pass the full real data through it to construct the input for the next layer.
 The next layer can compensate for the errors and distortions of the layer before it.
