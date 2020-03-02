@@ -249,6 +249,13 @@ pub trait Noise {
     fn noise<R: RngCore>(rng: &mut R, sdev: f32) -> Self;
 }
 
+impl Noise for f64 {
+    fn noise<R: RngCore>(rng: &mut R, sdev: f32) -> f64 {
+        let normal = Normal::new(0f64, sdev as f64).unwrap();
+        normal.sample(rng)
+    }
+}
+
 impl Noise for f32 {
     fn noise<R: RngCore>(rng: &mut R, sdev: f32) -> f32 {
         let normal = Normal::new(0f32, sdev).unwrap();
@@ -266,6 +273,12 @@ where
             target[i] = T::noise(rng, sdev);
         }
         target
+    }
+}
+
+impl<A: Noise, B: Noise> Noise for (A, B) {
+    fn noise<RNG: RngCore>(rng: &mut RNG, sdev: f32) -> (A, B) {
+        (A::noise(rng, sdev), B::noise(rng, sdev))
     }
 }
 

@@ -27,7 +27,7 @@ It has 10 classes.
 It is well established that muti layer convolution nets are capable of classifying CIFAR10 well.
 
 Traditionally, multilayer conv nets are trained via end to end stochastic gradient decent via back propagation.
-We take a minibatch of, perhaps 32 examples, run the foreword pass, caching each intermediate state, to compute the average loss.
+We take a minibatch of, perhaps 32 examples, run the forward pass, caching each intermediate state, to compute the average loss.
 Then we compute the gradient of each parameters, making a small update to each weight.
 
 ## Problem

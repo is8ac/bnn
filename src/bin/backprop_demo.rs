@@ -1,67 +1,102 @@
 #![feature(const_generics)]
+use bitnn::count::ElementwiseAdd;
+use bitnn::float::Noise;
+use bitnn::shape::Map;
 use rand::distributions;
 use rand::{Rng, SeedableRng};
 use rand_core::RngCore;
 use rand_distr::{Distribution, Normal};
 use rand_hc::Hc128Rng;
 
-/// Normal distribution centered around 0
-pub trait Noise {
-    fn noise<R: RngCore>(rng: &mut R, sdev: f64) -> Self;
+trait Divide {
+    fn divide(&self, n: f64) -> Self;
 }
 
-impl Noise for f64 {
-    fn noise<R: RngCore>(rng: &mut R, sdev: f64) -> f64 {
-        let normal = Normal::new(0f64, sdev).unwrap();
-        normal.sample(rng)
+impl Divide for f64 {
+    fn divide(&self, n: f64) -> Self {
+        *self / n
     }
 }
 
-impl<T: Noise, const L: usize> Noise for [T; L]
+impl<T: Divide, const L: usize> Divide for [T; L]
 where
     [T; L]: Default,
 {
-    fn noise<RNG: RngCore>(rng: &mut RNG, sdev: f64) -> [T; L] {
+    fn divide(&self, n: f64) -> Self {
         let mut target = <[T; L]>::default();
         for i in 0..L {
-            target[i] = T::noise(rng, sdev);
+            target[i] = self[i].divide(n);
         }
         target
     }
 }
 
-trait Tanh<const L: usize> {
-    fn tanh(&self) -> [f64; L];
-    fn tanh_grad(&self, grad: &[f64; L]) -> [f64; L];
+impl<A: Divide, B: Divide> Divide for (A, B) {
+    fn divide(&self, n: f64) -> Self {
+        (self.0.divide(n), self.1.divide(n))
+    }
 }
 
-impl<const L: usize> Tanh<L> for [f64; L]
+trait Add {
+    fn add(&self, other: &Self) -> Self;
+}
+
+impl Add for f64 {
+    fn add(&self, other: &Self) -> Self {
+        self + other
+    }
+}
+
+impl<T: Add, const L: usize> Add for [T; L]
 where
-    [f64; L]: Default,
+    [T; L]: Default,
 {
-    fn tanh(&self) -> [f64; L] {
-        let mut output = <[f64; L]>::default();
+    fn add(&self, other: &[T; L]) -> [T; L] {
+        let mut target = <[T; L]>::default();
         for i in 0..L {
-            output[i] = self[i].tanh();
+            target[i] = self[i].add(&other[i]);
         }
-        output
-    }
-    fn tanh_grad(&self, grad: &[f64; L]) -> [f64; L] {
-        let mut output = <[f64; L]>::default();
-        for i in 0..L {
-            output[i] = (1f64 - self[i].powi(2)) * grad[i];
-        }
-        output
+        target
     }
 }
 
-fn tanh_grad(input: f64, grad: f64) -> f64 {
-    (1f64 - input.powi(2)) * grad
+trait Tanh {
+    fn tanh_forward(&self) -> Self;
+    fn tanh_grad(&self, grad: &Self) -> Self;
+}
+
+impl Tanh for f64 {
+    fn tanh_forward(&self) -> f64 {
+        self.tanh()
+    }
+    fn tanh_grad(&self, grad: &Self) -> f64 {
+        (1f64 - self.powi(2)) * grad
+    }
+}
+
+impl<T: Tanh, const L: usize> Tanh for [T; L]
+where
+    [T; L]: Default,
+{
+    fn tanh_forward(&self) -> [T; L] {
+        let mut output = <[T; L]>::default();
+        for i in 0..L {
+            output[i] = self[i].tanh_forward();
+        }
+        output
+    }
+    fn tanh_grad(&self, grad: &[T; L]) -> [T; L] {
+        let mut output = <[T; L]>::default();
+        for i in 0..L {
+            output[i] = self[i].tanh_grad(&grad[i]);
+        }
+        output
+    }
 }
 
 trait VecMul<const I: usize, const O: usize> {
     fn vec_mul(&self, input: &[f64; I]) -> [f64; O];
-    fn weight_grads(&self, input: &[f64; I], grads: &[f64; O]) -> Self;
+    fn weight_grads(&self, input: &[f64; I], grads: &[f64; O], weight_grads: &mut Self);
     fn input_grads(&self, grads: &[f64; O]) -> [f64; I];
 }
 
@@ -82,14 +117,12 @@ where
         }
         target
     }
-    fn weight_grads(&self, input: &[f64; I], target_grads: &[f64; O]) -> Self {
-        let mut grads = <[[f64; I]; O]>::default();
+    fn weight_grads(&self, input: &[f64; I], target_grads: &[f64; O], grads: &mut Self) {
         for o in 0..O {
             for i in 0..I {
-                grads[o][i] = target_grads[o] / input[i];
+                grads[o][i] += target_grads[o] / input[i];
             }
         }
-        grads
     }
     fn input_grads(&self, target_grads: &[f64; O]) -> [f64; I] {
         let mut grads = <[f64; I]>::default();
@@ -104,170 +137,186 @@ where
     }
 }
 
-fn softmax(input: &[f64; 3]) -> [f64; 3] {
-    let mut exp = <[f64; 3]>::default();
-    let mut sum_exp = 0f64;
-    for c in 0..3 {
-        exp[c] = input[c].exp();
-        sum_exp += exp[c];
-    }
-    let mut output = [0f64; 3];
-    for c in 0..3 {
-        output[c] = exp[c] / sum_exp;
-    }
-    output
+trait SquaredErrorLoss {
+    fn mse(&self, class: usize) -> f64;
+    fn mse_grads(&self, class: usize, loss: f64) -> Self;
 }
 
-fn softmax_grads(target_grads: &[f64; 3], output: &[f64; 3]) -> [f64; 3] {
-    let mut sum = 0f64;
-    for i in 0..3 {
-        sum += target_grads[i] * output[i];
+impl<const L: usize> SquaredErrorLoss for [f64; L]
+where
+    [f64; L]: Default,
+{
+    fn mse(&self, class: usize) -> f64 {
+        let mut sum_loss = 0f64;
+        for i in 0..L {
+            let hot = (i == class) as u8 as f64;
+            sum_loss += (self[i] - hot).powi(2);
+        }
+        sum_loss / L as f64
     }
-    let mut grads = [0f64; 3];
-    for i in 0..3 {
-        grads[i] = (target_grads[i] - sum) * output[i];
+    fn mse_grads(&self, class: usize, loss: f64) -> [f64; L] {
+        let mut grads = <[f64; L]>::default();
+        let sum_loss = loss * L as f64;
+        for i in 0..L {
+            let hot = (i == class) as u8 as f64;
+            grads[i] = (sum_loss / ((self[i] - hot) * 2f64));
+        }
+        grads
     }
-    grads
 }
 
-fn squared_diff_loss(input: &[f64; 3], class: usize) -> f64 {
-    let mut sum_loss = 0f64;
-    for i in 0..3 {
-        let hot = (i == class) as u8 as f64;
-        sum_loss += (input[i] - hot).powi(2);
-    }
-    sum_loss
+trait SMMSEloss {
+    fn sm_mse_loss(&self, class: usize) -> f64;
+    fn sm_mse_grads(&self, delta: f64, class: usize, avg_loss: f64) -> Self;
 }
 
-fn squared_diff_loss_grads(input: &[f64; 3], class: usize, loss: f64) -> [f64; 3] {
-    let mut grads = [0f64; 3];
-    for i in 0..3 {
-        let hot = (i == class) as u8 as f64;
-        grads[i] = loss / ((input[i] - hot) * 2f64);
+impl<const L: usize> SMMSEloss for [f64; L]
+where
+    [f64; L]: Default,
+{
+    fn sm_mse_loss(&self, class: usize) -> f64 {
+        let mut exp = <[f64; L]>::default();
+        let mut sum_exp = 0f64;
+        for c in 0..L {
+            exp[c] = self[c].exp();
+            sum_exp += exp[c];
+        }
+        let mut sum_loss = 0f64;
+        for c in 0..L {
+            let x = exp[c] / sum_exp;
+            let hot = (c == class) as u8 as f64;
+            sum_loss += (x - hot).powi(2);
+        }
+        sum_loss
     }
-    grads
+    fn sm_mse_grads(&self, delta: f64, class: usize, avg_loss: f64) -> [f64; L] {
+        let base_loss = self.sm_mse_loss(class);
+        let mut grads = <[f64; L]>::default();
+        for c in 0..L {
+            let mut new_input = *self;
+            new_input[c] += delta;
+            let new_loss = new_input.sm_mse_loss(class);
+            grads[c] = ((base_loss - new_loss) / delta) * avg_loss;
+        }
+        grads
+    }
 }
 
-struct ExampleCache {
-    input: [f64; 5],
-    h1: [f64; 3],
-    h1b: [f64; 3],
-    sm: [f64; 3],
+struct PatchCache<const I: usize, const O: usize> {
+    input: [f64; I],
+    h: [f64; O],
+    hb: [f64; O],
+    tanh: [f64; O],
+}
+
+impl<const I: usize, const O: usize> PatchCache<I, O>
+where
+    [[f64; I]; O]: VecMul<I, O>,
+    [f64; I]: Default,
+    [f64; O]: Default + Tanh,
+{
+    fn forward(input: [f64; I], model: &([[f64; I]; O], [f64; O])) -> Self {
+        let h = model.0.vec_mul(&input);
+        let hb = model.1.add(&h);
+        PatchCache {
+            input: input,
+            h: h,
+            hb: hb,
+            tanh: hb.tanh_forward(),
+        }
+    }
+    fn output(&self) -> [f64; O] {
+        self.tanh
+    }
+    fn backward(
+        self,
+        model: &([[f64; I]; O], [f64; O]),
+        grads: &mut ([[f64; I]; O], [f64; O]),
+        tanh_grads: &[f64; O],
+    ) {
+        let tanh_grads = self.tanh.tanh_grad(&tanh_grads);
+        grads.1.elementwise_add(&tanh_grads);
+        model.0.weight_grads(&self.input, &tanh_grads, &mut grads.0);
+    }
+}
+
+struct ObjCache<const O: usize, const C: usize> {
+    input: [f64; O],
+    h: [f64; C],
+    hb: [f64; C],
     class: usize,
 }
 
-impl ExampleCache {
-    fn foreword(&mut self, m1: &[[f64; 5]; 3], b1: &[f64; 3]) -> f64 {
-        self.h1 = m1.vec_mul(&self.input);
-        //self.h1b = b1.add(&self.h1);
-        self.sm = softmax(&self.h1);
-        squared_diff_loss(&self.sm, self.class)
+impl<const O: usize, const C: usize> ObjCache<O, C>
+where
+    [[f64; O]; C]: VecMul<O, C>,
+    [f64; O]: Default,
+    [f64; C]: Default + SquaredErrorLoss + std::fmt::Debug,
+{
+    fn forward(input: [f64; O], model: &([[f64; O]; C], [f64; C]), class: usize) -> Self {
+        let h = model.0.vec_mul(&input);
+        let hb = model.1.add(&h);
+        ObjCache {
+            input: input,
+            h: h,
+            hb: hb,
+            class: class,
+        }
     }
-    fn backword(&self, loss: f32) {}
-}
-
-#[derive(Default)]
-struct Model {
-    l1: [[f64; 5]; 3],
-    l2: [[f64; 3]; 2],
-}
-
-impl Model {
-    fn acts(&self, input: &[f64; 5]) -> [f64; 2] {
-        let mut hidden = [0f64; 3];
-        for o in 0..3 {
-            let mut act = 0f64;
-            for i in 0..5 {
-                act += input[i] * self.l1[o][i];
-            }
-            hidden[o] = act.tanh();
-        }
-        let mut acts = [0f64; 2];
-        for a in 0..2 {
-            let mut act = 0f64;
-            for h in 0..3 {
-                act += hidden[h] * self.l2[a][h];
-            }
-            acts[a] = act;
-        }
-        acts
+    fn loss(&self) -> f64 {
+        self.hb.sm_mse_loss(self.class)
     }
-    fn rand_init() -> Self {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        Model {
-            l1: <[[f64; 5]; 3]>::noise(&mut rng, 0.1),
-            l2: <[[f64; 3]; 2]>::noise(&mut rng, 0.1),
-        }
+    fn backward(
+        self,
+        model: &([[f64; O]; C], [f64; C]),
+        grads: &mut ([[f64; O]; C], [f64; C]),
+        loss: f64,
+    ) -> [f64; O] {
+        assert!(!loss.is_nan());
+        let sm_grads = self.hb.sm_mse_grads(0.00001, self.class, loss);
+        grads.1.elementwise_add(&sm_grads);
+        model.0.weight_grads(&self.input, &sm_grads, &mut grads.0);
+        model.0.input_grads(&sm_grads)
     }
 }
 
 fn main() {
-    let input = [0.98432f64, -0.4321, -0.284, 0.43287, 0.0];
-    //dbg!(input);
-    //let act: Vec<_> = input.iter().map(|x| x.tanh()).collect();
-    //dbg!(act);
-    //let grads: Vec<_> = input.iter().map(|&x| tanh_grad(x)).collect();
-    //dbg!(grads);
-
     let mut rng = Hc128Rng::seed_from_u64(0);
-    let layer = <[[f64; 5]; 3]>::noise(&mut rng, 0.1f64);
-    let weight_grad = {
-        let delta = 0.1234567;
-        let mut layer_p = layer;
-        let o1 = layer_p.vec_mul(&input);
-        layer_p[1][1] += delta;
-        let o2 = layer_p.vec_mul(&input);
-        let mut grad = [0f64; 3];
-        for i in 0..3 {
-            grad[i] = o2[i] - o1[i];
-        }
-        grad
-    };
-    //dbg!(weight_grad);
-    let weight_grads = layer.weight_grads(&input, &weight_grad);
-    dbg!(weight_grads[1][1]);
 
-    let grad = {
-        let delta = 0.1234567;
-        let mut input = input;
-        let o1 = layer.vec_mul(&input);
-        input[1] += delta;
-        let o2 = layer.vec_mul(&input);
-        let mut grad = [0f64; 3];
-        for i in 0..3 {
-            grad[i] = o2[i] - o1[i];
-        }
-        grad
-    };
-    //dbg!(grad);
-    let input_grads = layer.input_grads(&grad);
-    dbg!(input_grads[1]);
+    let examples = vec![
+        ([-1.3f64, 3.8, 3.8, 3.8, 1.7, 0.2, -0.7], 0),
+        ([-1.3f64, 3.8, -3.8, 3.8, 1.7, 0.2, 0.7], 1),
+        ([-1.3f64, 3.8, 3.8, 3.8, -1.7, 0.2, 0.7], 2),
+        ([1.3f64, -3.8, -3.0, -3.8, 1.7, -0.2, -0.3], 2),
+    ];
 
-    let input = 0.0526127f64;
-    let o1 = input.tanh();
-    dbg!(o1);
-    let o2 = (input + 0.0000001234).tanh();
-    let o_grad = o2 - o1;
-    dbg!(o_grad);
-    let c_grad = tanh_grad(input, o_grad);
-    dbg!(c_grad);
-    let sm_output = softmax(&[-0.4, 2.1, 0.13432]);
-    dbg!(sm_output);
-    let sm_grads = softmax_grads(&[0.0, 0.1, 0.0], &sm_output);
-    dbg!(sm_grads);
-
-    let input1 = softmax(&[-0.04, 0.1, 0.13432]);
-    let input2 = {
-        let mut input = input1;
-        input[1] += 0.000000000123456789;
-        input
-    };
-    let l1 = squared_diff_loss(&input1, 1);
-    let l2 = squared_diff_loss(&input2, 1);
-    dbg!(l1);
-    dbg!(l2);
-    let grad = l2 - l1;
-    dbg!(grad);
-    let input_grads = squared_diff_loss_grads(&input1, 1, grad);
-    dbg!(input_grads[1]);
+    let mut model = <(([[f64; 7]; 5], [f64; 5]), ([[f64; 5]; 3], [f64; 3]))>::noise(&mut rng, 0.1);
+    for i in 0..10000 {
+        let mut caches: Vec<_> = examples
+            .iter()
+            .map(|&(input, class)| {
+                let patch_cache = PatchCache::forward(input, &model.0);
+                let obj_cache = ObjCache::forward(patch_cache.output(), &model.1, class);
+                (patch_cache, obj_cache)
+            })
+            .collect();
+        let sum_loss: f64 = caches.iter().map(|(_, o)| o.loss()).sum();
+        let loss = sum_loss / caches.len() as f64;
+        dbg!(loss);
+        let (n, sum_grads) = caches.drain(0..).fold(
+            <(
+                usize,
+                (([[f64; 7]; 5], [f64; 5]), ([[f64; 5]; 3], [f64; 3])),
+            )>::default(),
+            |mut grads, (pc, oc)| {
+                grads.0 += 1;
+                let tanh_grads = oc.backward(&model.1, &mut (grads.1).1, loss * 0.01);
+                pc.backward(&model.0, &mut (grads.1).0, &tanh_grads);
+                grads
+            },
+        );
+        let avg_grads = sum_grads.divide(n as f64);
+        //dbg!(avg_grads);
+        model.elementwise_add(&avg_grads);
+    }
 }

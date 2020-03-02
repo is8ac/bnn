@@ -57,3 +57,4 @@ https://arxiv.org/abs/1812.11446
 https://arxiv.org/abs/1608.05343
 https://arxiv.org/abs/1310.6343
 - [A Theory of Local Learning, the Learning Channel, and the Optimality of Backpropagation](https://arxiv.org/abs/1506.06472)
+https://arxiv.org/abs/1905.11786
