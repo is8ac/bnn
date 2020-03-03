@@ -9,7 +9,7 @@ use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 use std::f64;
 use std::marker::PhantomData;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub trait DescendMod2<I: Element<O::BitShape>, O: BitArray, C: Shape>
 where

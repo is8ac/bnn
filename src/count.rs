@@ -1,5 +1,3 @@
-use std::boxed::Box;
-
 pub trait ElementwiseAdd {
     fn elementwise_add(&mut self, other: &Self);
     fn weighted_elementwise_add(&mut self, other: &Self, weight: u32);

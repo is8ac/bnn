@@ -1,6 +1,6 @@
 /// A shape.
 /// This trait has no concept of what it contains, just the shape.
-/// It is implemented for nested arrays and pairs.
+/// It is implemented for arrays.
 pub trait Shape {
     /// The number of elements in the shape.
     const N: usize;
@@ -43,10 +43,6 @@ impl<T: Sized> Element<()> for T {
 impl<T: Element<S>, S: Shape, const L: usize> Element<[S; L]> for T {
     type Array = [T::Array; L];
 }
-
-//impl<T: Element<S>, S: Shape> Element<Box<S>> for T {
-//    type Array = Box<T::Array>;
-//}
 
 pub trait MapMut<I: Element<Self>, O: Element<Self>>
 where
