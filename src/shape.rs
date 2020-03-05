@@ -95,7 +95,7 @@ where
     Self: Shape + Sized + Element<W>,
     <Self as Element<W>>::Array: Shape,
 {
-    fn index_map<F: Fn(<<Self as Element<W>>::Array as Shape>::Index) -> O>(
+    fn index_map<F: Fn(&<<Self as Element<W>>::Array as Shape>::Index) -> O>(
         outer_index: W::Index,
         map_fn: F,
     ) -> <O as Element<Self>>::Array;
@@ -105,8 +105,8 @@ impl<O, W: Shape> IndexMap<O, W> for ()
 where
     (): Element<W, Array = W>,
 {
-    fn index_map<F: Fn(W::Index) -> O>(outer_index: W::Index, map_fn: F) -> O {
-        map_fn(outer_index)
+    fn index_map<F: Fn(&W::Index) -> O>(outer_index: W::Index, map_fn: F) -> O {
+        map_fn(&outer_index)
     }
 }
 
@@ -126,7 +126,7 @@ where
     (usize, ()): Wrap<W::Index, Wrapped = <<[(); L] as Element<W>>::Array as Shape>::Index>,
     W::Index: Copy,
 {
-    fn index_map<F: Fn(<<[S; L] as Element<W>>::Array as Shape>::Index) -> O>(
+    fn index_map<F: Fn(&<<[S; L] as Element<W>>::Array as Shape>::Index) -> O>(
         outer_index: W::Index,
         map_fn: F,
     ) -> [<O as Element<S>>::Array; L] {
@@ -138,6 +138,25 @@ where
             );
         }
         target
+    }
+}
+
+pub trait IndexGet<I> {
+    type Element;
+    fn index_get(&self, i: &I) -> Self::Element;
+}
+
+impl<T: Copy> IndexGet<()> for T {
+    type Element = T;
+    fn index_get(&self, i: &()) -> T {
+        *self
+    }
+}
+
+impl<I, T: IndexGet<I>, const L: usize> IndexGet<(usize, I)> for [T; L] {
+    type Element = T::Element;
+    fn index_get(&self, (i, ii): &(usize, I)) -> T::Element {
+        self[*i].index_get(ii)
     }
 }
 
