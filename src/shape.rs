@@ -18,10 +18,25 @@ impl<T: Shape, const L: usize> Shape for [T; L] {
     type Index = (usize, T::Index);
 }
 
-//impl<T: Shape> Shape for Box<T> {
-//    const N: usize = T::N;
-//    type Index = T::Index;
-//}
+// inserts a self inside the W
+pub trait Wrap<W> {
+    type Wrapped;
+    fn wrap(self, w: W) -> Self::Wrapped;
+}
+
+impl<T: Copy> Wrap<()> for T {
+    type Wrapped = T;
+    fn wrap(self, w: ()) -> T {
+        self
+    }
+}
+
+impl<T: Wrap<W>, W> Wrap<(usize, W)> for T {
+    type Wrapped = (usize, <T as Wrap<W>>::Wrapped);
+    fn wrap(self, (i, w): (usize, W)) -> (usize, <T as Wrap<W>>::Wrapped) {
+        (i, <T as Wrap<W>>::wrap(self, w))
+    }
+}
 
 /// Given an element and a shape, get the array.
 ///
@@ -75,15 +90,56 @@ impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>, const L: usize> MapM
     }
 }
 
-//impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>> MapMut<I, O> for Box<S> {
-//    fn map_mut<F: Fn(&mut O, &I)>(
-//        target: &mut <O as Element<Self>>::Array,
-//        input: &<I as Element<Self>>::Array,
-//        map_fn: F,
-//    ) {
-//        <S as MapMut<I, O>>::map_mut(target, &input, &map_fn);
-//    }
-//}
+pub trait IndexMap<O: Element<Self>, W: Shape>
+where
+    Self: Shape + Sized + Element<W>,
+    <Self as Element<W>>::Array: Shape,
+{
+    fn index_map<F: Fn(<<Self as Element<W>>::Array as Shape>::Index) -> O>(
+        outer_index: W::Index,
+        map_fn: F,
+    ) -> <O as Element<Self>>::Array;
+}
+
+impl<O, W: Shape> IndexMap<O, W> for ()
+where
+    (): Element<W, Array = W>,
+{
+    fn index_map<F: Fn(W::Index) -> O>(outer_index: W::Index, map_fn: F) -> O {
+        map_fn(outer_index)
+    }
+}
+
+impl<
+        O: Element<S>,
+        W: Shape,
+        S: Shape + IndexMap<O, <[(); L] as Element<W>>::Array>,
+        const L: usize,
+    > IndexMap<O, W> for [S; L]
+where
+    [S; L]: Element<W, Array = <S as Element<<[(); L] as Element<W>>::Array>>::Array>,
+    <[S; L] as Element<W>>::Array: Shape,
+    [(); L]: Element<W>,
+    <[(); L] as Element<W>>::Array: Shape,
+    <S as Element<<[(); L] as Element<W>>::Array>>::Array: Shape,
+    [<O as Element<S>>::Array; L]: Default,
+    (usize, ()): Wrap<W::Index, Wrapped = <<[(); L] as Element<W>>::Array as Shape>::Index>,
+    W::Index: Copy,
+{
+    fn index_map<F: Fn(<<[S; L] as Element<W>>::Array as Shape>::Index) -> O>(
+        outer_index: W::Index,
+        map_fn: F,
+    ) -> [<O as Element<S>>::Array; L] {
+        let mut target = <[<O as Element<S>>::Array; L]>::default();
+        for i in 0..L {
+            target[i] = <S as IndexMap<O, <[(); L] as Element<W>>::Array>>::index_map(
+                (i, ()).wrap(outer_index),
+                &map_fn,
+            );
+        }
+        target
+    }
+}
 
 pub trait Map<I: Element<Self>, O: Element<Self>>
 where
