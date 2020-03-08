@@ -5,6 +5,35 @@ use bitnn::shape::{Element, Fold, IndexGet, IndexMap, Map, MapMut, Shape, ZipFol
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 
+trait Clip {
+    fn clip(&self, x: f64) -> Self;
+}
+
+impl Clip for f64 {
+    fn clip(&self, x: f64) -> f64 {
+        self.max(-x).min(x)
+    }
+}
+
+impl<T: Clip, const L: usize> Clip for [T; L]
+where
+    [T; L]: Default,
+{
+    fn clip(&self, x: f64) -> [T; L] {
+        let mut target = <[T; L]>::default();
+        for i in 0..L {
+            target[i] = self[i].clip(x);
+        }
+        target
+    }
+}
+
+impl<A: Clip, B: Clip> Clip for (A, B) {
+    fn clip(&self, x: f64) -> (A, B) {
+        (self.0.clip(x), self.1.clip(x))
+    }
+}
+
 trait Divide {
     fn divide(&self, n: f64) -> Self;
 }
@@ -57,35 +86,35 @@ where
     }
 }
 
-trait Tanh {
-    fn tanh_forward(&self) -> Self;
-    fn tanh_grad(&self, grad: &Self) -> Self;
+trait FakeTanh {
+    fn fake_tanh_forward(&self) -> Self;
+    fn fake_tanh_grad(&self, grad: &Self) -> Self;
 }
 
-impl Tanh for f64 {
-    fn tanh_forward(&self) -> f64 {
-        self.tanh()
+impl FakeTanh for f64 {
+    fn fake_tanh_forward(&self) -> f64 {
+        self.max(-3.0).min(3.0)
     }
-    fn tanh_grad(&self, grad: &Self) -> f64 {
-        (1f64 - self.powi(2)) * grad
+    fn fake_tanh_grad(&self, grad: &Self) -> f64 {
+        grad * (self.abs() < 3.0) as u8 as f64
     }
 }
 
-impl<T: Tanh, const L: usize> Tanh for [T; L]
+impl<T: FakeTanh, const L: usize> FakeTanh for [T; L]
 where
     [T; L]: Default,
 {
-    fn tanh_forward(&self) -> [T; L] {
+    fn fake_tanh_forward(&self) -> [T; L] {
         let mut output = <[T; L]>::default();
         for i in 0..L {
-            output[i] = self[i].tanh_forward();
+            output[i] = self[i].fake_tanh_forward();
         }
         output
     }
-    fn tanh_grad(&self, grad: &[T; L]) -> [T; L] {
+    fn fake_tanh_grad(&self, grad: &[T; L]) -> [T; L] {
         let mut output = <[T; L]>::default();
         for i in 0..L {
-            output[i] = self[i].tanh_grad(&grad[i]);
+            output[i] = self[i].fake_tanh_grad(&grad[i]);
         }
         output
     }
@@ -101,7 +130,6 @@ where
         grads: &<f64 as Element<O>>::Array,
         weight_grads: &mut Self,
     );
-    fn input_grads(&self, grads: &<f64 as Element<O>>::Array) -> <f64 as Element<I>>::Array;
     fn input_grads_delta<F: Fn(&<f64 as Element<O>>::Array) -> f64>(
         &self,
         output: &<f64 as Element<O>>::Array,
@@ -115,23 +143,23 @@ where
 
 impl<
         I: Shape
+            + Map<f64, f64>
             + Fold<f64, f64>
             + MapMut<f64, f64>
-            + Map<f64, f64>
-            + ZipFold<f64, f64, f64>
             + IndexMap<f64, ()>
-            + Element<(), Array = I>,
+            + Element<(), Array = I>
+            + ZipFold<f64, f64, f64>,
         O: Shape
+            + Map<<f64 as Element<I>>::Array, f64>
             + MapMut<f64, <f64 as Element<I>>::Array>
             + ZipMap<<f64 as Element<I>>::Array, f64, f64>
-            + Map<<f64 as Element<I>>::Array, f64>
             + ZipFold<<f64 as Element<I>>::Array, <f64 as Element<I>>::Array, f64>,
     > VecMul<I, O> for <<f64 as Element<I>>::Array as Element<O>>::Array
 where
-    <f64 as Element<O>>::Array: Default,
-    <<f64 as Element<I>>::Array as Element<O>>::Array: Default,
-    <f64 as Element<I>>::Array: Default + Element<O> + IndexGet<<I as Shape>::Index, Element = f64>,
     f64: Element<I> + Element<O>,
+    <f64 as Element<O>>::Array: Default,
+    <f64 as Element<I>>::Array: Default + Element<O> + IndexGet<<I as Shape>::Index, Element = f64>,
+    <<f64 as Element<I>>::Array as Element<O>>::Array: Default,
 {
     fn vec_mul(&self, input: &<f64 as Element<I>>::Array) -> <f64 as Element<O>>::Array {
         <O as Map<<f64 as Element<I>>::Array, f64>>::map(self, |row| {
@@ -147,26 +175,11 @@ where
             grads,
             target_grads,
             |mut grads, target| {
-                <I as MapMut<f64, f64>>::map_mut(&mut grads, input, |grad, x| {
-                    *grad += target / x;
+                <I as MapMut<f64, f64>>::map_mut(&mut grads, input, |grad, input_val| {
+                    *grad += (target / input_val).min(0.01).max(-0.01);
                 });
             },
         );
-    }
-    fn input_grads(&self, target_grads: &<f64 as Element<O>>::Array) -> <f64 as Element<I>>::Array {
-        let grads_sums =
-            <O as ZipFold<<f64 as Element<I>>::Array, <f64 as Element<I>>::Array, f64>>::zip_fold(
-                self,
-                target_grads,
-                <<f64 as Element<I>>::Array>::default(),
-                |mut sums, row, target_grad| {
-                    <I as MapMut<f64, f64>>::map_mut(&mut sums, &row, |sum, weight| {
-                        *sum += target_grad / weight
-                    });
-                    sums
-                },
-            );
-        <I as Map<f64, f64>>::map(&grads_sums, |x| x / O::N as f64)
     }
     fn input_grads_delta<F: Fn(&<f64 as Element<O>>::Array) -> f64>(
         &self,
@@ -185,8 +198,7 @@ where
                 |w, o| o - w.index_get(i) * input_val + w.index_get(i) * (input_val + input_delta),
             );
             let diff = null_loss - loss_fn(&new_output);
-            dbg!(diff);
-            (input_delta / (null_loss - loss_fn(&new_output))) * target_update
+            (input_delta / (diff + 0.00000000001)) * target_update
         })
     }
 }
@@ -222,7 +234,13 @@ where
             let mut new_input = *self;
             new_input[c] += delta;
             let new_loss = new_input.sm_mse_loss(class);
-            grads[c] = (delta / (base_loss - new_loss)) * target_update;
+            let diff = base_loss - new_loss;
+            grads[c] = (delta / (diff + 0.0000000001)) * target_update;
+            //if grads[c].is_infinite() {
+            //    dbg!(base_loss);
+            //    dbg!(new_loss);
+            //    panic!();
+            //}
         }
         grads
     }
@@ -240,7 +258,7 @@ impl<I: Shape, O: Shape> PatchCache<I, O>
 where
     <<f64 as Element<I>>::Array as Element<O>>::Array: VecMul<I, O>,
     <f64 as Element<I>>::Array: Default + Element<O>,
-    <f64 as Element<O>>::Array: Default + Tanh + Add + ElementwiseAdd + Copy,
+    <f64 as Element<O>>::Array: Default + FakeTanh + Add + ElementwiseAdd + Copy + std::fmt::Debug,
     f64: Element<I> + Element<O>,
 {
     fn forward(
@@ -253,7 +271,7 @@ where
         let h = model.0.vec_mul(&input);
         PatchCache {
             input: input,
-            tanh: model.1.add(&h).tanh_forward(),
+            tanh: model.1.add(&h).fake_tanh_forward(),
         }
     }
     fn output(&self) -> <f64 as Element<O>>::Array {
@@ -261,18 +279,19 @@ where
     }
     fn backward(
         self,
-        grads: &mut (
+        w_grads: &mut (
             <<f64 as Element<I>>::Array as Element<O>>::Array,
             <f64 as Element<O>>::Array,
         ),
-        tanh_grads: &<f64 as Element<O>>::Array,
+        grads: &<f64 as Element<O>>::Array,
     ) {
-        let tanh_grads = self.tanh.tanh_grad(&tanh_grads);
-        grads.1.elementwise_add(&tanh_grads);
+        let tanh_grads = self.tanh.fake_tanh_grad(&grads);
+
+        w_grads.1.elementwise_add(&tanh_grads);
         <<<f64 as Element<I>>::Array as Element<O>>::Array>::weight_grads(
             &self.input,
             &tanh_grads,
-            &mut grads.0,
+            &mut w_grads.0,
         );
     }
 }
@@ -288,7 +307,7 @@ struct ObjCache<const O: usize, const C: usize> {
 impl<const O: usize, const C: usize> ObjCache<O, C>
 where
     [[f64; O]; C]: VecMul<[(); O], [(); C]>,
-    [f64; O]: Default,
+    [f64; O]: Default + std::fmt::Debug,
     [f64; C]: Default + std::fmt::Debug,
 {
     fn forward(input: [f64; O], model: &([[f64; O]; C], [f64; C]), class: usize) -> Self {
@@ -309,25 +328,36 @@ where
         self,
         model: &([[f64; O]; C], [f64; C]),
         grads: &mut ([[f64; O]; C], [f64; C]),
-        loss: f64,
+        update: f64,
     ) -> [f64; O] {
-        assert!(!loss.is_nan());
-        let sm_grads = self.hb.sm_mse_grads(0.0000001, self.class, loss);
+        const delta: f64 = 0.00000000001;
+        assert!(!update.is_nan());
+        //dbg!(&self.hb);
+        let sm_grads = self.hb.sm_mse_grads(delta, self.class, update * self.loss);
+        //dbg!(&sm_grads);
+        //if sm_grads.iter().find(|x| x.is_nan()).is_some() {
+        //    panic!();
+        //}
         grads.1.elementwise_add(&sm_grads);
         <[[f64; O]; C]>::weight_grads(&self.input, &sm_grads, &mut grads.0);
-        //model.0.input_grads(&sm_grads)
-        model.0.input_grads_delta(
+
+        let input_grads = model.0.input_grads_delta(
             &self.h,
             &self.input,
-            0.0000001,
+            delta,
             self.loss,
             |new_output| new_output.add(&model.1).sm_mse_loss(self.class),
-            loss,
-        )
+            update * self.loss,
+        );
+        //dbg!(&input_grads);
+        if input_grads.iter().find(|x| x.is_infinite()).is_some() {
+            panic!();
+        }
+        input_grads
     }
 }
 
-type HiddenShape = [(); 5];
+type HiddenShape = [(); 10];
 
 type PatchWeightsType = (
     <[f64; 7] as Element<HiddenShape>>::Array,
@@ -337,41 +367,57 @@ type ObjectiveWeightsType = ([<f64 as Element<HiddenShape>>::Array; 3], [f64; 3]
 
 fn main() {
     let mut rng = Hc128Rng::seed_from_u64(0);
-    let model = ObjectiveWeightsType::noise(&mut rng, 0.1);
-
-    let old_input = <[f64; 5]>::noise(&mut rng, 1.0);
-    let class = 3;
-
-    let delta = 0.000000000000123456789;
-    for i in 0..5 {
-        let mut input = old_input;
-        let mut tmp_model = model;
-        let mut w_grads = ObjectiveWeightsType::default();
-        let obj_cache = ObjCache::forward(input, &model, class);
-        let loss_a = obj_cache.loss();
-        dbg!(loss_a);
-        let tanh_grads = obj_cache.backward(&model, &mut w_grads, delta);
-        dbg!(tanh_grads);
-
-        input[i] += tanh_grads[i];
-        let obj_cache = ObjCache::forward(input, &model, class);
-        let loss_b = obj_cache.loss();
-        dbg!(loss_b);
-        dbg!((loss_a - loss_b) / delta);
-    }
     /*
+    let base_patch_model = PatchWeightsType::noise(&mut rng, 0.2);
+    let obj_model = ObjectiveWeightsType::noise(&mut rng, 0.2);
 
+    let patch_input = <[f64; 7]>::noise(&mut rng, 0.5);
+    let class = 1;
+
+    let update = 0.00000001f64;
+
+    for &base_input in &[-5.0, -3.0, -1.0, -0.5, -0.1, 0.0, 0.1, 0.5, 1.0, 3.0, 5.0] {
+        let mut input: f64 = base_input;
+        let t1 = input.fake_tanh_forward();
+        let grad = input.fake_tanh_grad(&update);
+        input += grad;
+        let t2 = input.fake_tanh_forward();
+        dbg!((t2 - t1) / update);
+    }
+
+    for i in 0..7 {
+        for o in 0..5 {
+            let mut patch_model = base_patch_model;
+            let mut p_grads = PatchWeightsType::default();
+            let mut o_grads = ObjectiveWeightsType::default();
+            let patch_cache =
+                PatchCache::<[(); 7], HiddenShape>::forward(patch_input, &patch_model);
+            let obj_cache = ObjCache::<5, 3>::forward(patch_cache.output(), &obj_model, class);
+            let loss_a = obj_cache.loss();
+            let tanh_grads = obj_cache.backward(&obj_model, &mut o_grads, update);
+            patch_cache.backward(&mut p_grads, &tanh_grads);
+            patch_model.0[o][i] += p_grads.0[o][i];
+
+            let patch_cache =
+                PatchCache::<[(); 7], HiddenShape>::forward(patch_input, &patch_model);
+            let obj_cache = ObjCache::<5, 3>::forward(patch_cache.output(), &obj_model, class);
+            let loss_b = obj_cache.loss();
+            dbg!((loss_a - loss_b) / update);
+        }
+    }
+
+    */
     let examples = vec![
         ([1.1f64, 3.8, 3.1, 3.8, 0.1, 0.2, -0.7], 0),
-        //([1.3f64, 3.2, 2.8, 3.8, -0.7, -0.2, 0.7], 0),
+        ([1.3f64, 3.2, 2.8, 3.8, -0.7, -0.2, 0.7], 0),
         ([-1.3f64, 3.8, -3.8, 3.8, 1.7, 0.2, -0.7], 1),
         ([1.3f64, 3.8, 3.8, -3.8, -1.7, -0.2, -0.7], 1),
         ([-1.3f64, 3.8, 3.8, 3.8, -1.7, 0.2, 0.7], 2),
         ([1.3f64, -3.8, -3.0, -3.8, 1.7, 0.2, -0.3], 2),
     ];
 
-    let mut model = <(PatchWeightsType, ObjectiveWeightsType)>::noise(&mut rng, 0.1);
-    for i in 0..10000 {
+    let mut model = <(PatchWeightsType, ObjectiveWeightsType)>::noise(&mut rng, 0.01);
+    for i in 0..100000 {
         let mut caches: Vec<_> = examples
             .iter()
             .map(|&(input, class)| {
@@ -383,18 +429,38 @@ fn main() {
         let sum_loss: f64 = caches.iter().map(|(_, o)| o.loss()).sum();
         let loss = sum_loss / caches.len() as f64;
         dbg!(loss);
+
+        //let losses: Vec<f64> = caches.iter().map(|(_, o)| o.loss()).collect();
+        //dbg!(losses);
+
+        if loss.is_nan() {
+            dbg!(&model);
+            panic!();
+        }
+
+        if loss > 1.0 {
+            let losses: Vec<f64> = caches.iter().map(|(_, o)| o.loss()).collect();
+            dbg!(losses);
+            panic!();
+        }
+
         let (n, sum_grads) = caches.drain(0..).fold(
             <(usize, (PatchWeightsType, ObjectiveWeightsType))>::default(),
             |mut grads, (pc, oc)| {
                 grads.0 += 1;
-                let tanh_grads = oc.backward(&model.1, &mut (grads.1).1, loss * 0.001);
+                let tanh_grads = oc.backward(&model.1, &mut (grads.1).1, 0.00001);
                 pc.backward(&mut (grads.1).0, &tanh_grads);
                 grads
             },
         );
         let avg_grads = sum_grads.divide(n as f64);
-        //dbg!(avg_grads);
+        //dbg!(&(avg_grads.0).1);
+        if (avg_grads.0).1.iter().find(|x| x.is_nan()).is_some() {
+            panic!();
+        }
+        //dbg!((avg_grads.0).1);
         model.elementwise_add(&avg_grads);
+        //dbg!((model.0).1);
     }
-    */
+    dbg!(model);
 }
