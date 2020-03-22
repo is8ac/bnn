@@ -231,6 +231,39 @@ where
     }
 }
 
+pub trait BitZipMap<E: Element<Self::BitShape>, O: Element<Self::BitShape>>
+where
+    Self: BitArray,
+{
+    fn bit_zip_map<F: Fn(bool, E) -> O>(
+        &self,
+        vals: &<E as Element<Self::BitShape>>::Array,
+        map_fn: F,
+    ) -> <O as Element<Self::BitShape>>::Array;
+}
+
+impl<
+        T: BitArray + BitZipMap<E, O>,
+        E: Element<T::BitShape>,
+        O: Element<T::BitShape>,
+        const L: usize,
+    > BitZipMap<E, O> for [T; L]
+where
+    [<O as Element<T::BitShape>>::Array; L]: Default,
+{
+    fn bit_zip_map<F: Fn(bool, E) -> O>(
+        &self,
+        vals: &[<E as Element<T::BitShape>>::Array; L],
+        map_fn: F,
+    ) -> [<O as Element<T::BitShape>>::Array; L] {
+        let mut target = <[<O as Element<T::BitShape>>::Array; L]>::default();
+        for i in 0..L {
+            target[i] = self[i].bit_zip_map(&vals[i], &map_fn);
+        }
+        target
+    }
+}
+
 pub trait ArrayBitAnd {
     fn bit_and(&self, rhs: &Self) -> Self;
 }
@@ -393,6 +426,15 @@ macro_rules! for_uints {
         impl $b_type {
             pub fn count_ones(self) -> u32 {
                 self.0.count_ones()
+            }
+        }
+        impl<E: Copy, O: Copy + Default> BitZipMap<E, O> for $b_type {
+            fn bit_zip_map<F: Fn(bool, E) -> O>(&self, vals: &[E; $len], map_fn: F) -> [O; $len] {
+                let mut target = [O::default(); $len];
+                for b in 0..$len {
+                    target[b] = map_fn(self.bit(b), vals[b]);
+                }
+                target
             }
         }
         impl<E> BitMap<E> for $b_type
@@ -607,7 +649,7 @@ macro_rules! for_uints {
 }
 
 for_uints!(b8, u8, 8, "{:08b}");
-//for_uints!(b16, u16, 16, "{:016b}");
+for_uints!(b16, u16, 16, "{:016b}");
 for_uints!(b32, u32, 32, "{:032b}");
 //for_uints!(b64, u64, 64, "{:064b}");
 //for_uints!(b128, u128, 128, "{:0128b}");
