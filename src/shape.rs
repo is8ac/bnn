@@ -257,9 +257,7 @@ where
     );
 }
 
-impl<A: Element<(), Array = A> + Copy, B: Element<(), Array = B> + Copy, O> ZipMapMut<A, B, O>
-    for ()
-{
+impl<A: Element<(), Array = A>, B: Element<(), Array = B>, O> ZipMapMut<A, B, O> for () {
     fn zip_map_mut<F: Fn(&mut O, &A, &B)>(target: &mut O, a: &A, b: &B, map_fn: F) {
         map_fn(target, a, b)
     }
