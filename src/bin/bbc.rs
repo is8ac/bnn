@@ -435,7 +435,7 @@ where
                         H,
                     >>::update_weights(&patch_weights, &patch_weigth_grads);
 
-                (patch_weights, new_aux_weights)
+                (new_patch_weights, new_aux_weights)
             },
         )
     }
@@ -447,7 +447,7 @@ const N_PATCHES: usize = 4;
 
 fn main() {
     let mut rng = Hc128Rng::seed_from_u64(4);
-    let patches = [
+    let patches = vec![
         [
             b16(0b_1101_1100_1100_1110u16),
             b16(0b_0111_1110_1101_0010u16),
@@ -465,196 +465,25 @@ fn main() {
             b16(0b_0111_1001_0011_0100u16),
         ],
     ];
-    let examples: Vec<([u32; 4], usize)> = vec![
-        ([5, 0, 1, 0], 0),
-        ([0, 5, 1, 0], 1),
-        ([0, 1, 4, 1], 2),
-        ([5, 0, 0, 1], 0),
-        ([0, 2, 1, 3], 1),
-        ([1, 1, 4, 0], 2),
-        ([4, 1, 1, 0], 0),
-        ([0, 4, 1, 1], 1),
-        ([1, 0, 4, 1], 2),
-        ([4, 0, 1, 0], 0),
-        ([1, 4, 1, 0], 1),
-        ([0, 1, 4, 1], 2),
-        ([4, 0, 1, 1], 0),
-        ([0, 6, 0, 0], 1),
-        ([1, 1, 4, 0], 2),
-        ([4, 1, 1, 0], 0),
-        ([0, 4, 1, 1], 1),
-        ([1, 0, 4, 1], 2),
+    let examples: Vec<(Vec<usize>, usize)> = vec![
+        (vec![5, 0, 1, 0], 0),
+        (vec![0, 5, 1, 0], 1),
+        (vec![0, 1, 4, 1], 2),
+        (vec![5, 0, 0, 1], 0),
+        (vec![0, 2, 1, 3], 1),
+        (vec![1, 1, 4, 0], 2),
+        (vec![4, 1, 1, 0], 0),
+        (vec![0, 4, 1, 1], 1),
+        (vec![1, 0, 4, 1], 2),
+        (vec![4, 0, 1, 0], 0),
+        (vec![1, 4, 1, 0], 1),
+        (vec![0, 1, 4, 1], 2),
+        (vec![4, 0, 1, 1], 0),
+        (vec![0, 6, 0, 0], 1),
+        (vec![1, 1, 4, 0], 2),
+        (vec![4, 1, 1, 0], 0),
+        (vec![0, 4, 1, 1], 1),
+        (vec![1, 0, 4, 1], 2),
     ];
-    //let patch_weights: [([t16; 2], u32, u32); 8] = rng.gen();
-    let init_patch_weights = {
-        let mut target = <[([t16; 2], u32, u32); 8]>::default();
-        for i in 0..8 {
-            target[i].0 = rng.gen();
-            target[i].2 = <[t16; 2]>::N as u32;
-            target[i].1 = (target[i].2 - target[i].0.mask_zeros()) / 2;
-        }
-        target
-    };
-
-    let init_aux_weights = [
-        ([-1i8, -1, 1, 1, -1, 1, -1, 1], 0i8),
-        ([-1, 1, -1, 1, -1, 1, -1, -1], 0),
-        ([1, 1, 1, -1, 1, -1, 1, -1], 0),
-    ];
-
-    let new_weights = (0..30).fold(
-        (init_patch_weights, init_aux_weights),
-        |(patch_weights, aux_weights), i| {
-            dbg!(i);
-            let patch_acts: Vec<b8> = patches
-                .iter()
-                .map(|patch| patch_weights.btbvmm(patch))
-                .collect();
-
-            let (n_examples, patch_act_counts, aux_weight_counts): (
-                usize,
-                [(usize, [u32; 8]); 4],
-                [(usize, ([u32; 8], u32)); 3],
-            ) = examples
-                .iter()
-                .filter_map(|(patch_counts, class)| {
-                    let (hidden_act_n, hidden_act_counts) =
-                        patch_counts.iter().zip(patch_acts.iter()).fold(
-                            <(usize, <u32 as Element<[(); 8]>>::Array)>::default(),
-                            |mut acc, (count, act)| {
-                                act.weighted_increment_frac_counters(*count, &mut acc);
-                                acc
-                            },
-                        );
-                    let n = hidden_act_n as i32 / 2;
-                    let hidden_acts =
-                        <[(); 8] as Map<u32, i32>>::map(&hidden_act_counts, |count| {
-                            *count as i32 - n
-                        });
-                    let acts = <[([i8; 8], i8); 3] as IIIVMM<b8, [(); 3]>>::iiivmm(
-                        &aux_weights,
-                        &hidden_acts,
-                    );
-                    let (max_index, &max_val) = acts
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| i != class)
-                        .max_by_key(|(_, v)| *v)
-                        .unwrap();
-                    if acts[*class] > max_val {
-                        None
-                    } else {
-                        Some((patch_counts, hidden_acts, *class, max_index))
-                    }
-                })
-                .take(50)
-                .fold(
-                    <(usize, [(usize, [u32; 8]); 4], [(usize, ([u32; 8], u32)); 3])>::default(),
-                    |(mut n, mut patch_act_count, mut aux_weight_grads),
-                     (patch_counts, hidden_input, up_index, down_index): (
-                        &[u32; 4],
-                        [i32; 8],
-                        usize,
-                        usize,
-                    )| {
-                        n += 1;
-
-                        let input_grads = <[([i8; 8], i8); 3] as IIIVMM<b8, [(); 3]>>::grads(
-                            &aux_weights,
-                            &hidden_input,
-                            &mut aux_weight_grads,
-                            up_index,
-                            down_index,
-                        );
-
-                        patch_act_count
-                            .iter_mut()
-                            .zip(patch_counts.iter())
-                            .for_each(|(act_counters, count)| {
-                                input_grads.weighted_increment_frac_counters(*count, act_counters);
-                            });
-                        //dbg!(&patch_act_count);
-                        (n, patch_act_count, aux_weight_grads)
-                    },
-                );
-            dbg!(n_examples);
-
-            let new_aux_weights = <[(); 3] as ZipMap<
-                ([i8; 8], i8),
-                (usize, ([u32; 8], u32)),
-                ([i8; 8], i8),
-            >>::zip_map(
-                &aux_weights,
-                &aux_weight_counts,
-                |(w, b), (n, (wg, bg))| {
-                    let n = *n as u32 / 2;
-                    (
-                        <[(); 8] as ZipMap<i8, u32, i8>>::zip_map(w, wg, |w, &g| {
-                            w.saturating_add(SIGNS[(g > n) as usize])
-                        }),
-                        b.saturating_add(SIGNS[(*bg > n) as usize]),
-                    )
-                },
-            );
-            //let n_correct = examples
-            //    .iter()
-            //    .filter(|(input, class)| {
-            //        let acts = <[([i8; 8], i8); 3] as IIIVMM<b8, [(); 3]>>::iiivmm(&weights, &input);
-            //        let (_, &max_val) = acts.iter().enumerate().filter(|(i, _)| i != class).max_by_key(|(_, v)| *v).unwrap();
-            //        acts[*class] > max_val
-            //    })
-            //    .count();
-            //dbg!(n_correct);
-
-            //dbg!(&patch_act_counts);
-            let patch_weight_counts = patch_act_counts.iter().zip(patches.iter()).fold(
-                <(
-                    usize,
-                    [(
-                        <u32 as Element<<[b16; 2] as BitArray>::BitShape>>::Array,
-                        u32,
-                    ); 8],
-                )>::default(),
-                |mut acc, ((n, counts), patch)| {
-                    let threshold = *n as u32 / 2;
-                    let grad = <b8>::bit_map_pack(counts, |&c: &u32| c < threshold);
-                    <[([t16; 2], u32, u32); 8] as BTBVMM<[b16; 2], b8>>::grads(
-                        patch, &grad, &mut acc,
-                    );
-                    acc
-                },
-            );
-            //dbg!(patch_weight_counts);
-
-            let n = patch_weight_counts.0 as u32 / 2;
-            let patch_weigth_grads =
-                <[(); 8] as Map<
-                    (
-                        <u32 as Element<<[b16; 2] as BitArray>::BitShape>>::Array,
-                        u32,
-                    ),
-                    ([t16; 2], Option<bool>),
-                >>::map(&patch_weight_counts.1, |(weights_counts, bias_count)| {
-                    let weights_grads = <<[b16; 2] as BitArray>::BitShape as Map<
-                        u32,
-                        Option<bool>,
-                    >>::map(weights_counts, |&count| {
-                        //dbg!(n);
-                        threshold_to_option_bool(count, n + THRESHOLD, n - THRESHOLD)
-                    });
-                    (
-                        <[t16; 2]>::trit_pack(&weights_grads),
-                        threshold_to_option_bool(*bias_count, n + THRESHOLD, n - THRESHOLD),
-                    )
-                });
-            //dbg!(&patch_weigth_grads);
-
-            let new_patch_weights =
-                <[([t16; 2], u32, u32); 8] as BTBVMM<[b16; 2], b8>>::update_weights(
-                    &patch_weights,
-                    &patch_weigth_grads,
-                );
-            (new_patch_weights, new_aux_weights)
-        },
-    );
+    let weights = <() as Descend<[b16; 2], b8, [(); 3]>>::descend(&patches, &examples, 30, 100, 0);
 }
