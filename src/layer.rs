@@ -1,6 +1,7 @@
+/*
 use crate::bits::{BitArray, BitArrayOPs, BitMap, BitMul, BitWord, Distance, BFBVMM};
 use crate::cluster::{CentroidCountPerImage, ImagePatchLloyds, NullCluster};
-use crate::descend::{DescendFloat, DescendFloatCentroidsPatchBag, DescendMod2};
+//use crate::descend::{DescendFloat, DescendFloatCentroidsPatchBag, DescendMod2};
 use crate::float::{FFFVMMtanh, Noise};
 use crate::image2d::{AvgPool, BitPool, Concat, Conv2D, Image2D, PixelMap, StaticImage};
 use crate::shape::{Element, Shape};
@@ -17,11 +18,13 @@ use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+*/
 
 pub trait Apply<I, O> {
     fn apply(&self, input: &I) -> O;
 }
 
+/*
 #[derive(Copy, Clone, Debug)]
 pub struct TrainParams {
     pub lloyds_seed: u64,
@@ -533,3 +536,4 @@ pub struct BFBConvLayerParams {
     pub lloyds_iters: usize,
     pub lloyds_prune_threshold: usize,
 }
+*/

@@ -57,6 +57,7 @@ where
     Self::WordShape: Shape,
     Self::BitShape: Shape,
     Self::WordType: Element<Self::WordShape, Array = Self>,
+    Self::TritArrayType: TritArray<TritShape = Self::BitShape, BitArrayType = Self>,
 {
     /// The shape of the bits.
     /// Note that this is not the shape of the array with words as elements,
@@ -161,17 +162,26 @@ where
     Option<bool>: Element<Self::TritShape>,
 {
     fn trit_pack(trits: &<Option<bool> as Element<Self::TritShape>>::Array) -> Self;
+    fn trit_expand(&self) -> <Option<bool> as Element<Self::TritShape>>::Array;
 }
 
 impl<T: TritPack, const L: usize> TritPack for [T; L]
 where
     Option<bool>: Element<T::TritShape>,
     [T; L]: Default,
+    <Option<bool> as Element<Self::TritShape>>::Array: Default,
 {
     fn trit_pack(trits: &[<Option<bool> as Element<T::TritShape>>::Array; L]) -> [T; L] {
         let mut target = <[T; L]>::default();
         for i in 0..L {
             target[i] = T::trit_pack(&trits[i]);
+        }
+        target
+    }
+    fn trit_expand(&self) -> <Option<bool> as Element<Self::TritShape>>::Array {
+        let mut target = <Option<bool> as Element<Self::TritShape>>::Array::default();
+        for i in 0..L {
+            target[i] = self[i].trit_expand();
         }
         target
     }
@@ -519,7 +529,9 @@ where
 
 pub trait TritArray
 where
+    Self: Sized,
     Self::TritShape: Shape,
+    Self::BitArrayType: BitArray<BitShape = Self::TritShape, TritArrayType = Self>,
 {
     const N: usize;
     type BitArrayType;
@@ -588,6 +600,17 @@ macro_rules! for_uints {
                     mask |= (trits[b].is_some() as $u_type) << b;
                 }
                 $t_type(signs, mask)
+            }
+            fn trit_expand(&self) -> [Option<bool>; $len] {
+                let mut target = <[Option<bool>; $len]>::default();
+                for b in 0..$len {
+                    target[b] = if ((self.1 >> b) & 1) == 1 {
+                        Some(((self.0 >> b) & 1) == 1)
+                    } else {
+                        None
+                    };
+                }
+                target
             }
         }
 
@@ -919,7 +942,7 @@ impl<T: BitArray + BitStates + ArrayBitAnd + ArrayBitOr> AndOr for [T; 2] {
 
 #[cfg(test)]
 mod tests {
-    use crate::bits::{b16, b8, t16, t8, BitWord, TritArray};
+    use crate::bits::{b16, b8, t16, t8, BitWord, TritArray, TritPack};
     use std::ops::Add;
 
     fn unpack_t16(trits: t16) -> [Option<bool>; 16] {
@@ -1045,5 +1068,11 @@ mod tests {
     fn gen_mod_u16_test() {
         assert_eq!(b16(u16_shift(2)), b16(0b_1111_0000_1111_0000_u16));
         assert_eq!(b16(u16_shift(3)), b16(0b_1111_1111_0000_0000_u16));
+    }
+    #[test]
+    fn trit_expand() {
+        let trits = t16(u16_shift(0), u16_shift(1));
+        let option_bools = trits.trit_expand();
+        assert_eq!(<t16>::trit_pack(&option_bools), trits);
     }
 }

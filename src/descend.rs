@@ -1,575 +1,535 @@
-use crate::bits::{BitArray, BitMul, BitWord, IncrementFracCounters, IndexedFlipBit};
-use crate::count::ElementwiseAdd;
-use crate::float::{BFFVMMtanh, FFFVMMtanh, Mutate, SoftMaxLoss, FFFVMM};
-use crate::image2d::{Conv2D, Image2D, PixelFold, StaticImage};
-use crate::shape::{Element, Map, Shape};
-use rand::seq::SliceRandom;
-use rand::Rng;
-use rand_distr::{Distribution, Normal};
-use rayon::prelude::*;
-use std::f64;
-use std::marker::PhantomData;
-use std::time::Instant;
+use crate::bits::{
+    BitArray, BitArrayOPs, BitMap, BitMapPack, IncrementFracCounters, MaskedDistance, TritArray,
+    TritPack,
+};
+use crate::shape::{Element, Flatten, Map, MapMut, Shape, ZipFold, ZipMap};
+use rand::{Rng, SeedableRng};
+use rand_hc::Hc128Rng;
+use std::num::Wrapping;
+use std::ops::Add;
 
-pub trait DescendMod2<I: Element<O::BitShape>, O: BitArray, C: Shape>
+const SIGNS: [i8; 2] = [1, -1];
+
+trait IIIVMM<I: BitArray, C: Shape>
 where
-    f32: Element<O::BitShape>,
-    <f32 as Element<O::BitShape>>::Array: Element<C>,
+    i32: Element<C> + Element<I::BitShape>,
+    (usize, (<u32 as Element<I::BitShape>>::Array, u32)): Element<C>,
+    u32: Element<I::BitShape>,
 {
-    fn descend<R: Rng>(
-        &mut self,
-        rng: &mut R,
-        aux_weights: &<<f32 as Element<O::BitShape>>::Array as Element<C>>::Array,
-        centroids: &Vec<I>,
-        examples: &[(Vec<(u32, u32)>, usize)],
-        window_size: usize,
-        window_thresh: usize,
-        rate: f64,
-    );
-    fn avg_loss(
+    fn iiivmm(&self, input: &<i32 as Element<I::BitShape>>::Array) -> <i32 as Element<C>>::Array;
+    fn grads(
         &self,
-        aux_weights: &<<f32 as Element<O::BitShape>>::Array as Element<C>>::Array,
-        centroids: &Vec<I>,
-        examples: &[(Vec<(u32, u32)>, usize)],
-    ) -> f64;
+        input: &<i32 as Element<I::BitShape>>::Array,
+        grads: &mut <(usize, (<u32 as Element<I::BitShape>>::Array, u32)) as Element<C>>::Array,
+        up_index: usize,
+        down_index: usize,
+    ) -> I;
 }
 
-impl<
-        I: Element<O::BitShape> + BitWord + Sync,
-        O: BitArray + BitWord + IncrementFracCounters + Sync + Send,
-        const C: usize,
-    > DescendMod2<I, O, [(); C]> for <I as Element<O::BitShape>>::Array
+impl<I: BitArray + BitArrayOPs, const C: usize> IIIVMM<I, [(); C]>
+    for [(<i8 as Element<I::BitShape>>::Array, i8); C]
 where
-    [f32; C]: SoftMaxLoss,
-    <I as Element<O::BitShape>>::Array: BitMul<I, O> + Sync + IndexedFlipBit<I, O>,
-    f32: Element<O::BitShape>,
-    [<f32 as Element<O::BitShape>>::Array; C]:
-        FFFVMM<[f32; C], InputType = <f32 as Element<O::BitShape>>::Array> + Sync,
-    u32: Element<O::BitShape>,
-    (usize, <u32 as Element<<O as BitArray>::BitShape>>::Array): Default,
-    O::BitShape: Map<u32, f32>,
+    I::BitShape: MapMut<i32, u32> + ZipMap<i8, i8, bool> + ZipFold<i32, i32, i8>,
+    [i32; C]: Default,
+    i8: Element<I::BitShape>,
+    i32: Element<I::BitShape>,
+    bool: Element<I::BitShape>,
+    u32: Element<I::BitShape>,
+    <bool as Element<I::BitShape>>::Array: std::fmt::Debug,
 {
-    fn descend<RNG: Rng>(
-        &mut self,
-        rng: &mut RNG,
-        aux_weights: &[<f32 as Element<O::BitShape>>::Array; C],
-        centroids: &Vec<I>,
-        examples: &[(Vec<(u32, u32)>, usize)],
-        window_size: usize,
-        window_thresh: usize,
-        rate: f64,
+    fn iiivmm(&self, input: &<i32 as Element<I::BitShape>>::Array) -> [i32; C] {
+        let mut target = <[i32; C]>::default();
+        for c in 0..C {
+            target[c] = <I::BitShape as ZipFold<i32, i32, i8>>::zip_fold(
+                &input,
+                &self[c].0,
+                0,
+                |sum, i, &w| sum + i * w as i32,
+            ) + self[c].1 as i32;
+        }
+        target
+    }
+    fn grads(
+        &self,
+        input: &<i32 as Element<I::BitShape>>::Array,
+        grads: &mut [(usize, (<u32 as Element<I::BitShape>>::Array, u32)); C],
+        up_index: usize,
+        down_index: usize,
+    ) -> I {
+        for &(i, sign) in &[(up_index, false), (down_index, true)] {
+            grads[i].0 += 1;
+            (grads[i].1).1 += sign as u32;
+            <I::BitShape as MapMut<i32, u32>>::map_mut(
+                &mut (grads[i].1).0,
+                &input,
+                |grad, &input| {
+                    *grad += ((input < 0) ^ sign) as u32;
+                },
+            );
+        }
+        let grads = <I::BitShape as ZipMap<i8, i8, bool>>::zip_map(
+            &self[up_index].0,
+            &self[down_index].0,
+            |&up, &down| down > up,
+        );
+        //dbg!(&grads);
+        I::bitpack(&grads)
+    }
+}
+
+trait BTBVMM<I: BitArray, O: BitArray>
+where
+    u32: Element<I::BitShape>,
+    (<u32 as Element<I::BitShape>>::Array, u32): Element<O::BitShape>,
+    //(I, bool): Element<O::BitShape>,
+    (I::TritArrayType, Option<bool>): Element<O::BitShape>,
+{
+    fn btbvmm(&self, input: &I) -> O;
+    fn grads(
+        input: &I,
+        output_grads: &O,
+        counts: &mut (
+            usize,
+            <(<u32 as Element<I::BitShape>>::Array, u32) as Element<O::BitShape>>::Array,
+        ),
+    );
+}
+
+impl<I, O: BitArray> BTBVMM<I, O> for <(I::TritArrayType, u32, u32) as Element<O::BitShape>>::Array
+where
+    u32: Element<I::BitShape> + Element<<I::WordType as BitArray>::BitShape>,
+    bool: Element<I::BitShape>,
+    I: BitArray + BitArrayOPs,
+    O: BitArray
+        + BitMapPack<(I::TritArrayType, u32, u32)>
+        + BitMap<(<u32 as Element<I::BitShape>>::Array, u32)>,
+    O::BitShape: ZipMap<
+        (I::TritArrayType, u32, u32),
+        (I::TritArrayType, Option<bool>),
+        (I::TritArrayType, u32, u32),
+    >,
+    I::WordType: BitArray,
+    I::WordShape: ZipMap<
+        <I::WordType as BitArray>::TritArrayType,
+        <I::WordType as BitArray>::TritArrayType,
+        <I::WordType as BitArray>::TritArrayType,
+    >,
+    I::TritArrayType: MaskedDistance + TritArray<BitArrayType = I>,
+    (I::TritArrayType, u32, u32): Element<O::BitShape>,
+    (I, bool): Element<O::BitShape>,
+    (I, u32): Element<O::BitShape>,
+    (<u32 as Element<I::BitShape>>::Array, u32): Element<O::BitShape>,
+    <I::WordType as BitArray>::TritArrayType: Element<I::WordShape, Array = I::TritArrayType>
+        + Copy
+        + Add<Output = <I::WordType as BitArray>::TritArrayType>,
+    (I::TritArrayType, Option<bool>): Element<O::BitShape>,
+{
+    fn btbvmm(&self, input: &I) -> O {
+        <O as BitMapPack<(I::TritArrayType, u32, u32)>>::bit_map_pack(
+            self,
+            |(weights, threshold, _)| weights.masked_distance(input) > *threshold,
+        )
+    }
+    fn grads(
+        input: &I,
+        output_grads: &O,
+        counts: &mut (
+            usize,
+            <(<u32 as Element<I::BitShape>>::Array, u32) as Element<O::BitShape>>::Array,
+        ),
     ) {
-        assert!(window_size <= examples.len());
-        assert!(rate < 1.0);
-        assert!(rate > 0.0);
-        if window_size > window_thresh {
-            self.descend(
-                rng,
-                aux_weights,
-                centroids,
-                examples,
-                (window_size as f64 * rate) as usize,
-                window_thresh,
-                rate,
-            );
-        }
-        let indices = {
-            let mut indices: Vec<usize> = (0..I::BIT_LEN)
-                .map(|i| (i * (examples.len() - window_size)) / I::BIT_LEN)
-                .collect();
-            indices.shuffle(rng);
-            indices
-        };
-        for (ib, &index) in indices.iter().enumerate() {
-            let minibatch = &examples[index..index + window_size];
-            let mut cur_loss = (*self).avg_loss(aux_weights, centroids, minibatch);
-            //dbg!(cur_sum_loss);
-            for ob in 0..O::BIT_LEN {
-                self.indexed_flip_bit(ob, ib);
-                let new_loss = (*self).avg_loss(aux_weights, centroids, minibatch);
-                if new_loss < cur_loss {
-                    cur_loss = new_loss;
-                } else {
-                    self.indexed_flip_bit(ob, ib);
-                }
-            }
-        }
-        let full_loss = (*self).avg_loss(aux_weights, centroids, examples);
-        println!("w:{}: l:{}", window_size, full_loss);
-    }
-    fn avg_loss(
-        &self,
-        aux_weights: &[<f32 as Element<O::BitShape>>::Array; C],
-        centroids: &Vec<I>,
-        examples: &[(Vec<(u32, u32)>, usize)],
-    ) -> f64 {
-        let centroid_acts: Vec<O> = centroids
-            .par_iter()
-            .map(|input| self.bit_mul(input))
-            .collect();
-
-        let sum_image_loss: f64 = examples
-            .par_iter()
-            .map(|(patch_bag, class)| {
-                let act_counts = patch_bag.iter().fold(
-                    <(usize, <u32 as Element<<O as BitArray>::BitShape>>::Array)>::default(),
-                    |mut bit_count, (patch_index, patch_count)| {
-                        centroid_acts[*patch_index as usize]
-                            .weighted_increment_frac_counters(*patch_count, &mut bit_count);
-                        bit_count
-                    },
-                );
-                let n = act_counts.0 as f32;
-                let float_hidden =
-                    <<O as BitArray>::BitShape as Map<u32, f32>>::map(&act_counts.1, |&count| {
-                        count as f32 / n
-                    });
-                let class_acts: [f32; C] = aux_weights.fffvmm(&float_hidden);
-                class_acts.softmax_loss(*class) as f64
-            })
-            .sum();
-        sum_image_loss / examples.len() as f64
+        counts.0 += 1;
+        output_grads.bit_map_mut(&mut counts.1, |mut counts, sign| {
+            counts.1 += sign as u32;
+            input.flipped_increment_counters(sign, &mut counts.0);
+        });
     }
 }
 
-pub trait DescendFloat<I, C: Shape> {
-    fn float_descend(
-        &mut self,
-        examples: &Vec<(I, usize)>,
-        noise: &[f32],
-        cur_loss: &mut f64,
-        n_workers: usize,
-    ) -> usize;
-    fn train<R: Rng>(
-        rng: &mut R,
-        examples: &Vec<(I, usize)>,
-        n_workers: usize,
+fn threshold_to_option_bool(count: u32, up: u32, low: u32) -> Option<bool> {
+    if count > up {
+        Some(true)
+    } else if count < low {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+pub trait Descend<P: BitArray, H: BitArray, C: Shape>
+where
+    i8: Element<H::BitShape>,
+    (P::TritArrayType, u32, u32): Element<H::BitShape>,
+    (<i8 as Element<H::BitShape>>::Array, i8): Element<C>,
+{
+    fn descend(
+        patches: &Vec<P>,
+        examples: &Vec<(Vec<(usize, u32)>, usize)>,
+        patch_learning_update_n: usize,
         n_iters: usize,
-        noise_sdev: f32,
-        sdev_decay_rate: f32,
-    ) -> Self;
-}
-
-impl<T: Model<I, C> + Mutate + Default + Send + Sync, I: Sync, const C: usize>
-    DescendFloat<I, [(); C]> for T
-where
-    [f32; C]: SoftMaxLoss,
-{
-    fn float_descend(
-        &mut self,
-        examples: &Vec<(I, usize)>,
-        noise: &[f32],
-        cur_loss: &mut f64,
-        n_workers: usize,
-    ) -> usize {
-        assert_eq!(noise.len(), Self::NOISE_LEN + n_workers);
-        let worker_ids: Vec<_> = (0..n_workers).collect();
-        let worker_losses: Vec<(usize, f64)> = worker_ids
-            .par_iter()
-            .map(|&worker_id| {
-                let perturbed_model = self.mutate(&noise[worker_id..]);
-                let new_loss: f64 = examples
-                    .par_iter()
-                    .map(|(image, class)| perturbed_model.loss(image, *class) as f64)
-                    .sum();
-                (worker_id, new_loss)
-            })
-            .filter(|&(_, l)| l < *cur_loss)
-            .collect();
-
-        if let Some(&(best_seed, new_loss)) = worker_losses
-            .iter()
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-        {
-            *cur_loss = new_loss;
-            *self = self.mutate(&noise[best_seed..best_seed + Self::NOISE_LEN]);
-        } else {
-            //println!("miss: {} seeds", worker_losses.len());
-        }
-        worker_losses.len()
-    }
-    fn train<R: Rng>(
-        rng: &mut R,
-        examples: &Vec<(I, usize)>,
-        n_workers: usize,
-        n_iters: usize,
-        noise_sdev: f32,
-        sdev_decay_rate: f32,
-    ) -> T {
-        let mut model = T::default();
-
-        let mut cur_loss = f64::MAX;
-        let mut cur_sdev = noise_sdev;
-        for i in 0..n_iters {
-            cur_sdev *= sdev_decay_rate;
-            let normal = Normal::new(0f32, cur_sdev).unwrap();
-            let noise: Vec<f32> = (0..Self::NOISE_LEN + n_workers)
-                .map(|_| normal.sample(rng))
-                .collect();
-            let n_good_seeds = model.float_descend(&examples, &noise, &mut cur_loss, n_workers);
-            println!(
-                "{:3} {:3} sdev:{:.4} loss: {:.5}",
-                i,
-                n_good_seeds,
-                cur_sdev,
-                cur_loss / examples.len() as f64
-            );
-        }
-        model
-    }
-}
-
-pub trait Model<I, const C: usize>
-where
-    [f32; C]: SoftMaxLoss,
-{
-    fn apply(&self, input: &I) -> [f32; C];
-    fn is_correct(&self, input: &I, class: usize) -> bool {
-        let acts = self.apply(input);
-        let max_act = acts
-            .iter()
-            .enumerate()
-            .max_by(|&(_, a), &(_, b)| a.partial_cmp(b).unwrap())
-            .unwrap()
-            .0;
-        max_act == class
-    }
-    fn loss(&self, input: &I, class: usize) -> f32 {
-        let acts = self.apply(input);
-        acts.softmax_loss(class)
-    }
-}
-
-pub struct OneHiddenLayerFCmodel<I, H: Shape, O: Shape>
-where
-    f32: Element<H>,
-    (I, f32): Element<H>,
-    (<f32 as Element<H>>::Array, f32): Element<O>,
-{
-    pub l1: <(I, f32) as Element<H>>::Array,
-    pub l2: <(<f32 as Element<H>>::Array, f32) as Element<O>>::Array,
-}
-
-impl<I: Element<H>, H: Shape, const C: usize> Default for OneHiddenLayerFCmodel<I, H, [(); C]>
-where
-    f32: Element<H>,
-    (I, f32): Element<H>,
-    <(I, f32) as Element<H>>::Array: Default,
-    [(<f32 as Element<H>>::Array, f32); C]: Default,
-{
-    fn default() -> Self {
-        Self {
-            l1: <(I, f32) as Element<H>>::Array::default(),
-            l2: <[(<f32 as Element<H>>::Array, f32); C]>::default(),
-        }
-    }
-}
-
-impl<I, H: Shape, const C: usize> Mutate for OneHiddenLayerFCmodel<I, H, [(); C]>
-where
-    f32: Element<H>,
-    (I, f32): Element<H>,
-    <(I, f32) as Element<H>>::Array: Mutate,
-    [(<f32 as Element<H>>::Array, f32); C]: Mutate,
-{
-    const NOISE_LEN: usize = <(I, f32) as Element<H>>::Array::NOISE_LEN
-        + <[(<f32 as Element<H>>::Array, f32); C]>::NOISE_LEN;
-    fn mutate(&self, noise: &[f32]) -> Self {
-        Self {
-            l1: self
-                .l1
-                .mutate(&noise[0..<(I, f32) as Element<H>>::Array::NOISE_LEN]),
-            l2: self
-                .l2
-                .mutate(&noise[<(I, f32) as Element<H>>::Array::NOISE_LEN..Self::NOISE_LEN]),
-        }
-    }
-}
-
-impl<I, H: Shape, const C: usize> Model<I, C> for OneHiddenLayerFCmodel<I, H, [(); C]>
-where
-    f32: Element<H>,
-    (I, f32): Element<H>,
-    <(I, f32) as Element<H>>::Array: FFFVMMtanh<<f32 as Element<H>>::Array, InputType = I>,
-    [(<f32 as Element<H>>::Array, f32); C]:
-        FFFVMM<[f32; C], InputType = <f32 as Element<H>>::Array>,
-    [f32; C]: SoftMaxLoss,
-{
-    fn apply(&self, input: &I) -> [f32; C] {
-        let h1 = self.l1.fffvmm_tanh(input);
-        self.l2.fffvmm(&h1)
-    }
-}
-
-pub struct OneHiddenLayerConvPooledModel<I, H: Shape, O: Shape>
-where
-    f32: Element<H>,
-    ([[I; 3]; 3], f32): Element<H>,
-    (<f32 as Element<H>>::Array, f32): Element<O>,
-{
-    pub l1: <([[I; 3]; 3], f32) as Element<H>>::Array,
-    pub l2: <(<f32 as Element<H>>::Array, f32) as Element<O>>::Array,
-}
-
-impl<I, H: Shape + Map<f32, f32>, const C: usize> Model<StaticImage<I, 32, 32>, C>
-    for OneHiddenLayerConvPooledModel<I, H, [(); C]>
-where
-    f32: Element<H>,
-    ([[I; 3]; 3], f32): Element<H>,
-    <([[I; 3]; 3], f32) as Element<H>>::Array:
-        FFFVMMtanh<<f32 as Element<H>>::Array, InputType = [[I; 3]; 3]>,
-    [(<f32 as Element<H>>::Array, f32); C]:
-        FFFVMM<[f32; C], InputType = <f32 as Element<H>>::Array>,
-    [f32; C]: SoftMaxLoss,
-    <f32 as Element<H>>::Array: Default + ElementwiseAdd + std::fmt::Debug,
-    StaticImage<<f32 as Element<H>>::Array, 32, 32>: Image2D<PixelType = <f32 as Element<H>>::Array>
-        + PixelFold<(usize, <f32 as Element<H>>::Array), [[(); 3]; 3]>,
-    StaticImage<I, 32, 32>: Conv2D<
-            [[(); 3]; 3],
-            <f32 as Element<H>>::Array,
-            OutputType = StaticImage<<f32 as Element<H>>::Array, 32, 32>,
-        > + Image2D<PixelType = I>,
-{
-    fn apply(&self, input: &StaticImage<I, 32, 32>) -> [f32; C] {
-        let h1: StaticImage<<f32 as Element<H>>::Array, 32, 32> =
-            input.conv2d(|patch| self.l1.fffvmm_tanh(patch));
-        let pooled = h1.pixel_fold(
-            (0usize, <f32 as Element<H>>::Array::default()),
-            |mut acc, pixel| {
-                acc.0 += 1;
-                acc.1.elementwise_add(pixel);
-                acc
-            },
-        );
-        let n = pooled.0 as f32;
-        let avgs = <H as Map<f32, f32>>::map(&pooled.1, |x| x / n);
-        self.l2.fffvmm(&avgs)
-    }
-}
-
-impl<I, H: Shape, const C: usize> Default for OneHiddenLayerConvPooledModel<I, H, [(); C]>
-where
-    f32: Element<H>,
-    ([[I; 3]; 3], f32): Element<H>,
-    <([[I; 3]; 3], f32) as Element<H>>::Array: Default,
-    [(<f32 as Element<H>>::Array, f32); C]: Default,
-{
-    fn default() -> Self {
-        Self {
-            l1: <([[I; 3]; 3], f32) as Element<H>>::Array::default(),
-            l2: <[(<f32 as Element<H>>::Array, f32); C]>::default(),
-        }
-    }
-}
-
-impl<I, H: Shape, const C: usize> Mutate for OneHiddenLayerConvPooledModel<I, H, [(); C]>
-where
-    f32: Element<H>,
-    ([[I; 3]; 3], f32): Element<H>,
-    <([[I; 3]; 3], f32) as Element<H>>::Array: Mutate,
-    [(<f32 as Element<H>>::Array, f32); C]: Mutate,
-{
-    const NOISE_LEN: usize = <([[I; 3]; 3], f32) as Element<H>>::Array::NOISE_LEN
-        + <[(<f32 as Element<H>>::Array, f32); C]>::NOISE_LEN;
-    fn mutate(&self, noise: &[f32]) -> Self {
-        Self {
-            l1: self
-                .l1
-                .mutate(&noise[0..<([[I; 3]; 3], f32) as Element<H>>::Array::NOISE_LEN]),
-            l2: self.l2.mutate(
-                &noise[<([[I; 3]; 3], f32) as Element<H>>::Array::NOISE_LEN..Self::NOISE_LEN],
-            ),
-        }
-    }
-}
-
-impl<I, H: Shape + Map<f32, f32>, const C: usize> Model<StaticImage<I, 32, 32>, C>
-    for (
-        <([[I; 3]; 3], f32) as Element<H>>::Array,
-        [(<f32 as Element<H>>::Array, f32); C],
-        PhantomData<H>,
-    )
-where
-    f32: Element<H>,
-    ([[I; 3]; 3], f32): Element<H>,
-    <([[I; 3]; 3], f32) as Element<H>>::Array:
-        FFFVMMtanh<<f32 as Element<H>>::Array, InputType = [[I; 3]; 3]>,
-    [(<f32 as Element<H>>::Array, f32); C]:
-        FFFVMM<[f32; C], InputType = <f32 as Element<H>>::Array>,
-    [f32; C]: SoftMaxLoss,
-    <f32 as Element<H>>::Array: Default + ElementwiseAdd + std::fmt::Debug,
-    StaticImage<<f32 as Element<H>>::Array, 32, 32>: Image2D<PixelType = <f32 as Element<H>>::Array>
-        + PixelFold<(usize, <f32 as Element<H>>::Array), [[(); 3]; 3]>,
-    StaticImage<I, 32, 32>: Conv2D<
-            [[(); 3]; 3],
-            <f32 as Element<H>>::Array,
-            OutputType = StaticImage<<f32 as Element<H>>::Array, 32, 32>,
-        > + Image2D<PixelType = I>,
-{
-    fn apply(&self, input: &StaticImage<I, 32, 32>) -> [f32; C] {
-        let h1: StaticImage<<f32 as Element<H>>::Array, 32, 32> =
-            input.conv2d(|patch| self.0.fffvmm_tanh(patch));
-        let pooled = h1.pixel_fold(
-            (0usize, <f32 as Element<H>>::Array::default()),
-            |mut acc, pixel| {
-                acc.0 += 1;
-                acc.1.elementwise_add(pixel);
-                acc
-            },
-        );
-        let n = pooled.0 as f32;
-        let avgs = <H as Map<f32, f32>>::map(&pooled.1, |x| x / n);
-        self.1.fffvmm(&avgs)
-    }
-}
-
-pub trait DescendFloatCentroidsPatchBag<I: BitArray, C: Shape>
-where
-    Self: Sized + Shape,
-    f32: Element<I::BitShape> + Element<Self>,
-    (<f32 as Element<Self>>::Array, f32): Element<C>,
-    (<f32 as Element<I::BitShape>>::Array, f32): Element<Self>,
-{
-    type LayerType = <(<f32 as Element<I::BitShape>>::Array, f32) as Element<Self>>::Array;
-    type AuxType = <(<f32 as Element<Self>>::Array, f32) as Element<C>>::Array;
-    fn float_descend(
-        model: &mut (Self::LayerType, Self::AuxType),
-        centroids: &Vec<I>,
-        examples: &[(Vec<(u32, u32)>, usize)],
-        noise: &[f32],
-        cur_loss: &mut f64,
-        n_workers: usize,
-    ) -> usize;
-    fn train<R: Rng>(
-        rng: &mut R,
-        centroids: &Vec<I>,
-        examples: &[(Vec<(u32, u32)>, usize)],
-        n_workers: usize,
-        n_iters: usize,
-        noise_sdev: f32,
-        sdev_decay_rate: f32,
+        minibatch_take: usize,
+        seed: u64,
     ) -> (
-        <(<f32 as Element<I::BitShape>>::Array, f32) as Element<Self>>::Array,
-        <(<f32 as Element<Self>>::Array, f32) as Element<C>>::Array,
+        <(P::TritArrayType, u32, u32) as Element<H::BitShape>>::Array,
+        <(<i8 as Element<H::BitShape>>::Array, i8) as Element<C>>::Array,
     );
 }
 
-impl<H: Shape + Map<f32, f32>, I: BitArray + BFFVMMtanh<H> + Sync, const C: usize>
-    DescendFloatCentroidsPatchBag<I, [(); C]> for H
+impl<P, H, const C: usize> Descend<P, H, [(); C]> for ()
 where
-    [f32; C]: SoftMaxLoss + std::fmt::Debug,
-    f32: Element<I::BitShape> + Element<H>,
-    (<f32 as Element<I::BitShape>>::Array, f32): Element<H>,
-    (
-        <(<f32 as Element<I::BitShape>>::Array, f32) as Element<H>>::Array,
-        [(<f32 as Element<H>>::Array, f32); C],
-    ): Mutate + Sync + Default,
-    <f32 as Element<H>>::Array: Send + Default + ElementwiseAdd + Sync + std::fmt::Debug,
-    [(<f32 as Element<H>>::Array, f32); C]:
-        FFFVMM<[f32; C], InputType = <f32 as Element<H>>::Array>,
+    P: BitArray,
+    H: BitArray
+        + IncrementFracCounters
+        + BitMapPack<u32>
+        + BitMap<(<u32 as Element<P::BitShape>>::Array, u32)>,
+    (): Element<H::BitShape>,
+    i8: Element<H::BitShape>,
+    u32: Element<P::BitShape>
+        + Element<H::BitShape>
+        + Element<<P::BitShape as Element<H::BitShape>>::Array>
+        + Element<
+            <P::BitShape as Element<H::BitShape>>::Array,
+            Array = <<u32 as Element<P::BitShape>>::Array as Element<H::BitShape>>::Array,
+        >,
+    i32: Element<H::BitShape>,
+    Option<bool>: Element<P::BitShape>
+        + Element<H::BitShape>
+        + Element<
+            <P::BitShape as Element<H::BitShape>>::Array,
+            Array = <<Option<bool> as Element<P::BitShape>>::Array as Element<H::BitShape>>::Array,
+        >,
+    H::BitShape: Map<u32, i32>
+        + Map<u32, Option<bool>>
+        + Map<P::TritArrayType, (P::TritArrayType, u32, u32)>
+        + Map<(P::TritArrayType, u32, u32), <Option<bool> as Element<P::BitShape>>::Array>
+        + Map<(<u32 as Element<P::BitShape>>::Array, u32), (P::TritArrayType, Option<bool>)>
+        + Map<(<u32 as Element<P::BitShape>>::Array, u32), <u32 as Element<P::BitShape>>::Array>
+        + ZipMap<i8, u32, i8>,
+    P::TritArrayType: Element<H::BitShape> + Copy + TritPack + TritArray<TritShape = P::BitShape>,
+    P::BitShape: Element<H::BitShape> + Map<u32, u32> + Map<u32, Option<bool>>,
+    [(); C]: ZipMap<
+        (<i8 as Element<H::BitShape>>::Array, H),
+        (usize, (<u32 as Element<H::BitShape>>::Array, u32)),
+        (<i8 as Element<H::BitShape>>::Array, H),
+    >,
+    [(<i8 as Element<H::BitShape>>::Array, i8); C]: Default + IIIVMM<H, [(); C]>,
+    [(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C]: Default,
+    (P, u32, u32): Element<H::BitShape>,
+    (usize, <u32 as Element<H::BitShape>>::Array): Copy,
+    (P::TritArrayType, u32, u32): Default + Element<H::BitShape>,
+    (P::TritArrayType, Option<bool>): Element<H::BitShape>,
+    <() as Element<H::BitShape>>::Array: Default,
+    (<u32 as Element<P::BitShape>>::Array, u32): Element<H::BitShape>,
+    (usize, <u32 as Element<H::BitShape>>::Array): Default,
+    <(<u32 as Element<P::BitShape>>::Array, u32) as Element<H::BitShape>>::Array: Default,
+    <(P::TritArrayType, u32, u32) as Element<H::BitShape>>::Array: BTBVMM<P, H>,
+    <(P::TritArrayType, Option<bool>) as Element<H::BitShape>>::Array: std::fmt::Debug,
+    <u32 as Element<P::BitShape>>::Array: Element<H::BitShape>,
+    <Option<bool> as Element<P::BitShape>>::Array: Element<H::BitShape>,
+    <P::BitShape as Element<H::BitShape>>::Array: Flatten<Option<bool>> + Flatten<u32>,
+    <P::TritArrayType as Element<H::BitShape>>::Array: TritPack,
+    Option<bool>:
+        Element<<<P::TritArrayType as Element<H::BitShape>>::Array as TritArray>::TritShape>,
+    rand::distributions::Standard:
+        rand::distributions::Distribution<<P::TritArrayType as Element<H::BitShape>>::Array>,
+    Option<bool>: Element<
+        <<P::TritArrayType as Element<H::BitShape>>::Array as TritArray>::TritShape,
+        Array = <Option<bool> as Element<<P::BitShape as Element<H::BitShape>>::Array>>::Array,
+    >,
+    H::BitShape: ZipMap<u32, P::TritArrayType, (P::TritArrayType, u32, u32)>
+        + ZipMap<(P::TritArrayType, u32, u32), (<u32 as Element<P::BitShape>>::Array, u32), u32>,
+    <u32 as Element<H::BitShape>>::Array: std::fmt::Debug,
+    <i32 as Element<H::BitShape>>::Array: std::fmt::Debug,
+    [i32; C]: std::fmt::Debug,
+    H: std::fmt::Debug,
 {
-    type LayerType = <(<f32 as Element<I::BitShape>>::Array, f32) as Element<Self>>::Array;
-    type AuxType = <(<f32 as Element<Self>>::Array, f32) as Element<[(); C]>>::Array;
-    fn float_descend(
-        model: &mut (Self::LayerType, Self::AuxType),
-        centroids: &Vec<I>,
-        examples: &[(Vec<(u32, u32)>, usize)],
-        noise: &[f32],
-        cur_loss: &mut f64,
-        n_workers: usize,
-    ) -> usize {
-        assert_eq!(
-            noise.len(),
-            <(Self::LayerType, Self::AuxType)>::NOISE_LEN + n_workers
-        );
-        let worker_ids: Vec<_> = (0..n_workers).collect();
-        let worker_losses: Vec<(usize, f64)> = worker_ids
-            .par_iter()
-            .map(|&worker_id| {
-                let perturbed_model = model.mutate(
-                    &noise[worker_id..worker_id + <(Self::LayerType, Self::AuxType)>::NOISE_LEN],
-                );
-                let acts_start = Instant::now();
-                let acts: Vec<<f32 as Element<H>>::Array> = centroids
-                    .par_iter()
-                    .map(|patch| patch.bffvmm_tanh(&perturbed_model.0))
+    fn descend(
+        patches: &Vec<P>,
+        examples: &Vec<(Vec<(usize, u32)>, usize)>,
+        patch_learning_update_n: usize,
+        n_iters: usize,
+        minibatch_take: usize,
+        seed: u64,
+    ) -> (
+        <(P::TritArrayType, u32, u32) as Element<H::BitShape>>::Array,
+        [(<i8 as Element<H::BitShape>>::Array, i8); C],
+    ) {
+        let mut rng = Hc128Rng::seed_from_u64(seed);
+        let trits: <P::TritArrayType as Element<H::BitShape>>::Array = rng.gen();
+        let init_patch_weights = <H::BitShape as Map<
+            P::TritArrayType,
+            (P::TritArrayType, u32, u32),
+        >>::map(&trits, |&weights| {
+            let mut target = <(P::TritArrayType, u32, u32)>::default();
+            target.0 = weights;
+            target.2 = P::BitShape::N as u32;
+            target.1 = (target.2 - target.0.mask_zeros()) / 2;
+            target
+        });
+        let init_aux_weights =
+            <[(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C]>::default();
+
+        (0..n_iters).fold(
+            (init_patch_weights, init_aux_weights),
+            |(patch_weights, aux_weights), i| {
+                // binary patch layer outputs
+                let patch_acts: Vec<H> = patches
+                    .iter()
+                    .map(|patch| patch_weights.btbvmm(patch))
                     .collect();
-                //dbg!(acts_start.elapsed());
-                let loss_start = Instant::now();
-                let new_loss: f64 = examples
-                    .par_iter()
-                    .map(|(bag, class)| {
-                        let pooled = bag.iter().fold(
-                            (0usize, <f32 as Element<H>>::Array::default()),
-                            |mut acc, &(patch_index, patch_weight)| {
-                                acc.0 += patch_weight as usize;
-                                acc.1.weighted_elementwise_add(
-                                    &acts[patch_index as usize],
-                                    patch_weight,
-                                );
+
+                // for each example,
+                let (n_examples, patch_act_counts, aux_weight_counts): (
+                    usize,
+                    Vec<(usize, <u32 as Element<H::BitShape>>::Array)>,
+                    [(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C],
+                ) = examples
+                    .iter()
+                    // check if it is wrong.
+                    .filter_map(|(patch_counts, class)| {
+                        // elementwise sum the patch acts.
+                        let (hidden_act_n, hidden_act_counts) = patch_counts.iter().fold(
+                            <(usize, <u32 as Element<H::BitShape>>::Array)>::default(),
+                            |mut acc, &(index, count)| {
+                                patch_acts[index].weighted_increment_frac_counters(count, &mut acc);
                                 acc
                             },
                         );
-                        let n = pooled.0 as f32;
-                        let avgs = <H as Map<f32, f32>>::map(&pooled.1, |x| x / n);
-                        let acts = perturbed_model.1.fffvmm(&avgs);
-                        acts.softmax_loss(*class) as f64
+                        let n = hidden_act_n as i32 / 2;
+                        let hidden_acts =
+                            <H::BitShape as Map<u32, i32>>::map(&hidden_act_counts, |count| {
+                                *count as i32 - n
+                            });
+                        //dbg!(&hidden_acts);
+                        let acts = <[(<i8 as Element<H::BitShape>>::Array, i8); C] as IIIVMM<
+                            H,
+                            [(); C],
+                        >>::iiivmm(&aux_weights, &hidden_acts);
+                        let (max_index, &max_val) = acts
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| i != class)
+                            .max_by_key(|(_, v)| *v)
+                            .unwrap();
+                        if acts[*class] > max_val {
+                            None
+                        } else {
+                            Some((patch_counts, hidden_acts, *class, max_index))
+                        }
                     })
-                    .sum();
-                //dbg!(loss_start.elapsed());
-                (worker_id, new_loss)
-            })
-            .filter(|&(_, l)| l < *cur_loss)
-            .collect();
+                    .take(minibatch_take)
+                    .fold(
+                        (
+                            0usize,
+                            vec![
+                                <(usize, <u32 as Element<H::BitShape>>::Array)>::default();
+                                patches.len()
+                            ],
+                            <[(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C]>::default(),
+                        ),
+                        |(mut n, mut patch_act_count, mut aux_weight_grads): (
+                            usize,
+                            Vec<(usize, <u32 as Element<H::BitShape>>::Array)>,
+                            [(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C],
+                        ),
+                         (patch_counts, hidden_input, up_index, down_index): (
+                            &Vec<(usize, u32)>,
+                            <i32 as Element<H::BitShape>>::Array,
+                            usize,
+                            usize,
+                        )| {
+                            n += 1;
+                            let input_grads =
+                                <[(<i8 as Element<H::BitShape>>::Array, i8); C] as IIIVMM<
+                                    H,
+                                    [(); C],
+                                >>::grads(
+                                    &aux_weights,
+                                    &hidden_input,
+                                    &mut aux_weight_grads,
+                                    up_index,
+                                    down_index,
+                                );
+                            //dbg!(&input_grads);
 
-        if let Some(&(best_seed, new_loss)) = worker_losses
-            .iter()
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-        {
-            *cur_loss = new_loss;
-            *model = model.mutate(
-                &noise[best_seed..best_seed + <(Self::LayerType, Self::AuxType)>::NOISE_LEN],
-            );
-        } else {
-            //println!("miss: {} seeds", worker_losses.len());
-        }
-        worker_losses.len()
-    }
-    fn train<R: Rng>(
-        rng: &mut R,
-        centroids: &Vec<I>,
-        examples: &[(Vec<(u32, u32)>, usize)],
-        n_workers: usize,
-        n_iters: usize,
-        noise_sdev: f32,
-        sdev_decay_rate: f32,
-    ) -> (Self::LayerType, Self::AuxType) {
-        let mut model = <(Self::LayerType, Self::AuxType)>::default();
+                            patch_counts.iter().for_each(|&(index, count)| {
+                                input_grads.weighted_increment_frac_counters(
+                                    count,
+                                    &mut patch_act_count[index],
+                                );
+                            });
+                            //dbg!(&patch_act_count);
+                            (n, patch_act_count, aux_weight_grads)
+                        },
+                    );
+                dbg!(n_examples);
 
-        let mut cur_loss = f64::MAX;
-        let mut cur_sdev = noise_sdev;
-        for i in 0..n_iters {
-            cur_sdev *= sdev_decay_rate;
-            let normal = Normal::new(0f32, cur_sdev).unwrap();
-            let noise: Vec<f32> = (0..<(Self::LayerType, Self::AuxType)>::NOISE_LEN + n_workers)
-                .map(|_| normal.sample(rng))
-                .collect();
-            let n_good_seeds = H::float_descend(
-                &mut model,
-                &centroids,
-                &examples,
-                &noise,
-                &mut cur_loss,
-                n_workers,
-            );
-            println!(
-                "{:4} {:4} sdev:{:.6} loss: {:.7}",
-                i,
-                n_good_seeds,
-                cur_sdev,
-                cur_loss / examples.len() as f64
-            );
-        }
-        model
+                let new_aux_weights = <[(); C] as ZipMap<
+                    (<i8 as Element<H::BitShape>>::Array, i8),
+                    (usize, (<u32 as Element<H::BitShape>>::Array, u32)),
+                    (<i8 as Element<H::BitShape>>::Array, i8),
+                >>::zip_map(
+                    &aux_weights,
+                    &aux_weight_counts,
+                    |(w, b), (n, (wg, bg))| {
+                        let n = *n as u32 / 2;
+                        (
+                            <H::BitShape as ZipMap<i8, u32, i8>>::zip_map(&w, &wg, |w, &g| {
+                                w.saturating_add(SIGNS[(g > n) as usize])
+                            }),
+                            b.saturating_add(SIGNS[(*bg > n) as usize]),
+                        )
+                    },
+                );
+                //dbg!(&patch_act_counts);
+                let patch_weight_counts = patch_act_counts.iter().zip(patches.iter()).fold(
+                    <(
+                        usize,
+                        <(<u32 as Element<P::BitShape>>::Array, u32) as Element<
+                            H::BitShape,
+                        >>::Array,
+                    )>::default(),
+                    |mut acc, ((n, counts), patch)| {
+                        let threshold = *n as u32 / 2;
+                        //println!("t: {} {:?}", n, counts);
+                        let grad = <H>::bit_map_pack(counts, |&c: &u32| c > threshold);
+                        <<(P::TritArrayType, u32, u32) as Element<H::BitShape>>::Array as BTBVMM<
+                            P,
+                            H,
+                        >>::grads(patch, &grad, &mut acc);
+                        acc
+                    },
+                );
+                let new_patch_trits = {
+                    let patch_weights_counts_vec = {
+                        let patch_weights_counts = <H::BitShape as Map<
+                            (<u32 as Element<P::BitShape>>::Array, u32),
+                            <u32 as Element<P::BitShape>>::Array,
+                        >>::map(
+                            &patch_weight_counts.1,
+                            |(trits, _)| <P::BitShape as Map<u32, u32>>::map(trits, |&t| t),
+                        );
+                        let mut patch_weights_counts_vec: Vec<u32> =
+                            vec![0; <P::BitShape as Element<H::BitShape>>::Array::N];
+
+                        <<P::BitShape as Element<H::BitShape>>::Array>::to_vec(
+                            &patch_weights_counts,
+                            &mut patch_weights_counts_vec,
+                        );
+                        patch_weights_counts_vec
+                    };
+
+                    let ob_patch_weights_vec = {
+                        let ob_patch_weights = <H::BitShape as Map<
+                            (P::TritArrayType, u32, u32),
+                            <Option<bool> as Element<P::BitShape>>::Array,
+                        >>::map(
+                            &patch_weights,
+                            |(trits, _, _)| trits.trit_expand(),
+                        );
+                        let mut ob_patch_weights_vec: Vec<Option<bool>> =
+                            vec![None; <P::BitShape as Element<H::BitShape>>::Array::N];
+                        <<P::BitShape as Element<H::BitShape>>::Array>::to_vec(
+                            &ob_patch_weights,
+                            &mut ob_patch_weights_vec,
+                        );
+                        ob_patch_weights_vec
+                    };
+                    let threshold = patch_weight_counts.0 as u32 / 2;
+                    // (magn, index, old_trit, update_sign)
+                    let mut weight_grads_vec: Vec<(u32, usize, Option<bool>, bool)> =
+                        ob_patch_weights_vec
+                            .iter()
+                            .zip(patch_weights_counts_vec.iter())
+                            .enumerate()
+                            .map(|(i, (&trit, &count))| {
+                                let pos = trit.unwrap_or(false);
+                                let neg = !trit.unwrap_or(true);
+
+                                let pos_magn = count.saturating_sub(threshold)
+                                    & (Wrapping(0u32) - Wrapping(!pos as u32)).0;
+                                let neg_magn = threshold.saturating_sub(count)
+                                    & (Wrapping(0u32) - Wrapping(!neg as u32)).0;
+
+                                let magn = pos_magn | neg_magn;
+                                //println!("{} {}", threshold, count);
+                                let sign = count > threshold;
+                                (magn, i, trit, sign)
+                            })
+                            .collect();
+                    weight_grads_vec.sort();
+                    weight_grads_vec.reverse();
+                    //dbg!(&weight_grads_vec[0..50]);
+
+                    let mut new_weights_vec: Vec<(usize, Option<bool>)> = weight_grads_vec
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &(magn, w_index, trit, update_sign))| {
+                            (
+                                w_index,
+                                if (i < patch_learning_update_n) & (magn > 0) {
+                                    if let None = trit {
+                                        Some(update_sign)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    trit
+                                },
+                            )
+                        })
+                        .collect();
+                    new_weights_vec.sort();
+                    //dbg!(&new_weights_vec[0..50]);
+
+                    let weight_vec: Vec<Option<bool>> =
+                        new_weights_vec.iter().map(|(_, t)| *t).collect();
+
+                    let new_ob_weights =
+                        <<P::BitShape as Element<H::BitShape>>::Array>::from_vec(&weight_vec);
+                    <<P::TritArrayType as Element<H::BitShape>>::Array>::trit_pack(&new_ob_weights)
+                };
+                let threshold = patch_weight_counts.0 as u32 / 2;
+
+                let patch_weight_offsets = <H::BitShape as ZipMap<
+                    (P::TritArrayType, u32, u32),
+                    (<u32 as Element<P::BitShape>>::Array, u32),
+                    u32,
+                >>::zip_map(
+                    &patch_weights,
+                    &patch_weight_counts.1,
+                    |(_, _, offset), (_, bias_count)| {
+                        //println!("{} {}", threshold, bias_count);
+                        //if *bias_count > threshold {
+                        //    offset.saturating_add(1)
+                        //} else if *bias_count < threshold {
+                        //    offset.saturating_sub(1)
+                        //} else {
+                        //    *offset
+                        //}
+                        *offset
+                    },
+                );
+
+                let new_patch_weights = <H::BitShape as ZipMap<
+                    u32,
+                    P::TritArrayType,
+                    (P::TritArrayType, u32, u32),
+                >>::zip_map(
+                    &patch_weight_offsets,
+                    &new_patch_trits,
+                    |&offset, &trits| {
+                        let n_zeros = trits.mask_zeros();
+                        (trits, (offset.max(n_zeros) - n_zeros) / 2, offset)
+                    },
+                );
+
+                if i < 5 {
+                    (patch_weights, new_aux_weights)
+                } else {
+                    (new_patch_weights, aux_weights)
+                }
+            },
+        )
     }
 }

@@ -123,7 +123,7 @@ where
     fn centroid_count_per_image(
         examples: &Vec<(Image, usize)>,
         centroids: &Vec<Self>,
-    ) -> Vec<(Vec<(u32, u32)>, usize)>;
+    ) -> Vec<(Vec<(usize, u32)>, usize)>;
 }
 
 impl<
@@ -139,7 +139,7 @@ where
     fn centroid_count_per_image(
         examples: &Vec<(Image, usize)>,
         centroids: &Vec<Self>,
-    ) -> Vec<(Vec<(u32, u32)>, usize)> {
+    ) -> Vec<(Vec<(usize, u32)>, usize)> {
         examples
             .par_iter()
             .map(|(image, class)| {
@@ -163,7 +163,7 @@ where
                         .iter()
                         .enumerate()
                         .filter(|&(_, c)| *c > 0)
-                        .map(|(i, c)| (i as u32, *c))
+                        .map(|(i, c)| (i, *c))
                         .collect(),
                     *class,
                 )
