@@ -2,11 +2,15 @@ use crate::bits::{
     BitArray, BitArrayOPs, BitMap, BitMapPack, IncrementFracCounters, MaskedDistance, TritArray,
     TritPack,
 };
+use crate::count::ElementwiseAdd;
 use crate::shape::{Element, Flatten, Map, MapMut, Shape, ZipFold, ZipMap};
 use rand::{Rng, SeedableRng};
 use rand_hc::Hc128Rng;
+use rayon::prelude::*;
 use std::num::Wrapping;
 use std::ops::Add;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 const SIGNS: [i8; 2] = [1, -1];
 
@@ -70,7 +74,7 @@ where
         let grads = <I::BitShape as ZipMap<i8, i8, bool>>::zip_map(
             &self[up_index].0,
             &self[down_index].0,
-            |&up, &down| down > up,
+            |&up, &down| down < up,
         );
         //dbg!(&grads);
         I::bitpack(&grads)
@@ -165,6 +169,7 @@ where
     fn descend(
         patches: &Vec<P>,
         examples: &Vec<(Vec<(usize, u32)>, usize)>,
+        bias_diff_threshold: u32,
         patch_learning_update_n: usize,
         n_iters: usize,
         minibatch_take: usize,
@@ -177,11 +182,13 @@ where
 
 impl<P, H, const C: usize> Descend<P, H, [(); C]> for ()
 where
-    P: BitArray,
+    P: BitArray + Sync + Send,
     H: BitArray
         + IncrementFracCounters
         + BitMapPack<u32>
-        + BitMap<(<u32 as Element<P::BitShape>>::Array, u32)>,
+        + BitMap<(<u32 as Element<P::BitShape>>::Array, u32)>
+        + Sync
+        + Send,
     (): Element<H::BitShape>,
     i8: Element<H::BitShape>,
     u32: Element<P::BitShape>
@@ -242,10 +249,20 @@ where
     <i32 as Element<H::BitShape>>::Array: std::fmt::Debug,
     [i32; C]: std::fmt::Debug,
     H: std::fmt::Debug,
+    <i32 as Element<H::BitShape>>::Array: Sync + Send,
+    <u32 as Element<H::BitShape>>::Array: Sync + Send,
+    [(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C]: Sync + Send,
+    [(<i8 as Element<H::BitShape>>::Array, i8); C]: Sync,
+    (
+        usize,
+        Vec<(usize, <u32 as Element<H::BitShape>>::Array)>,
+        [(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C],
+    ): ElementwiseAdd,
 {
     fn descend(
         patches: &Vec<P>,
         examples: &Vec<(Vec<(usize, u32)>, usize)>,
+        bias_diff_threshold: u32,
         patch_learning_update_n: usize,
         n_iters: usize,
         minibatch_take: usize,
@@ -272,21 +289,27 @@ where
         (0..n_iters).fold(
             (init_patch_weights, init_aux_weights),
             |(patch_weights, aux_weights), i| {
+                let now = Instant::now();
                 // binary patch layer outputs
                 let patch_acts: Vec<H> = patches
                     .iter()
                     .map(|patch| patch_weights.btbvmm(patch))
                     .collect();
+                println!("patches: {:?}", now.elapsed());
 
+                let now = Instant::now();
                 // for each example,
+                // 1thread: 215ms
+                // auto par: 170ms
                 let (n_examples, patch_act_counts, aux_weight_counts): (
                     usize,
                     Vec<(usize, <u32 as Element<H::BitShape>>::Array)>,
                     [(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C],
                 ) = examples
-                    .iter()
+                    .par_iter()
                     // check if it is wrong.
                     .filter_map(|(patch_counts, class)| {
+                        //.filter_map(|(patch_counts, class)| {
                         // elementwise sum the patch acts.
                         let (hidden_act_n, hidden_act_counts) = patch_counts.iter().fold(
                             <(usize, <u32 as Element<H::BitShape>>::Array)>::default(),
@@ -317,16 +340,18 @@ where
                             Some((patch_counts, hidden_acts, *class, max_index))
                         }
                     })
-                    .take(minibatch_take)
+                    //.take(minibatch_take)
                     .fold(
-                        (
+                        || {
+                            (
                             0usize,
                             vec![
                                 <(usize, <u32 as Element<H::BitShape>>::Array)>::default();
                                 patches.len()
                             ],
                             <[(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C]>::default(),
-                        ),
+                        )
+                        },
                         |(mut n, mut patch_act_count, mut aux_weight_grads): (
                             usize,
                             Vec<(usize, <u32 as Element<H::BitShape>>::Array)>,
@@ -361,7 +386,24 @@ where
                             //dbg!(&patch_act_count);
                             (n, patch_act_count, aux_weight_grads)
                         },
+                    )
+                    .reduce(
+                        || {
+                            (
+                        0usize,
+                        vec![
+                            <(usize, <u32 as Element<H::BitShape>>::Array)>::default();
+                            patches.len()
+                        ],
+                        <[(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C]>::default(),
+                    )
+                        },
+                        |mut a, b| {
+                            a.elementwise_add(&b);
+                            a
+                        },
                     );
+                println!("fold: {:?}", now.elapsed());
                 dbg!(n_examples);
 
                 let new_aux_weights = <[(); C] as ZipMap<
@@ -400,6 +442,8 @@ where
                         acc
                     },
                 );
+                //println!("act: {:?}", now.elapsed());
+
                 let new_patch_trits = {
                     let patch_weights_counts_vec = {
                         let patch_weights_counts = <H::BitShape as Map<
@@ -500,14 +544,14 @@ where
                     &patch_weight_counts.1,
                     |(_, _, offset), (_, bias_count)| {
                         //println!("{} {}", threshold, bias_count);
-                        //if *bias_count > threshold {
-                        //    offset.saturating_add(1)
-                        //} else if *bias_count < threshold {
-                        //    offset.saturating_sub(1)
-                        //} else {
-                        //    *offset
-                        //}
-                        *offset
+                        if *bias_count > (threshold + bias_diff_threshold) {
+                            offset.saturating_sub(1)
+                        } else if (*bias_count + bias_diff_threshold) < threshold {
+                            offset.saturating_add(1)
+                        } else {
+                            *offset
+                        }
+                        //*offset
                     },
                 );
 
@@ -523,8 +567,8 @@ where
                         (trits, (offset.max(n_zeros) - n_zeros) / 2, offset)
                     },
                 );
-
-                if i < 5 {
+                //println!("iter: {:?}", now.elapsed());
+                if i < 10 {
                     (patch_weights, new_aux_weights)
                 } else {
                     (new_patch_weights, aux_weights)
