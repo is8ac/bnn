@@ -63,11 +63,7 @@ pub trait MapMut<I: Element<Self>, O: Element<Self>>
 where
     Self: Shape + Sized,
 {
-    fn map_mut<F: Fn(&mut O, &I)>(
-        target: &mut <O as Element<Self>>::Array,
-        input: &<I as Element<Self>>::Array,
-        map_fn: F,
-    );
+    fn map_mut<F: Fn(&mut O, &I)>(target: &mut <O as Element<Self>>::Array, input: &<I as Element<Self>>::Array, map_fn: F);
 }
 
 impl<I, O> MapMut<I, O> for () {
@@ -76,14 +72,8 @@ impl<I, O> MapMut<I, O> for () {
     }
 }
 
-impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>, const L: usize> MapMut<I, O>
-    for [S; L]
-{
-    fn map_mut<F: Fn(&mut O, &I)>(
-        target: &mut <O as Element<Self>>::Array,
-        input: &[<I as Element<S>>::Array; L],
-        map_fn: F,
-    ) {
+impl<S: Shape + MapMut<I, O>, I: Element<S>, O: Element<S>, const L: usize> MapMut<I, O> for [S; L] {
+    fn map_mut<F: Fn(&mut O, &I)>(target: &mut <O as Element<Self>>::Array, input: &[<I as Element<S>>::Array; L], map_fn: F) {
         for i in 0..L {
             <S as MapMut<I, O>>::map_mut(&mut target[i], &input[i], &map_fn);
         }
@@ -95,10 +85,7 @@ where
     Self: Shape + Sized + Element<W>,
     <Self as Element<W>>::Array: Shape,
 {
-    fn index_map<F: Fn(&<<Self as Element<W>>::Array as Shape>::Index) -> O>(
-        outer_index: W::Index,
-        map_fn: F,
-    ) -> <O as Element<Self>>::Array;
+    fn index_map<F: Fn(&<<Self as Element<W>>::Array as Shape>::Index) -> O>(outer_index: W::Index, map_fn: F) -> <O as Element<Self>>::Array;
 }
 
 impl<O, W: Shape> IndexMap<O, W> for ()
@@ -110,12 +97,7 @@ where
     }
 }
 
-impl<
-        O: Element<S>,
-        W: Shape,
-        S: Shape + IndexMap<O, <[(); L] as Element<W>>::Array>,
-        const L: usize,
-    > IndexMap<O, W> for [S; L]
+impl<O: Element<S>, W: Shape, S: Shape + IndexMap<O, <[(); L] as Element<W>>::Array>, const L: usize> IndexMap<O, W> for [S; L]
 where
     [S; L]: Element<W, Array = <S as Element<<[(); L] as Element<W>>::Array>>::Array>,
     <[S; L] as Element<W>>::Array: Shape,
@@ -126,16 +108,10 @@ where
     (usize, ()): Wrap<W::Index, Wrapped = <<[(); L] as Element<W>>::Array as Shape>::Index>,
     W::Index: Copy,
 {
-    fn index_map<F: Fn(&<<[S; L] as Element<W>>::Array as Shape>::Index) -> O>(
-        outer_index: W::Index,
-        map_fn: F,
-    ) -> [<O as Element<S>>::Array; L] {
+    fn index_map<F: Fn(&<<[S; L] as Element<W>>::Array as Shape>::Index) -> O>(outer_index: W::Index, map_fn: F) -> [<O as Element<S>>::Array; L] {
         let mut target = <[<O as Element<S>>::Array; L]>::default();
         for i in 0..L {
-            target[i] = <S as IndexMap<O, <[(); L] as Element<W>>::Array>>::index_map(
-                (i, ()).wrap(outer_index),
-                &map_fn,
-            );
+            target[i] = <S as IndexMap<O, <[(); L] as Element<W>>::Array>>::index_map((i, ()).wrap(outer_index), &map_fn);
         }
         target
     }
@@ -143,19 +119,19 @@ where
 
 pub trait IndexGet<I> {
     type Element;
-    fn index_get(&self, i: &I) -> Self::Element;
+    fn index_get(&self, i: &I) -> &Self::Element;
 }
 
-impl<T: Copy> IndexGet<()> for T {
+impl<T> IndexGet<()> for T {
     type Element = T;
-    fn index_get(&self, i: &()) -> T {
-        *self
+    fn index_get(&self, i: &()) -> &T {
+        self
     }
 }
 
 impl<I, T: IndexGet<I>, const L: usize> IndexGet<(usize, I)> for [T; L] {
     type Element = T::Element;
-    fn index_get(&self, (i, ii): &(usize, I)) -> T::Element {
+    fn index_get(&self, (i, ii): &(usize, I)) -> &T::Element {
         self[*i].index_get(ii)
     }
 }
@@ -164,20 +140,14 @@ pub trait Map<I: Element<Self>, O: Element<Self>>
 where
     Self: Shape + Sized,
 {
-    fn map<F: Fn(&I) -> O>(
-        input: &<I as Element<Self>>::Array,
-        map_fn: F,
-    ) -> <O as Element<Self>>::Array;
+    fn map<F: Fn(&I) -> O>(input: &<I as Element<Self>>::Array, map_fn: F) -> <O as Element<Self>>::Array;
 }
 
 impl<S: MapMut<I, O> + Shape, I: Element<S>, O: Element<S>> Map<I, O> for S
 where
     <O as Element<S>>::Array: Default,
 {
-    fn map<F: Fn(&I) -> O>(
-        input: &<I as Element<S>>::Array,
-        map_fn: F,
-    ) -> <O as Element<S>>::Array {
+    fn map<F: Fn(&I) -> O>(input: &<I as Element<S>>::Array, map_fn: F) -> <O as Element<S>>::Array {
         let mut target = <O as Element<S>>::Array::default();
         S::map_mut(&mut target, input, |t, i| *t = map_fn(i));
         target
@@ -210,12 +180,7 @@ pub trait ZipFold<Acc, A: Element<Self>, B: Element<Self>>
 where
     Self: Shape + Sized,
 {
-    fn zip_fold<F: Fn(Acc, &A, &B) -> Acc>(
-        a: &<A as Element<Self>>::Array,
-        b: &<B as Element<Self>>::Array,
-        acc: Acc,
-        fold_fn: F,
-    ) -> Acc;
+    fn zip_fold<F: Fn(Acc, &A, &B) -> Acc>(a: &<A as Element<Self>>::Array, b: &<B as Element<Self>>::Array, acc: Acc, fold_fn: F) -> Acc;
 }
 
 impl<Acc, A, B> ZipFold<Acc, A, B> for () {
@@ -224,20 +189,8 @@ impl<Acc, A, B> ZipFold<Acc, A, B> for () {
     }
 }
 
-impl<
-        S: Shape + ZipFold<Acc, A, B>,
-        Acc,
-        A: Element<S> + Sized,
-        B: Element<S> + Sized,
-        const L: usize,
-    > ZipFold<Acc, A, B> for [S; L]
-{
-    fn zip_fold<F: Fn(Acc, &A, &B) -> Acc>(
-        a: &[<A as Element<S>>::Array; L],
-        b: &[<B as Element<S>>::Array; L],
-        mut acc: Acc,
-        fold_fn: F,
-    ) -> Acc {
+impl<S: Shape + ZipFold<Acc, A, B>, Acc, A: Element<S> + Sized, B: Element<S> + Sized, const L: usize> ZipFold<Acc, A, B> for [S; L] {
+    fn zip_fold<F: Fn(Acc, &A, &B) -> Acc>(a: &[<A as Element<S>>::Array; L], b: &[<B as Element<S>>::Array; L], mut acc: Acc, fold_fn: F) -> Acc {
         for i in 0..L {
             acc = <S as ZipFold<Acc, A, B>>::zip_fold(&a[i], &b[i], acc, &fold_fn);
         }
@@ -263,14 +216,7 @@ impl<A: Element<(), Array = A>, B: Element<(), Array = B>, O> ZipMapMut<A, B, O>
     }
 }
 
-impl<
-        S: Shape + ZipMapMut<A, B, O>,
-        A: Element<S>,
-        B: Element<S>,
-        O: Element<S>,
-        const L: usize,
-    > ZipMapMut<A, B, O> for [S; L]
-{
+impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>, const L: usize> ZipMapMut<A, B, O> for [S; L] {
     fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
         target: &mut <O as Element<Self>>::Array,
         a: &<A as Element<[S; L]>>::Array,
@@ -300,23 +246,14 @@ pub trait ZipMap<A: Element<Self>, B: Element<Self>, O: Element<Self>>
 where
     Self: Shape + Sized,
 {
-    fn zip_map<F: Fn(&A, &B) -> O>(
-        a: &<A as Element<Self>>::Array,
-        b: &<B as Element<Self>>::Array,
-        map_fn: F,
-    ) -> <O as Element<Self>>::Array;
+    fn zip_map<F: Fn(&A, &B) -> O>(a: &<A as Element<Self>>::Array, b: &<B as Element<Self>>::Array, map_fn: F) -> <O as Element<Self>>::Array;
 }
 
-impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>> ZipMap<A, B, O>
-    for S
+impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>> ZipMap<A, B, O> for S
 where
     <O as Element<S>>::Array: Default,
 {
-    fn zip_map<F: Fn(&A, &B) -> O>(
-        a: &<A as Element<S>>::Array,
-        b: &<B as Element<S>>::Array,
-        map_fn: F,
-    ) -> <O as Element<S>>::Array {
+    fn zip_map<F: Fn(&A, &B) -> O>(a: &<A as Element<S>>::Array, b: &<B as Element<S>>::Array, map_fn: F) -> <O as Element<S>>::Array {
         let mut target = <<O as Element<S>>::Array>::default();
         S::zip_map_mut(&mut target, &a, &b, |t, x, y| *t = map_fn(x, y));
         target

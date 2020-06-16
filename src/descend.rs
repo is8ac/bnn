@@ -19,6 +19,7 @@ where
     i32: Element<C> + Element<I::BitShape>,
     (usize, (<u32 as Element<I::BitShape>>::Array, u32)): Element<C>,
     u32: Element<I::BitShape>,
+    Option<bool>: Element<I::BitShape>,
 {
     fn iiivmm(&self, input: &<i32 as Element<I::BitShape>>::Array) -> <i32 as Element<C>>::Array;
     fn grads(
@@ -27,17 +28,18 @@ where
         grads: &mut <(usize, (<u32 as Element<I::BitShape>>::Array, u32)) as Element<C>>::Array,
         up_index: usize,
         down_index: usize,
-    ) -> I;
+    ) -> <Option<bool> as Element<I::BitShape>>::Array;
 }
 
 impl<I: BitArray + BitArrayOPs, const C: usize> IIIVMM<I, [(); C]>
     for [(<i8 as Element<I::BitShape>>::Array, i8); C]
 where
-    I::BitShape: MapMut<i32, u32> + ZipMap<i8, i8, bool> + ZipFold<i32, i32, i8>,
+    I::BitShape: MapMut<i32, u32> + ZipMap<i8, i8, Option<bool>> + ZipFold<i32, i32, i8>,
     [i32; C]: Default,
     i8: Element<I::BitShape>,
     i32: Element<I::BitShape>,
     bool: Element<I::BitShape>,
+    Option<bool>: Element<I::BitShape>,
     u32: Element<I::BitShape>,
     <bool as Element<I::BitShape>>::Array: std::fmt::Debug,
 {
@@ -59,7 +61,7 @@ where
         grads: &mut [(usize, (<u32 as Element<I::BitShape>>::Array, u32)); C],
         up_index: usize,
         down_index: usize,
-    ) -> I {
+    ) -> <Option<bool> as Element<I::BitShape>>::Array {
         for &(i, sign) in &[(up_index, false), (down_index, true)] {
             grads[i].0 += 1;
             (grads[i].1).1 += sign as u32;
@@ -71,13 +73,20 @@ where
                 },
             );
         }
-        let grads = <I::BitShape as ZipMap<i8, i8, bool>>::zip_map(
+        <I::BitShape as ZipMap<i8, i8, Option<bool>>>::zip_map(
             &self[up_index].0,
             &self[down_index].0,
-            |&up, &down| down < up,
-        );
-        //dbg!(&grads);
-        I::bitpack(&grads)
+            |&up, &down| {
+                let up_sign = up.is_positive();
+                let down_sign = down.is_negative();
+                dbg!((up, down));
+                if up_sign == down_sign {
+                    Some(up_sign)
+                } else {
+                    None
+                }
+            },
+        )
     }
 }
 
@@ -185,7 +194,7 @@ where
     P: BitArray + Sync + Send,
     H: BitArray
         + IncrementFracCounters
-        + BitMapPack<u32>
+        + BitMapPack<[u32; 2]>
         + BitMap<(<u32 as Element<P::BitShape>>::Array, u32)>
         + Sync
         + Send,
@@ -246,6 +255,7 @@ where
     H::BitShape: ZipMap<u32, P::TritArrayType, (P::TritArrayType, u32, u32)>
         + ZipMap<(P::TritArrayType, u32, u32), (<u32 as Element<P::BitShape>>::Array, u32), u32>,
     <u32 as Element<H::BitShape>>::Array: std::fmt::Debug,
+    <[u32; 2] as Element<H::BitShape>>::Array: std::fmt::Debug,
     <i32 as Element<H::BitShape>>::Array: std::fmt::Debug,
     [i32; C]: std::fmt::Debug,
     H: std::fmt::Debug,
@@ -255,9 +265,13 @@ where
     [(<i8 as Element<H::BitShape>>::Array, i8); C]: Sync,
     (
         usize,
-        Vec<(usize, <u32 as Element<H::BitShape>>::Array)>,
+        Vec<(usize, <[u32; 2] as Element<H::BitShape>>::Array)>,
         [(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C],
     ): ElementwiseAdd,
+    <Option<bool> as Element<H::BitShape>>::Array: std::fmt::Debug,
+    H::BitShape: MapMut<Option<bool>, [u32; 2]>,
+    [u32; 2]: Element<H::BitShape>,
+    <[u32; 2] as Element<H::BitShape>>::Array: Default + Copy + Send + Sync,
 {
     fn descend(
         patches: &Vec<P>,
@@ -289,27 +303,22 @@ where
         (0..n_iters).fold(
             (init_patch_weights, init_aux_weights),
             |(patch_weights, aux_weights), i| {
-                let now = Instant::now();
+                let iter_start = Instant::now();
                 // binary patch layer outputs
                 let patch_acts: Vec<H> = patches
                     .iter()
                     .map(|patch| patch_weights.btbvmm(patch))
                     .collect();
-                println!("patches: {:?}", now.elapsed());
 
-                let now = Instant::now();
-                // for each example,
-                // 1thread: 215ms
-                // auto par: 170ms
-                let (n_examples, patch_act_counts, aux_weight_counts): (
+                let acc_start = Instant::now();
+                let incorrect_examples: Vec<(
+                    &Vec<(usize, u32)>,
+                    <i32 as Element<H::BitShape>>::Array,
                     usize,
-                    Vec<(usize, <u32 as Element<H::BitShape>>::Array)>,
-                    [(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C],
-                ) = examples
+                    usize,
+                )> = examples
                     .par_iter()
-                    // check if it is wrong.
                     .filter_map(|(patch_counts, class)| {
-                        //.filter_map(|(patch_counts, class)| {
                         // elementwise sum the patch acts.
                         let (hidden_act_n, hidden_act_counts) = patch_counts.iter().fold(
                             <(usize, <u32 as Element<H::BitShape>>::Array)>::default(),
@@ -340,13 +349,27 @@ where
                             Some((patch_counts, hidden_acts, *class, max_index))
                         }
                     })
-                    //.take(minibatch_take)
+                    .collect();
+                println!(
+                    "acc: {}",
+                    (examples.len() - incorrect_examples.len()) as f64 / examples.len() as f64
+                );
+                //println!("acc: {:?}", acc_start.elapsed());
+
+                // for each example,
+                let (n_examples, patch_act_counts, aux_weight_counts): (
+                    usize,
+                    Vec<(usize, <[u32; 2] as Element<H::BitShape>>::Array)>,
+                    [(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C],
+                ) = incorrect_examples
+                    .par_iter()
+                    .take(minibatch_take)
                     .fold(
                         || {
                             (
                             0usize,
                             vec![
-                                <(usize, <u32 as Element<H::BitShape>>::Array)>::default();
+                                <(usize, <[u32; 2] as Element<H::BitShape>>::Array)>::default();
                                 patches.len()
                             ],
                             <[(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C]>::default(),
@@ -354,10 +377,10 @@ where
                         },
                         |(mut n, mut patch_act_count, mut aux_weight_grads): (
                             usize,
-                            Vec<(usize, <u32 as Element<H::BitShape>>::Array)>,
+                            Vec<(usize, <[u32; 2] as Element<H::BitShape>>::Array)>,
                             [(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C],
                         ),
-                         (patch_counts, hidden_input, up_index, down_index): (
+                         (patch_counts, hidden_input, up_index, down_index): &(
                             &Vec<(usize, u32)>,
                             <i32 as Element<H::BitShape>>::Array,
                             usize,
@@ -372,16 +395,27 @@ where
                                     &aux_weights,
                                     &hidden_input,
                                     &mut aux_weight_grads,
-                                    up_index,
-                                    down_index,
+                                    *up_index,
+                                    *down_index,
                                 );
-                            //dbg!(&input_grads);
+                            dbg!(&input_grads);
 
                             patch_counts.iter().for_each(|&(index, count)| {
-                                input_grads.weighted_increment_frac_counters(
-                                    count,
-                                    &mut patch_act_count[index],
+                                //dbg!(count);
+                                patch_act_count[index].0 += count as usize;
+                                <H::BitShape as MapMut<Option<bool>, [u32; 2]>>::map_mut(
+                                    &mut patch_act_count[index].1,
+                                    &input_grads,
+                                    |mut count_pair, trit| {
+                                        if let &Some(sign) = trit {
+                                            count_pair[sign as usize] += count;
+                                        }
+                                    },
                                 );
+                                //input_grads.weighted_increment_frac_counters(
+                                //    count,
+                                //    &mut patch_act_count[index],
+                                //);
                             });
                             //dbg!(&patch_act_count);
                             (n, patch_act_count, aux_weight_grads)
@@ -392,7 +426,7 @@ where
                             (
                         0usize,
                         vec![
-                            <(usize, <u32 as Element<H::BitShape>>::Array)>::default();
+                            <(usize, <[u32; 2] as Element<H::BitShape>>::Array)>::default();
                             patches.len()
                         ],
                         <[(usize, (<u32 as Element<H::BitShape>>::Array, u32)); C]>::default(),
@@ -403,8 +437,7 @@ where
                             a
                         },
                     );
-                println!("fold: {:?}", now.elapsed());
-                dbg!(n_examples);
+                dbg!(&patch_act_counts);
 
                 let new_aux_weights = <[(); C] as ZipMap<
                     (<i8 as Element<H::BitShape>>::Array, i8),
@@ -434,7 +467,8 @@ where
                     |mut acc, ((n, counts), patch)| {
                         let threshold = *n as u32 / 2;
                         //println!("t: {} {:?}", n, counts);
-                        let grad = <H>::bit_map_pack(counts, |&c: &u32| c > threshold);
+                        let grad = <H>::bit_map_pack(counts, |[up, down]: &[u32; 2]| up > down);
+                        //dbg!(&grad);
                         <<(P::TritArrayType, u32, u32) as Element<H::BitShape>>::Array as BTBVMM<
                             P,
                             H,
@@ -442,7 +476,6 @@ where
                         acc
                     },
                 );
-                //println!("act: {:?}", now.elapsed());
 
                 let new_patch_trits = {
                     let patch_weights_counts_vec = {
@@ -567,11 +600,11 @@ where
                         (trits, (offset.max(n_zeros) - n_zeros) / 2, offset)
                     },
                 );
-                //println!("iter: {:?}", now.elapsed());
-                if i < 10 {
+                //println!("iter: {:?}", iter_start.elapsed());
+                if i < 3 {
                     (patch_weights, new_aux_weights)
                 } else {
-                    (new_patch_weights, aux_weights)
+                    (new_patch_weights, new_aux_weights)
                 }
             },
         )
