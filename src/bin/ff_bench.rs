@@ -8,9 +8,10 @@ use bitnn::cluster::{
 };
 use bitnn::datasets::cifar;
 //use bitnn::descend::Descend;
-use bitnn::image2d::{PatchFold, PixelMap, StaticImage};
+use bitnn::image2d::{Image2D, PatchFold, PixelMap, StaticImage};
 use bitnn::shape::{Element, IndexGet, Map, MapMut, Shape, ZipFold, ZipMap};
 use bitnn::unary::to_10;
+use rand::distributions;
 use rand::Rng;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
@@ -23,7 +24,6 @@ where
     i32: Element<C> + Element<I::BitShape>,
     (usize, (<[u32; 2] as Element<I::BitShape>>::Array, [u32; 2])): Element<C>,
     [u32; 2]: Element<I::BitShape>,
-    Option<bool>: Element<I::BitShape>,
     u32: Element<C>,
     i8: Element<C>,
 {
@@ -32,13 +32,11 @@ where
         weights: &<i8 as Element<C>>::Array,
         input: i32,
         acts: &<i32 as Element<C>>::Array,
-        index: &<I::BitShape as Shape>::Index,
     ) -> <i32 as Element<C>>::Array;
     fn subtract_input_from_iiivmm_acts(
         weights: &<i8 as Element<C>>::Array,
         input: i32,
         acts: &<i32 as Element<C>>::Array,
-        index: &<I::BitShape as Shape>::Index,
     ) -> <i32 as Element<C>>::Array;
     fn increment_grads(
         &self,
@@ -57,7 +55,7 @@ where
     fn descend(
         &self,
         patch_acts: &Vec<I>,
-        sparse_patch_count_class_dists: &Vec<(Vec<(usize, u32)>, <u32 as Element<C>>::Array)>,
+        sparse_patch_count_class_dists: &Vec<(Vec<(usize, u32)>, i32, <u32 as Element<C>>::Array)>,
         i: usize,
         it: i32,
         ut: u32,
@@ -66,7 +64,7 @@ where
 
 impl<I, const C: usize> IIIVMM<I, [(); C]> for [(<i8 as Element<I::BitShape>>::Array, i8); C]
 where
-    I: BitArray + BitArrayOPs + IncrementFracCounters,
+    I: BitArray + IncrementFracCounters,
     I::BitShape: MapMut<i32, [u32; 2]> + ZipFold<i32, i32, i8> + ZipMap<i8, [u32; 2], i8>,
     [i32; C]: Default,
     [(); C]: ZipMap<
@@ -78,7 +76,6 @@ where
     i32: Element<I::BitShape>,
     u32: Element<I::BitShape>,
     bool: Element<I::BitShape>,
-    Option<bool>: Element<I::BitShape>,
     [u32; 2]: Element<I::BitShape>,
     [(
         usize,
@@ -106,12 +103,7 @@ where
             },
         )
     }
-    fn update_iiivmm_acts(
-        weights: &[i8; C],
-        input: i32,
-        partial_acts: &[i32; C],
-        index: &<I::BitShape as Shape>::Index,
-    ) -> [i32; C] {
+    fn update_iiivmm_acts(weights: &[i8; C], input: i32, partial_acts: &[i32; C]) -> [i32; C] {
         <[(); C] as ZipMap<i32, i8, i32>>::zip_map(partial_acts, weights, |partial_act, &weight| {
             partial_act + weight as i32 * input
         })
@@ -120,7 +112,6 @@ where
         weights: &[i8; C],
         input: i32,
         partial_acts: &[i32; C],
-        index: &<I::BitShape as Shape>::Index,
     ) -> [i32; C] {
         <[(); C] as ZipMap<i32, i8, i32>>::zip_map(partial_acts, weights, |partial_act, &weight| {
             partial_act - weight as i32 * input
@@ -188,14 +179,14 @@ where
     fn descend(
         &self,
         patch_acts: &Vec<I>,
-        sparse_patch_count_class_dists: &Vec<(Vec<(usize, u32)>, [u32; C])>,
+        sparse_patch_count_class_dists: &Vec<(Vec<(usize, u32)>, i32, [u32; C])>,
         n_iters: usize,
         it: i32,
         ut: u32,
     ) -> Self {
         let total_n: u32 = sparse_patch_count_class_dists
             .iter()
-            .map(|(_, c)| c.iter())
+            .map(|(_, _, c)| c.iter())
             .flatten()
             .sum();
         (0..n_iters).fold(
@@ -212,7 +203,7 @@ where
                             ),
                         ); C],
                     )>::default(),
-                    |mut grads, (patch_bag, class)| {
+                    |mut grads, (patch_bag, _, class)| {
                         let (hidden_act_n, hidden_act_counts) = patch_bag.iter().fold(
                             <(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array)>::default(
                             ),
@@ -288,7 +279,7 @@ fn unary(input: [u8; 3]) -> b32 {
     to_10(input[0]) | (to_10(input[1]) << 10) | (to_10(input[2]) << 20)
 }
 
-fn act_loss(acts: &[i32; 10], class: usize) -> u64 {
+fn act_loss<const C: usize>(acts: &[i32; C], class: usize) -> u64 {
     let (max_index, max_act) = acts
         .iter()
         .enumerate()
@@ -298,10 +289,195 @@ fn act_loss(acts: &[i32; 10], class: usize) -> u64 {
     (max_act - acts[class]).abs() as u64
 }
 
-type PatchType = [[b32; 3]; 3];
-type HiddenType = [b32; 4];
+// This need only called once per layer.
+// return in (patch_centroids, image_patch_bags)
+// where image_patch_bags is a Vec<(sparse_patch_bag, center, class_dist)>
+fn cluster_patches_and_images<
+    P: CentroidCount<ImageType, [[(); 3]; 3], [(); C]>
+        + BitArray
+        + Sync
+        + Send
+        + ImagePatchLloyds<ImageType, [[(); 3]; 3]>,
+    ImageType: Image2D + Sync + Send,
+    const C: usize,
+>(
+    examples: &Vec<(ImageType, usize)>,
+) -> (Vec<P>, Vec<(Vec<(usize, u32)>, i32, [u32; C])>)
+where
+    distributions::Standard: distributions::Distribution<P>,
+    [u32; C]: Default + Copy + Sync + Send,
+{
+    let mut rng = Hc128Rng::seed_from_u64(0);
+    let patch_centroids =
+        <P as ImagePatchLloyds<_, [[(); 3]; 3]>>::lloyds(&mut rng, &examples, 1000, 3, 1);
+    let patch_dists: Vec<(Vec<u32>, usize)> = examples
+        .par_iter()
+        .map(|(image, class)| {
+            (
+                <P as CentroidCount<ImageType, [[(); 3]; 3], [(); C]>>::centroid_count(
+                    image,
+                    &patch_centroids,
+                ),
+                *class,
+            )
+        })
+        .collect();
+    let patch_dist_centroids: Vec<Vec<u32>> =
+        patch_count_lloyds(&patch_dists, 0, 3, patch_centroids.len(), 1000, 1);
+    let patch_bag_cluster_class_dists: Vec<[u32; C]> =
+        cluster::class_dist::<C>(&patch_dists, &patch_dist_centroids);
+    //{
+    //    // sanity checks
+    //    assert_eq!(patch_bag_cluster_class_dists.len(), patch_dist_centroids.len());
+    //    let sum: u32 = patch_bag_cluster_class_dists.iter().flatten().sum();
+    //    assert_eq!(sum as usize, N_EXAMPLES);
+    //}
 
-const N_EXAMPLES: usize = 50_000;
+    // the i32 is 1/2 the sum of the counts
+    let sparse_patch_bags: Vec<(Vec<(usize, u32)>, i32, [u32; C])> = patch_dist_centroids
+        .par_iter()
+        .zip(patch_bag_cluster_class_dists.par_iter())
+        .map(|(patch_counts, class_dist)| {
+            let bag = sparsify_centroid_count(patch_counts, 0);
+            let n: u32 = bag.iter().map(|(_, c)| *c).sum();
+            (bag, n as i32 / 2, *class_dist)
+        })
+        .collect();
+    (patch_centroids, sparse_patch_bags)
+}
+
+// with no hidden bit.
+fn init_class_act_cache<H: BitArray + IncrementFracCounters + Sync, const C: usize>(
+    patch_acts: &Vec<H>,
+    patch_bags: &Vec<(Vec<(usize, u32)>, i32, [u32; C])>,
+    aux_weights: &[(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C],
+) -> Vec<[i32; C]>
+where
+    i8: Element<[(); C]> + Element<H::BitShape>,
+    u32: Element<H::BitShape>,
+    i32: Element<[(); C], Array = [i32; C]> + Element<H::BitShape>,
+    H::BitShape: Map<u32, i32>,
+    [u32; 2]: Element<H::BitShape>,
+    [i32; C]: Sync + Send,
+    [(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C]: IIIVMM<H, [(); C]>,
+    <i8 as Element<<H as BitArray>::BitShape>>::Array: Sync,
+    <i32 as bitnn::shape::Element<[(); C]>>::Array: Sync + Send,
+    <u32 as Element<<H as BitArray>::BitShape>>::Array: Default,
+{
+    patch_bags
+        .par_iter()
+        .map(|(patch_bag, n, _)| {
+            let (hidden_act_n, hidden_act_counts) = patch_bag
+                .iter()
+                .fold(<(usize, <u32 as Element<<H as BitArray>::BitShape>>::Array)>::default(), |mut acc, &(index, count)| {
+                    patch_acts[index].weighted_increment_frac_counters(count, &mut acc);
+                    acc
+                });
+            let hidden_acts = <<H as BitArray>::BitShape as Map<u32, i32>>::map(&hidden_act_counts, |count| *count as i32 - n);
+            <[(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C] as IIIVMM<H, [(); C]>>::iiivmm(&aux_weights, &hidden_acts)
+        })
+        .collect()
+}
+
+fn prepare_class_act_cache<P: BitArray + Sync, H: BitArray, const C: usize>(
+    patch_centroids: &Vec<P>,
+    patch_bags: &Vec<(Vec<(usize, u32)>, i32, [u32; C])>,
+    class_act_cache: &Vec<[i32; C]>,
+    patch_weights_one_chan: &P::TritArrayType,
+    patch_chan_threshold: u32,
+    aux_weights_one_chan: &[i8; C],
+) -> Vec<[i32; C]>
+where
+    i8: Element<H::BitShape>,
+    i32: Element<H::BitShape>,
+    [u32; 2]: Element<H::BitShape>,
+    (<P as BitArray>::TritArrayType, u32): Element<H::BitShape>,
+    <(<P as BitArray>::TritArrayType, u32) as Element<<H as BitArray>::BitShape>>::Array:
+        BTBVMM<P, H>,
+    [(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C]: IIIVMM<H, [(); C]>,
+    <P as BitArray>::TritArrayType: Sync,
+{
+    let patch_act_hidden_bits: Vec<bool> = patch_centroids
+        .par_iter()
+        .map(|patch| {
+            <<(<P as BitArray>::TritArrayType, u32) as Element<<H as BitArray>::BitShape>>::Array as BTBVMM<P, H>>::btbvmm_one_bit(
+                patch_weights_one_chan,
+                patch_chan_threshold,
+                patch,
+            )
+        })
+        .collect();
+
+    patch_bags
+        .par_iter()
+        .zip(class_act_cache.par_iter())
+        .map(|((patch_bag, n, _), partial_acts)| {
+            let updated_act_count: u32 = patch_bag.iter().map(|&(index, count)| patch_act_hidden_bits[index] as u32 * count).sum();
+            let updated_act = updated_act_count as i32 - n;
+            <[(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C] as IIIVMM<H, [(); C]>>::subtract_input_from_iiivmm_acts(&aux_weights_one_chan, updated_act, &partial_acts)
+        })
+        .collect()
+}
+
+fn sum_loss_one_chan<P: BitArray + Sync, H: BitArray, const C: usize>(
+    patch_centroids: &Vec<P>,
+    patch_bags: &Vec<(Vec<(usize, u32)>, i32, [u32; C])>,
+    class_act_cache: &Vec<[i32; C]>,
+    patch_weights_one_chan: &P::TritArrayType,
+    patch_chan_threshold: u32,
+    aux_weights_one_chan: &[i8; C],
+) -> u64
+where
+    i8: Element<H::BitShape>,
+    i32: Element<H::BitShape>,
+    [u32; 2]: Element<H::BitShape>,
+    (<P as BitArray>::TritArrayType, u32): Element<H::BitShape>,
+    <(<P as BitArray>::TritArrayType, u32) as Element<<H as BitArray>::BitShape>>::Array:
+        BTBVMM<P, H>,
+    [(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C]: IIIVMM<H, [(); C]>,
+    <P as BitArray>::TritArrayType: Sync,
+{
+    let patch_act_hidden_bits: Vec<bool> = patch_centroids
+        .par_iter()
+        .map(|patch| {
+            <<(<P as BitArray>::TritArrayType, u32) as Element<<H as BitArray>::BitShape>>::Array as BTBVMM<P, H>>::btbvmm_one_bit(
+                patch_weights_one_chan,
+                patch_chan_threshold,
+                patch,
+            )
+        })
+        .collect();
+
+    patch_bags
+        .par_iter()
+        .zip(class_act_cache.par_iter())
+        .map(|((patch_bag, n, class_counts), partial_acts)| {
+            let updated_act_count: u32 = patch_bag
+                .iter()
+                .map(|&(index, count)| patch_act_hidden_bits[index] as u32 * count)
+                .sum();
+            let updated_act = updated_act_count as i32 - n;
+            let class_acts: [i32; C] =
+                <[(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C] as IIIVMM<
+                    H,
+                    [(); C],
+                >>::update_iiivmm_acts(
+                    &aux_weights_one_chan, updated_act, &partial_acts
+                );
+
+            class_counts
+                .iter()
+                .enumerate()
+                .map(|(class, &count)| act_loss(&class_acts, class) * count as u64)
+                .sum::<u64>()
+        })
+        .sum()
+}
+
+type PatchType = [[b32; 3]; 3];
+type HiddenType = [b32; 2];
+
+const N_EXAMPLES: usize = 5_000;
 
 fn main() {
     let start = Instant::now();
@@ -320,69 +496,10 @@ fn main() {
         .map(|(image, class)| (image.pixel_map(|&p| unary(p)), *class))
         .collect();
 
-    //println!("init time: {:?}", start.elapsed());
-    let centroid_start = Instant::now();
-    let centroids =
-        <PatchType as ImagePatchLloyds<_, [[(); 3]; 3]>>::lloyds(&mut rng, &examples, 1000, 3, 1);
-    println!("centroid time: {:?}", centroid_start.elapsed());
-    dbg!(centroids.len());
-    //dbg!(&centroids);
-
-    let dist_centroid_start = Instant::now();
-    let patch_dists: Vec<(Vec<u32>, usize)> = examples
-        .par_iter()
-        .map(|(image, class)| {
-            (
-                <[[b32; 3]; 3] as CentroidCount<
-                    StaticImage<b32, 32usize, 32usize>,
-                    [[(); 3]; 3],
-                    [(); 10],
-                >>::centroid_count(image, &centroids),
-                *class,
-            )
-        })
-        .collect();
-    dbg!();
-    let patch_count_lloyds_time = Instant::now();
-    let patch_dist_centroids = patch_count_lloyds(&patch_dists, 0, 3, centroids.len(), 1000, 1);
-    println!(
-        "patch count lloyds time: {:?}",
-        patch_count_lloyds_time.elapsed()
-    );
-    println!("dist centroid time: {:?}", dist_centroid_start.elapsed());
-    dbg!(&patch_dist_centroids.len());
-
-    let dist_centroid_start = Instant::now();
-    // the class distributions of clusters of patch bags. Same len as patch_dist_centroids.
-    let patch_bag_cluster_class_dists =
-        cluster::class_dist::<10usize>(&patch_dists, &patch_dist_centroids);
-    //dbg!(&patch_bag_cluster_class_dists);
-    {
-        // sanity checks
-        assert_eq!(
-            patch_bag_cluster_class_dists.len(),
-            patch_dist_centroids.len()
-        );
-        let sum: u32 = patch_bag_cluster_class_dists.iter().flatten().sum();
-        assert_eq!(sum as usize, N_EXAMPLES);
-    }
-    let sparse_patch_count_class_dists: Vec<(Vec<(usize, u32)>, [u32; 10])> = patch_dist_centroids
-        .iter()
-        .zip(patch_bag_cluster_class_dists.iter())
-        .map(|(patch_counts, class_dist)| (sparsify_centroid_count(patch_counts, 0), *class_dist))
-        .collect();
-
-    // the i32 is 1/2 the sum of the counts
-    let sparse_patch_bags: Vec<(Vec<(usize, u32)>, i32)> = patch_dist_centroids
-        .par_iter()
-        .map(|patch_counts| {
-            let bag = sparsify_centroid_count(patch_counts, 0);
-            let n: u32 = bag.iter().map(|(_, c)| *c).sum();
-            (bag, n as i32 / 2)
-        })
-        .collect();
-
-    println!("dist centroid time: {:?}", dist_centroid_start.elapsed());
+    let cluster_start = Instant::now();
+    let (patch_centroids, patch_bags) =
+        cluster_patches_and_images::<PatchType, StaticImage<b32, 32usize, 32usize>, 10>(&examples);
+    println!("cluster time: {:?}", cluster_start.elapsed());
 
     let mut patch_weights = {
         let trits: <<PatchType as BitArray>::TritArrayType as Element<
@@ -401,14 +518,13 @@ fn main() {
             target
         })
     };
-    //dbg!(&patch_weights);
     let aux_weights = <[(
         <i8 as Element<<HiddenType as BitArray>::BitShape>>::Array,
         i8,
     ); 10]>::default();
 
     let patch_start = Instant::now();
-    let patch_acts: Vec<HiddenType> = centroids
+    let patch_acts: Vec<HiddenType> = patch_centroids
         .iter()
         .map(|patch| patch_weights.btbvmm(patch))
         .collect();
@@ -416,13 +532,16 @@ fn main() {
     //dbg!(patch_acts);
 
     let aux_start = Instant::now();
-    let aux_weights = aux_weights.descend(&patch_acts, &sparse_patch_count_class_dists, 20, 3, 50);
+    let aux_weights = aux_weights.descend(&patch_acts, &patch_bags, 20, 3, 50);
     //dbg!(&aux_weights);
     println!("aux time: {:?}", aux_start.elapsed());
 
-    let bit_index = (1, (7, ()));
+    // for all hidden chans
+    let class_act_cache: Vec<[i32; 10]> =
+        init_class_act_cache::<HiddenType, 10>(&patch_acts, &patch_bags, &aux_weights);
 
-    let partial_weights: [i8; 10] = <[(); 10] as Map<
+    let bit_index = (1, (7, ()));
+    let aux_weights_one_chan: [i8; 10] = <[(); 10] as Map<
         (
             <i8 as Element<<HiddenType as BitArray>::BitShape>>::Array,
             i8,
@@ -431,190 +550,29 @@ fn main() {
     >>::map(&aux_weights, |(class_row, _)| {
         *class_row.index_get(&bit_index)
     });
-    let full_loss_start = Instant::now();
-    let patch_acts: Vec<HiddenType> = centroids
-        .iter()
-        .map(|patch| patch_weights.btbvmm(patch))
-        .collect();
-    let partial_class_acts: Vec<[i32; 10]> = sparse_patch_bags
-        .par_iter()
-        .map(|(patch_bag, n)| {
-            let (hidden_act_n, hidden_act_counts) = patch_bag.iter().fold(
-                <(
-                    usize,
-                    <u32 as Element<<HiddenType as BitArray>::BitShape>>::Array,
-                )>::default(),
-                |mut acc, &(index, count)| {
-                    patch_acts[index].weighted_increment_frac_counters(count, &mut acc);
-                    //patch_acts[index].increment_frac_counters(&mut acc);
-                    acc
-                },
-            );
-            let hidden_acts = <<HiddenType as BitArray>::BitShape as Map<u32, i32>>::map(
-                &hidden_act_counts,
-                |count| *count as i32 - n,
-            );
-            let class_acts = <[(
-                <i8 as Element<<HiddenType as BitArray>::BitShape>>::Array,
-                i8,
-            ); 10] as IIIVMM<HiddenType, [(); 10]>>::iiivmm(
-                &aux_weights, &hidden_acts
-            );
-            <[(
-                <i8 as Element<<HiddenType as BitArray>::BitShape>>::Array,
-                i8,
-            ); 10] as IIIVMM<HiddenType, [(); 10]>>::subtract_input_from_iiivmm_acts(
-                &partial_weights,
-                *hidden_acts.index_get(&bit_index),
-                &class_acts,
-                &bit_index,
-            )
-        })
-        .collect();
-    println!("full loss time: {:?}", full_loss_start.elapsed());
+    let (patch_weights_one_chan, patch_chan_threshold) = patch_weights.index_get(&bit_index);
 
-    let fast_loss_start = Instant::now();
-    let (bit_patch_weights, bit_patch_threshold) = patch_weights.index_get(&bit_index);
+    // for one hidden chan
+    let class_act_cache_one_chan = prepare_class_act_cache::<PatchType, HiddenType, 10>(
+        &patch_centroids,
+        &patch_bags,
+        &class_act_cache,
+        &patch_weights_one_chan,
+        *patch_chan_threshold,
+        &aux_weights_one_chan,
+    );
 
-    dbg!("starting...");
-    let n_iters = 100000;
+    let n_iters = 1000;
+    let sum_loss_start = Instant::now();
     for i in 0..n_iters {
-        let updated_patch_act_bits: Vec<bool> = centroids
-            .par_iter()
-            .map(|patch| {
-                <<(<PatchType as BitArray>::TritArrayType, u32) as Element<
-                    <HiddenType as BitArray>::BitShape,
-                >>::Array as BTBVMM<PatchType, HiddenType>>::btbvmm_one_bit(
-                    bit_patch_weights,
-                    *bit_patch_threshold,
-                    patch,
-                )
-            })
-            .collect();
-
-        let sum_loss: u64 = sparse_patch_bags
-            .par_iter()
-            .zip(partial_class_acts.par_iter())
-            .zip(patch_bag_cluster_class_dists.par_iter())
-            .map(|(((patch_bag, n), partial_acts), class_counts)| {
-                let updated_act_count: u32 = patch_bag
-                    .iter()
-                    .map(|&(index, count)| updated_patch_act_bits[index] as u32 * count)
-                    .sum();
-                let updated_act = updated_act_count as i32 - n;
-                let class_acts = <[(
-                    <i8 as Element<<HiddenType as BitArray>::BitShape>>::Array,
-                    i8,
-                ); 10] as IIIVMM<HiddenType, [(); 10]>>::update_iiivmm_acts(
-                    &partial_weights,
-                    updated_act,
-                    &partial_acts,
-                    &bit_index,
-                );
-                class_counts
-                    .iter()
-                    .enumerate()
-                    .map(|(class, &count)| act_loss(&class_acts, class) * count as u64)
-                    .sum::<u64>()
-            })
-            .sum();
-        //dbg!(sum_loss);
+        let sum_loss = sum_loss_one_chan::<PatchType, HiddenType, 10>(
+            &patch_centroids,
+            &patch_bags,
+            &class_act_cache_one_chan,
+            &patch_weights_one_chan,
+            *patch_chan_threshold,
+            &aux_weights_one_chan,
+        );
     }
-    println!("fast loss time: {:?}", fast_loss_start.elapsed() / n_iters);
-
-    let loss_start = Instant::now();
-    let patch_acts: Vec<HiddenType> = centroids
-        .par_iter()
-        .map(|patch| patch_weights.btbvmm(patch))
-        .collect();
-    //let n_bits: u32 = patch_acts.iter().map(|x| x.iter().map(|x| x.count_ones()).sum::<u32>()).sum();
-    //dbg!(n_bits as f64 / (patch_acts.len() * 4 * 32) as f64);
-    //dbg!(&patch_acts);
-    //let sum_loss_start = Instant::now();
-
-    //for b in 0..32 {
-    //    let (sum_n, sum_act) = sparse_patch_count_class_dists
-    //        .iter()
-    //        .map(|(patch_bag, class_counts)| {
-    //            let new_act_count: u32 = patch_bag.iter().map(|&(index, count)| patch_acts[index].bit(b) as u32 * count).sum();
-    //            let new_act_n: u32 = patch_bag.iter().map(|&(_, count)| count).sum();
-    //            (new_act_n, new_act_count)
-    //        })
-    //        .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-
-    //    //dbg!(sum_n);
-    //    //dbg!(sum_act);
-    //    dbg!(sum_act as f64 / sum_n as f64);
-    //}
-
-    //sparse_patch_count_class_dists
-
-    //let sum_loss: u64 = sparse_patch_count_class_dists
-    //    .par_iter()
-    //    .map(|(patch_bag, class_counts)| {
-    //        let (hidden_act_n, hidden_act_counts) = patch_bag.iter().fold(
-    //            <(usize, <u32 as Element<<HiddenType as BitArray>::BitShape>>::Array)>::default(),
-    //            |mut acc, &(index, count)| {
-    //                //patch_acts[index].weighted_increment_frac_counters(count, &mut acc);
-    //                patch_acts[index].increment_frac_counters(&mut acc);
-    //                acc
-    //            },
-    //        );
-    //        let n = hidden_act_n as i32 / 2;
-    //        let bit_index = 5;
-    //        let new_act_count: u32 = patch_bag.iter().map(|&(index, count)| patch_acts[index].bit(bit_index) as u32).sum();
-    //        //let new_act_n: u32 = patch_bag.iter().map(|&(_, count)| 1).sum();
-    //        assert_eq!(new_act_n, hidden_act_n as u32);
-    //        assert_eq!(new_act_count, hidden_act_counts[0][5]);
-    //        let new_hidden_act = new_act_count as i32 - n;
-    //        //println!("{} {} {}", n > hidden_act_counts[0][5] as i32, n, hidden_act_counts[0][5]);
-    //        //let (hidden_act_n, hidden_act_counts) = <(usize, _)>::default();
-    //        let hidden_acts = <<HiddenType as BitArray>::BitShape as Map<u32, i32>>::map(&hidden_act_counts, |count| *count as i32 - n);
-    //        let class_acts = <[(<i8 as Element<<HiddenType as BitArray>::BitShape>>::Array, i8); 10] as IIIVMM<HiddenType, [(); 10]>>::iiivmm(
-    //            &aux_weights,
-    //            &hidden_acts,
-    //        );
-    //        class_counts
-    //            .iter()
-    //            .enumerate()
-    //            .map(|(class, &count)| act_loss(&class_acts, class) * count as u64)
-    //            .sum::<u64>()
-    //    })
-    //    .sum();
-    ////println!("sum loss time: {:?}", sum_loss_start.elapsed());
-    ////dbg!(sum_loss);
-    //println!("avg loss time: {:?}", loss_start.elapsed() / n_iters);
-    let real_loss_start = Instant::now();
-    let sum_loss: u64 = examples
-        .par_iter()
-        .map(|(image, class)| {
-            let (hidden_act_n, hidden_act_counts) =
-                <StaticImage<b32, 32usize, 32usize> as PatchFold<_, [[(); 3]; 3]>>::patch_fold(
-                    image,
-                    <(
-                        usize,
-                        <u32 as Element<<HiddenType as BitArray>::BitShape>>::Array,
-                    )>::default(),
-                    |mut acc, patch| {
-                        let hidden_bits: HiddenType = patch_weights.btbvmm(patch);
-                        hidden_bits.increment_frac_counters(&mut acc);
-                        acc
-                    },
-                );
-            let n = hidden_act_n as i32 / 2;
-            let hidden_acts = <<HiddenType as BitArray>::BitShape as Map<u32, i32>>::map(
-                &hidden_act_counts,
-                |count| *count as i32 - n,
-            );
-            let class_acts = <[(
-                <i8 as Element<<HiddenType as BitArray>::BitShape>>::Array,
-                i8,
-            ); 10] as IIIVMM<HiddenType, [(); 10]>>::iiivmm(
-                &aux_weights, &hidden_acts
-            );
-            act_loss(&class_acts, *class)
-        })
-        .sum();
-    dbg!(sum_loss);
-    println!("real loss time: {:?}", real_loss_start.elapsed());
+    println!("sum loss time: {:?}", sum_loss_start.elapsed() / n_iters);
 }
