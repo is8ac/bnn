@@ -9,7 +9,10 @@ use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;
 
-pub fn class_dist<const C: usize>(examples: &Vec<(Vec<u32>, usize)>, centroids: &Vec<Vec<u32>>) -> Vec<[u32; C]>
+pub fn class_dist<const C: usize>(
+    examples: &Vec<(Vec<u32>, usize)>,
+    centroids: &Vec<Vec<u32>>,
+) -> Vec<[u32; C]>
 where
     [u32; C]: Default + Copy,
 {
@@ -42,7 +45,12 @@ where
         .unwrap()
 }
 
-fn cluster_avgs(examples: &Vec<(Vec<u32>, usize)>, centroids: &Vec<Vec<u32>>, n: usize, prune_threshold: usize) -> Vec<Vec<u32>> {
+fn cluster_avgs(
+    examples: &Vec<(Vec<u32>, usize)>,
+    centroids: &Vec<Vec<u32>>,
+    n: usize,
+    prune_threshold: usize,
+) -> Vec<Vec<u32>> {
     examples
         .par_iter()
         .fold(
@@ -56,7 +64,11 @@ fn cluster_avgs(examples: &Vec<(Vec<u32>, usize)>, centroids: &Vec<Vec<u32>>, n:
                     .unwrap()
                     .0;
                 acc[closest_centroid].0 += 1;
-                acc[closest_centroid].1.iter_mut().zip(example.iter()).for_each(|(count, d)| *count += *d);
+                acc[closest_centroid]
+                    .1
+                    .iter_mut()
+                    .zip(example.iter())
+                    .for_each(|(count, d)| *count += *d);
                 acc
             },
         )
@@ -65,7 +77,12 @@ fn cluster_avgs(examples: &Vec<(Vec<u32>, usize)>, centroids: &Vec<Vec<u32>>, n:
             |a, b| {
                 a.iter()
                     .zip(b.iter())
-                    .map(|((xc, x), (yc, y))| (xc + yc, x.iter().zip(y.iter()).map(|(a, b)| a + b).collect()))
+                    .map(|((xc, x), (yc, y))| {
+                        (
+                            xc + yc,
+                            x.iter().zip(y.iter()).map(|(a, b)| a + b).collect(),
+                        )
+                    })
                     .collect()
             },
         )
@@ -78,7 +95,10 @@ fn cluster_avgs(examples: &Vec<(Vec<u32>, usize)>, centroids: &Vec<Vec<u32>>, n:
 
 pub fn vec_distance(a: &Vec<u32>, b: &Vec<u32>) -> u32 {
     assert_eq!(a.len(), b.len());
-    a.iter().zip(b.iter()).map(|(&c, &e)| c.saturating_sub(e) | e.saturating_sub(c)).sum()
+    a.iter()
+        .zip(b.iter())
+        .map(|(&c, &e)| c.saturating_sub(e) | e.saturating_sub(c))
+        .sum()
 }
 
 // the class is not used.
@@ -109,14 +129,29 @@ where
     //u32: Element<Self::BitShape>,
     Image::PixelType: Element<PatchShape>,
 {
-    fn avgs(examples: &Vec<(Image, usize)>, centroids: &Vec<Self>, prune_threshold: usize) -> Vec<Self>;
-    fn lloyds<RNG: Rng>(rng: &mut RNG, examples: &Vec<(Image, usize)>, k: usize, i: usize, prune_threshold: usize) -> Vec<Self>
+    fn avgs(
+        examples: &Vec<(Image, usize)>,
+        centroids: &Vec<Self>,
+        prune_threshold: usize,
+    ) -> Vec<Self>;
+    fn lloyds<RNG: Rng>(
+        rng: &mut RNG,
+        examples: &Vec<(Image, usize)>,
+        k: usize,
+        i: usize,
+        prune_threshold: usize,
+    ) -> Vec<Self>
     where
         distributions::Standard: distributions::Distribution<Self>,
     {
         (0..i).fold((0..k).map(|_| rng.gen()).collect(), |centroids, e| {
             let centroids = Self::avgs(examples, &centroids, prune_threshold);
-            println!("{}: n:{} {}", e, centroids.len(), centroids.len() as f64 / k as f64);
+            println!(
+                "{}: n:{} {}",
+                e,
+                centroids.len(),
+                centroids.len() as f64 / k as f64
+            );
             centroids
         })
     }
@@ -140,27 +175,36 @@ where
             .fold(
                 || {
                     (0..centroids.len())
-                        .map(|_| <(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>::default())
+                        .map(|_| {
+                            <(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>::default()
+                        })
                         .collect()
                 },
-                |acc: Vec<(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>, (image, _)| {
-                    <Image as PatchFold<_, PatchShape>>::patch_fold(image, acc, |mut sub_acc, patch| {
-                        let closest_centroid = centroids
-                            .iter()
-                            .map(|centroid| patch.distance(centroid))
-                            .enumerate()
-                            .min_by_key(|(_, count)| *count)
-                            .unwrap()
-                            .0;
-                        patch.increment_frac_counters(&mut sub_acc[closest_centroid]);
-                        sub_acc
-                    })
+                |acc: Vec<(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>,
+                 (image, _)| {
+                    <Image as PatchFold<_, PatchShape>>::patch_fold(
+                        image,
+                        acc,
+                        |mut sub_acc, patch| {
+                            let closest_centroid = centroids
+                                .iter()
+                                .map(|centroid| patch.distance(centroid))
+                                .enumerate()
+                                .min_by_key(|(_, count)| *count)
+                                .unwrap()
+                                .0;
+                            patch.increment_frac_counters(&mut sub_acc[closest_centroid]);
+                            sub_acc
+                        },
+                    )
                 },
             )
             .reduce(
                 || {
                     (0..centroids.len())
-                        .map(|_| <(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>::default())
+                        .map(|_| {
+                            <(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>::default()
+                        })
                         .collect()
                 },
                 |mut a, b| {
@@ -172,7 +216,8 @@ where
             .filter(|(n, _)| *n > prune_threshold)
             .map(|(n, counts)| {
                 let threshold = *n as u32 / 2;
-                let bools = <<T as BitArray>::BitShape as Map<u32, bool>>::map(&counts, |&x| x > threshold);
+                let bools =
+                    <<T as BitArray>::BitShape as Map<u32, bool>>::map(&counts, |&x| x > threshold);
                 T::bitpack(&bools)
             })
             .collect()
@@ -194,24 +239,32 @@ where
     fn centroid_count(image: &Image, centroids: &Vec<Self>) -> Vec<u32>;
 }
 
-impl<T: Sized + Distance + Copy + Send + Sync, Image: PatchFold<Vec<u32>, PatchShape> + Image2D + Sync, PatchShape: Shape, const C: usize>
-    CentroidCount<Image, PatchShape, [(); C]> for T
+impl<
+        T: Sized + Distance + Copy + Send + Sync,
+        Image: PatchFold<Vec<u32>, PatchShape> + Image2D + Sync,
+        PatchShape: Shape,
+        const C: usize,
+    > CentroidCount<Image, PatchShape, [(); C]> for T
 where
     Image::PixelType: Element<PatchShape, Array = T>,
     [u32; C]: Default,
 {
     fn centroid_count(image: &Image, centroids: &Vec<Self>) -> Vec<u32> {
-        <Image as PatchFold<Vec<u32>, PatchShape>>::patch_fold(image, centroids.iter().map(|_| 0u32).collect(), |mut counts, patch| {
-            let closest_centroid = centroids
-                .iter()
-                .map(|centroid| patch.distance(centroid))
-                .enumerate()
-                .min_by_key(|(_, count)| *count)
-                .unwrap()
-                .0;
-            counts[closest_centroid] += 1;
-            counts
-        })
+        <Image as PatchFold<Vec<u32>, PatchShape>>::patch_fold(
+            image,
+            centroids.iter().map(|_| 0u32).collect(),
+            |mut counts, patch| {
+                let closest_centroid = centroids
+                    .iter()
+                    .map(|centroid| patch.distance(centroid))
+                    .enumerate()
+                    .min_by_key(|(_, count)| *count)
+                    .unwrap()
+                    .0;
+                counts[closest_centroid] += 1;
+                counts
+            },
+        )
     }
 }
 
@@ -231,7 +284,11 @@ where
     fn null_cluster(examples: &Vec<(Image, usize)>) -> Vec<Self>;
 }
 
-impl<T: Sized + Copy + Send + Sync, Image: PatchFold<Vec<T>, PatchShape> + Image2D + Sync, PatchShape: Shape> NullCluster<Image, PatchShape> for T
+impl<
+        T: Sized + Copy + Send + Sync,
+        Image: PatchFold<Vec<T>, PatchShape> + Image2D + Sync,
+        PatchShape: Shape,
+    > NullCluster<Image, PatchShape> for T
 where
     Image::PixelType: Element<PatchShape, Array = T>,
 {
