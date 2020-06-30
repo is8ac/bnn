@@ -7,7 +7,7 @@ pub mod bits;
 pub mod cluster;
 pub mod count;
 pub mod datasets;
-pub mod descend;
+//pub mod descend;
 pub mod float;
 pub mod image2d;
 pub mod layer;

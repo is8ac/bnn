@@ -539,6 +539,10 @@ where
     fn mask_zeros(&self) -> u32;
     fn flip(&mut self, signs: &Self::BitArrayType);
     fn trit_flip(&mut self, trits: &Self);
+    fn get_trit(
+        &self,
+        index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
+    ) -> Option<bool>;
 }
 
 impl<T: TritArray, const L: usize> TritArray for [T; L] {
@@ -561,6 +565,44 @@ impl<T: TritArray, const L: usize> TritArray for [T; L] {
         for i in 0..L {
             self[i].trit_flip(&trits[i]);
         }
+    }
+    fn get_trit(
+        &self,
+        (head, tail): &(
+            usize,
+            <<T::BitArrayType as BitArray>::BitShape as Shape>::Index,
+        ),
+    ) -> Option<bool> {
+        self[*head].get_trit(tail)
+    }
+}
+
+pub trait SetTrit
+where
+    Self: TritArray,
+{
+    fn set_trit(
+        &self,
+        trit: Option<bool>,
+        index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
+    ) -> Self;
+}
+
+impl<T: SetTrit + TritArray, const L: usize> SetTrit for [T; L]
+where
+    Self: Copy,
+{
+    fn set_trit(
+        &self,
+        trit: Option<bool>,
+        (head, tail): &(
+            usize,
+            <<T::BitArrayType as BitArray>::BitShape as Shape>::Index,
+        ),
+    ) -> Self {
+        let mut target = *self;
+        target[*head] = self[*head].set_trit(trit, tail);
+        target
     }
 }
 
@@ -639,6 +681,20 @@ macro_rules! for_uints {
             }
             fn trit_flip(&mut self, &trits: &$t_type) {
                 *self = self.add(trits);
+            }
+            fn get_trit(&self, &(index, _): &(usize, ())) -> Option<bool> {
+                let sign = (self.0 >> index) & 1 == 1;
+                let magn = (self.1 >> index) & 1 == 1;
+                Some(sign).filter(|_| magn)
+            }
+        }
+
+        impl SetTrit for $t_type {
+            fn set_trit(&self, trit: Option<bool>, &(index, _): &(usize, ())) -> Self {
+                let signs =
+                    (self.0 & !(1 << index)) | ((trit.unwrap_or(false) as $u_type) << index);
+                let magns = (self.1 & !(1 << index)) | ((trit.is_some() as $u_type) << index);
+                $t_type(signs, magns)
             }
         }
 

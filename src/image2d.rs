@@ -161,9 +161,15 @@ impl<P, const X: usize, const Y: usize> Image2D for StaticImage<P, X, Y> {
     type ImageShape = StaticImage<(), X, Y>;
 }
 
+pub struct ImageIndexIter {}
+
 impl<const X: usize, const Y: usize> Shape for StaticImage<(), X, Y> {
     const N: usize = X * Y;
     type Index = [usize; 2];
+    type IndexIter = ImageIndexIter;
+    fn indices() -> ImageIndexIter {
+        ImageIndexIter {}
+    }
 }
 
 impl<P, const X: usize, const Y: usize> Element<StaticImage<(), X, Y>> for P {

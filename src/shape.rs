@@ -6,16 +6,72 @@ pub trait Shape {
     const N: usize;
     /// The type used to index into the shape.
     type Index;
+    type IndexIter;
+    fn indices() -> Self::IndexIter;
+}
+
+#[derive(Debug)]
+pub struct EmptyIndexIter {
+    done: bool,
+}
+
+impl Iterator for EmptyIndexIter {
+    type Item = ();
+    fn next(&mut self) -> Option<()> {
+        Some(()).filter(|_| {
+            let done = self.done;
+            self.done = true;
+            !done
+        })
+    }
 }
 
 impl Shape for () {
     const N: usize = 1;
     type Index = ();
+    type IndexIter = EmptyIndexIter;
+    fn indices() -> EmptyIndexIter {
+        EmptyIndexIter { done: false }
+    }
+}
+
+#[derive(Debug)]
+pub struct ShapeIndicesIter<T: Shape, const L: usize> {
+    index: usize,
+    inner: T::IndexIter,
+}
+
+impl<T: Shape, const L: usize> Iterator for ShapeIndicesIter<T, L>
+where
+    T::IndexIter: Iterator<Item = T::Index>,
+{
+    type Item = (usize, T::Index);
+    fn next(&mut self) -> Option<(usize, T::Index)> {
+        self.inner
+            .next()
+            .or_else(|| {
+                self.index += 1;
+                if self.index < L {
+                    self.inner = T::indices();
+                    self.inner.next()
+                } else {
+                    None
+                }
+            })
+            .map(|x| (self.index, x))
+    }
 }
 
 impl<T: Shape, const L: usize> Shape for [T; L] {
     const N: usize = T::N * L;
     type Index = (usize, T::Index);
+    type IndexIter = ShapeIndicesIter<T, L>;
+    fn indices() -> ShapeIndicesIter<T, L> {
+        ShapeIndicesIter::<T, L> {
+            index: 0,
+            inner: T::indices(),
+        }
+    }
 }
 
 // inserts a self inside the W
@@ -144,11 +200,15 @@ where
 pub trait IndexGet<I> {
     type Element;
     fn index_get(&self, i: &I) -> &Self::Element;
+    fn index_get_mut(&mut self, i: &I) -> &mut Self::Element;
 }
 
 impl<T> IndexGet<()> for T {
     type Element = T;
     fn index_get(&self, i: &()) -> &T {
+        self
+    }
+    fn index_get_mut(&mut self, i: &()) -> &mut T {
         self
     }
 }
@@ -157,6 +217,9 @@ impl<I, T: IndexGet<I>, const L: usize> IndexGet<(usize, I)> for [T; L] {
     type Element = T::Element;
     fn index_get(&self, (i, ii): &(usize, I)) -> &T::Element {
         self[*i].index_get(ii)
+    }
+    fn index_get_mut(&mut self, (i, ii): &(usize, I)) -> &mut T::Element {
+        self[*i].index_get_mut(ii)
     }
 }
 
