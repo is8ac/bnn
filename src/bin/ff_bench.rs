@@ -55,12 +55,20 @@ where
         it: i32,
         ut: u32,
     ) -> Self;
-    //fn egd_descend(&self, patch_acts: &Vec<I>, sparse_patch_count_class_dists: &Vec<(Vec<(usize, u32)>, i32, <u32 as Element<C>>::Array)>, i: usize, it: i32, ut: u32) -> Self;
+    fn egd_descend(
+        self,
+        class_acts: &Vec<<i32 as Element<C>>::Array>,
+        patch_bags: &Vec<(Vec<(usize, u32)>, i32, <u32 as Element<C>>::Array)>,
+        patch_acts: &Vec<I>,
+        weight_delta: i8,
+    ) -> Self;
 }
 
 impl<I, const C: usize> IIIVMM<I, [(); C]> for [(<i8 as Element<I::BitShape>>::Array, i8); C]
 where
-    I: BitArray + IncrementFracCounters,
+    Self: Sync,
+    <i8 as Element<I::BitShape>>::Array: Sync,
+    I: BitArray + IncrementFracCounters + Sync,
     I::BitShape: MapMut<i32, [u32; 2]> + ZipFold<i32, i32, i8> + ZipMap<i8, [u32; 2], i8>,
     [i32; C]: Default,
     [(); C]: ZipMap<
@@ -83,8 +91,12 @@ where
     [(<i8 as Element<<I as BitArray>::BitShape>>::Array, i8); C]: Default,
     <I as BitArray>::BitShape: Map<u32, i32>,
     <i8 as Element<I::BitShape>>::Array: IndexGet<<I::BitShape as Shape>::Index, Element = i8>,
-    <i32 as Element<I::BitShape>>::Array: IndexGet<<I::BitShape as Shape>::Index, Element = i32>,
+    <i32 as Element<I::BitShape>>::Array:
+        IndexGet<<I::BitShape as Shape>::Index, Element = i32> + Sync + Send,
     <u32 as Element<<I as BitArray>::BitShape>>::Array: Default,
+    <<I as BitArray>::BitShape as Shape>::Index: Sync,
+    <<I as BitArray>::BitShape as Shape>::IndexIter:
+        Iterator<Item = <<I as BitArray>::BitShape as Shape>::Index>,
 {
     fn iiivmm(&self, input: &<i32 as Element<I::BitShape>>::Array) -> [i32; C] {
         <[(); C] as Map<(<i8 as Element<I::BitShape>>::Array, i8), i32>>::map(
@@ -226,9 +238,85 @@ where
             },
         )
     }
-    //fn egd_descend(&self, patch_acts: &Vec<I>, sparse_patch_count_class_dists: &Vec<(Vec<(usize, u32)>, i32, [u32; C])>, n_iters: usize, it: i32, ut: u32) -> Self {
-    //
-    //}
+    fn egd_descend(
+        self,
+        class_acts: &Vec<[i32; C]>,
+        patch_bags: &Vec<(Vec<(usize, u32)>, i32, [u32; C])>,
+        patch_acts: &Vec<I>,
+        weight_delta: i8,
+    ) -> Self {
+        let aux_inputs: Vec<(<i32 as Element<<I as BitArray>::BitShape>>::Array, [u32; C])> =
+            patch_bags
+                .par_iter()
+                .map(|(patch_bag, n, class_counts)| {
+                    let (hidden_act_n, hidden_act_counts) = patch_bag.iter().fold(
+                        <(usize, <u32 as Element<<I as BitArray>::BitShape>>::Array)>::default(),
+                        |mut acc, &(index, count)| {
+                            patch_acts[index].weighted_increment_frac_counters(count, &mut acc);
+                            acc
+                        },
+                    );
+                    let hidden_acts = <<I as BitArray>::BitShape as Map<u32, i32>>::map(
+                        &hidden_act_counts,
+                        |count| *count as i32 - n,
+                    );
+                    (hidden_acts, *class_counts)
+                })
+                .collect();
+
+        let (cur_sum_loss, n_correct, n) = sum_loss_correct::<I, C>(&patch_acts, patch_bags, &self);
+        dbg!(n_correct as f64 / n as f64);
+
+        let class_acts: Vec<[i32; C]> = aux_inputs
+            .par_iter()
+            .map(|(input, _)| {
+                <[(<i8 as Element<<I as BitArray>::BitShape>>::Array, i8); C] as IIIVMM<
+                    I,
+                    [(); C],
+                >>::iiivmm(&self, &input)
+            })
+            .collect();
+        let aux_loss_start = Instant::now();
+        (0..C)
+            .fold((self, class_acts, cur_sum_loss), |acc, class_index| {
+                <I as BitArray>::BitShape::indices().fold(
+                    acc,
+                    |(mut aux_weights, class_acts_cache, cur_sum_loss), chan_index| {
+                        let new_sum_loss = aux_sum_loss_one_class::<I, C>(
+                            &aux_inputs,
+                            &class_acts_cache,
+                            &chan_index,
+                            class_index,
+                            weight_delta as i32,
+                        );
+                        {
+                            *aux_weights[class_index].0.index_get_mut(&chan_index) += weight_delta;
+                            let (true_sum_loss, n_correct, n) =
+                                sum_loss_correct::<I, C>(patch_acts, &patch_bags, &aux_weights);
+                            *aux_weights[class_index].0.index_get_mut(&chan_index) -= weight_delta;
+                            assert_eq!(new_sum_loss, true_sum_loss);
+                        }
+                        if new_sum_loss < cur_sum_loss {
+                            //dbg!(new_sum_loss);
+                            *aux_weights[class_index].0.index_get_mut(&chan_index) += weight_delta;
+                            let class_acts_cache: Vec<[i32; C]> = aux_inputs
+                                .par_iter()
+                                .zip(class_acts_cache.par_iter().cloned())
+                                .map(|((input, counts), mut new_acts)| {
+                                    new_acts[class_index] +=
+                                        input.index_get(&chan_index) * weight_delta as i32;
+                                    new_acts
+                                })
+                                .collect();
+                            (aux_weights, class_acts_cache, new_sum_loss)
+                        } else {
+                            (aux_weights, class_acts_cache, cur_sum_loss)
+                        }
+                    },
+                )
+            })
+            .0
+    }
 }
 
 fn grad_counts_to_update(g: [u32; 2], threshold: u32) -> i8 {
@@ -349,6 +437,7 @@ where
             )
         })
         .collect();
+    dbg!();
     let patch_dist_centroids: Vec<Vec<u32>> = patch_count_lloyds(
         &patch_dists,
         params.image_lloyds_seed,
@@ -357,6 +446,7 @@ where
         params.image_lloyds_k,
         params.image_lloyds_prune_threshold,
     );
+    dbg!();
     let patch_bag_cluster_class_dists: Vec<[u32; C]> =
         cluster::class_dist::<C>(&patch_dists, &patch_dist_centroids);
     //{
@@ -547,10 +637,9 @@ where
         .sum()
 }
 
-fn sum_loss_correct<P: BitArray, H: BitArray, const C: usize>(
-    patch_centroids: &Vec<P>,
-    patch_bags: &Vec<(Vec<(usize, u32)>, i32, [u32; 10])>,
-    patch_weights: &<(P::TritArrayType, u32) as Element<<HiddenType as BitArray>::BitShape>>::Array,
+fn sum_loss_correct<H: BitArray, const C: usize>(
+    patch_acts: &Vec<H>,
+    patch_bags: &Vec<(Vec<(usize, u32)>, i32, [u32; C])>,
     aux_weights: &[(<i8 as Element<H::BitShape>>::Array, i8); C],
 ) -> (u64, usize, usize)
 where
@@ -559,16 +648,11 @@ where
     u32: Element<H::BitShape>,
     H: IncrementFracCounters + Sync,
     [u32; 2]: Element<H::BitShape>,
-    <(P::TritArrayType, u32) as Element<<HiddenType as BitArray>::BitShape>>::Array: BTBVMM<P, H>,
     <i8 as bitnn::shape::Element<<H as bitnn::bits::BitArray>::BitShape>>::Array: Sync,
     <u32 as Element<H::BitShape>>::Array: Default,
     [(<i8 as Element<H::BitShape>>::Array, i8); C]: IIIVMM<H, [(); C]>,
     H::BitShape: Map<u32, i32>,
 {
-    let patch_acts: Vec<H> = patch_centroids
-        .iter()
-        .map(|patch| patch_weights.btbvmm(patch))
-        .collect();
     patch_bags
         .par_iter()
         .map(|(patch_bag, n, class_counts)| {
@@ -635,8 +719,9 @@ fn main() {
         image_lloyds_i: 3,
         image_lloyds_k: 700,
         image_lloyds_prune_threshold: 1,
-        sparsify_centroid_count_filter_threshold: 0,
+        sparsify_centroid_count_filter_threshold: 1,
     };
+    dbg!();
     let cluster_start = Instant::now();
     let (patch_centroids, patch_bags): (Vec<PatchType>, Vec<(Vec<(usize, u32)>, i32, [u32; 10])>) =
         cluster_patches_and_images::<PatchType, StaticImage<b32, 32usize, 32usize>, 10>(
@@ -672,7 +757,7 @@ fn main() {
             i8,
         ),
     >>::map(&rng.gen(), |signs| {
-        (signs.bit_map(|sign| SIGNS[1][sign as usize] * 15), 0)
+        (signs.bit_map(|sign| SIGNS[1][sign as usize] * 20), 0)
     });
 
     let patch_start = Instant::now();
@@ -684,149 +769,22 @@ fn main() {
     //dbg!(patch_acts);
 
     let aux_start = Instant::now();
-    let aux_weights = aux_weights.descend(&patch_acts, &patch_bags, 50, 5, 5);
+    let aux_weights = aux_weights.descend(&patch_acts, &patch_bags, 3, 5, 5);
     //dbg!(&aux_weights);
-    println!("aux time: {:?}", aux_start.elapsed());
 
-    // for all hidden chans
     let class_act_cache: Vec<[i32; 10]> =
         init_class_act_cache::<HiddenType, 10>(&patch_acts, &patch_bags, &aux_weights);
 
-    let aux_inputs: Vec<(
-        <i32 as Element<<HiddenType as BitArray>::BitShape>>::Array,
-        [u32; 10],
-    )> = patch_bags
-        .par_iter()
-        .map(|(patch_bag, n, class_counts)| {
-            let (hidden_act_n, hidden_act_counts) = patch_bag.iter().fold(
-                <(
-                    usize,
-                    <u32 as Element<<HiddenType as BitArray>::BitShape>>::Array,
-                )>::default(),
-                |mut acc, &(index, count)| {
-                    patch_acts[index].weighted_increment_frac_counters(count, &mut acc);
-                    acc
-                },
-            );
-            let hidden_acts = <<HiddenType as BitArray>::BitShape as Map<u32, i32>>::map(
-                &hidden_act_counts,
-                |count| *count as i32 - n,
-            );
-            (hidden_acts, *class_counts)
-        })
-        .collect();
+    let aux_weights = (0..10).fold(aux_weights, |weights, i| {
+        weights
+            .egd_descend(&class_act_cache, &patch_bags, &patch_acts, 1)
+            .egd_descend(&class_act_cache, &patch_bags, &patch_acts, -1)
+    });
 
-    let (cur_sum_loss, n_correct, n) = sum_loss_correct::<PatchType, HiddenType, 10>(
-        &patch_centroids,
-        &patch_bags,
-        &patch_weights,
-        &aux_weights,
-    );
-    dbg!(n_correct as f64 / N_EXAMPLES as f64);
-
-    // we can search about aux weigh space however we please, and only pay for the update when we mutate state.
-    let class_acts: Vec<[i32; 10]> = aux_inputs
-        .par_iter()
-        .map(|(input, _)| {
-            <[(
-                <i8 as Element<<HiddenType as BitArray>::BitShape>>::Array,
-                i8,
-            ); 10] as IIIVMM<HiddenType, [(); 10]>>::iiivmm(&aux_weights, &input)
-        })
-        .collect();
-    let weight_delta = 1i8;
-    let aux_loss_start = Instant::now();
-    let (aux_weights, class_acts_cache, sum_loss) = (0..10).fold(
-        (aux_weights, class_acts, cur_sum_loss),
-        |acc, class_index| {
-            <HiddenType as BitArray>::BitShape::indices().fold(
-                acc,
-                |(mut aux_weights, class_acts_cache, cur_sum_loss), chan_index| {
-                    let new_sum_loss = aux_sum_loss_one_class::<HiddenType, 10>(
-                        &aux_inputs,
-                        &class_acts_cache,
-                        &chan_index,
-                        class_index,
-                        weight_delta as i32,
-                    );
-                    //{
-                    //    *aux_weights[class_index].0.index_get_mut(&chan_index) += weight_delta;
-                    //    let (tru_sum_loss, n_correct) = sum_loss_correct::<PatchType, HiddenType, 10>(&patch_centroids, &patch_bags, &patch_weights, &aux_weights);
-                    //    *aux_weights[class_index].0.index_get_mut(&chan_index) -= weight_delta;
-                    //    assert_eq!(new_sum_loss, tru_sum_loss);
-                    //}
-                    if new_sum_loss < cur_sum_loss {
-                        //dbg!(new_sum_loss);
-                        *aux_weights[class_index].0.index_get_mut(&chan_index) += weight_delta;
-                        let class_acts_cache: Vec<[i32; 10]> = aux_inputs
-                            .par_iter()
-                            .zip(class_acts_cache.par_iter())
-                            .map(|((input, counts), acts)| {
-                                let mut new_acts = *acts;
-                                new_acts[class_index] +=
-                                    input.index_get(&chan_index) * weight_delta as i32;
-                                new_acts
-                            })
-                            .collect();
-                        (aux_weights, class_acts_cache, new_sum_loss)
-                    } else {
-                        (aux_weights, class_acts_cache, cur_sum_loss)
-                    }
-                },
-            )
-        },
-    );
-    println!("aux loss time: {:?}", aux_loss_start.elapsed());
-    let (mut cur_sum_loss, n_correct, n) = sum_loss_correct::<PatchType, HiddenType, 10>(
-        &patch_centroids,
-        &patch_bags,
-        &patch_weights,
-        &aux_weights,
-    );
-    dbg!(n);
-    dbg!(n_correct as f64 / N_EXAMPLES as f64);
-
-    /*
-        for class_index in 0..10 {
-            for chan_index in <HiddenType as BitArray>::BitShape::indices() {
-                if !is_clean {
-                    //dbg!("unclean");
-                    class_acts = aux_inputs
-                        .par_iter()
-                        .map(|(input, _)| <[(<i8 as Element<<HiddenType as BitArray>::BitShape>>::Array, i8); 10] as IIIVMM<HiddenType, [(); 10]>>::iiivmm(&aux_weights, &input))
-                        .collect();
-                    is_clean = true;
-                } else {
-                    //dbg!("clean");
-                }
-                let new_sum_loss = aux_sum_loss_one_class::<HiddenType, 10>(&aux_inputs, &class_acts, &chan_index, class_index, 1);
-                //{
-                //    *aux_weights[class_index].0.index_get_mut(&chan_index) += 1;
-                //    let (tru_sum_loss, n_correct) = sum_loss_correct::<PatchType, HiddenType, 10>(&patch_centroids, &patch_bags, &patch_weights, &aux_weights);
-                //    *aux_weights[class_index].0.index_get_mut(&chan_index) -= 1;
-                //    assert_eq!(new_sum_loss, tru_sum_loss);
-                //}
-                if new_sum_loss < cur_sum_loss {
-                    //dbg!(new_sum_loss);
-                    *aux_weights[class_index].0.index_get_mut(&chan_index) += 1;
-                    cur_sum_loss = new_sum_loss;
-                    is_clean = false;
-                } else {
-                    let new_sum_loss = aux_sum_loss_one_class::<HiddenType, 10>(&aux_inputs, &class_acts, &chan_index, class_index, -1);
-                    if new_sum_loss < cur_sum_loss {
-                        //dbg!(new_sum_loss);
-                        *aux_weights[class_index].0.index_get_mut(&chan_index) -= 1;
-                        cur_sum_loss = new_sum_loss;
-                        is_clean = false;
-                    }
-                }
-            }
-        }
-        println!("aux loss time: {:?}", aux_loss_start.elapsed());
-        let (mut cur_sum_loss, n_correct) = sum_loss_correct::<PatchType, HiddenType, 10>(&patch_centroids, &patch_bags, &patch_weights, &aux_weights);
-        dbg!(n_correct as f64 / N_EXAMPLES as f64);
-    }
-    */
+    let (mut cur_sum_loss, n_correct, n) =
+        sum_loss_correct::<HiddenType, 10>(&patch_acts, &patch_bags, &aux_weights);
+    dbg!(n_correct as f64 / n as f64);
+    println!("aux time: {:?}", aux_start.elapsed());
 
     /*
     //let bit_index = (1, (7, ()));
