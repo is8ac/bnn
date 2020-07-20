@@ -82,7 +82,7 @@ pub trait Wrap<W> {
 
 impl<T: Copy> Wrap<()> for T {
     type Wrapped = T;
-    fn wrap(self, w: ()) -> T {
+    fn wrap(self, _: ()) -> T {
         self
     }
 }
@@ -205,10 +205,10 @@ pub trait IndexGet<I> {
 
 impl<T> IndexGet<()> for T {
     type Element = T;
-    fn index_get(&self, i: &()) -> &T {
+    fn index_get(&self, _: &()) -> &T {
         self
     }
-    fn index_get_mut(&mut self, i: &()) -> &mut T {
+    fn index_get_mut(&mut self, _: &()) -> &mut T {
         self
     }
 }

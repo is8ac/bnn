@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::num::Wrapping;
-use std::ops::Add;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
 
 pub trait IndexedFlipBit<I, O> {
@@ -75,25 +74,6 @@ impl<T: BitArray, const L: usize> BitArray for [T; L] {
     type WordShape = [T::WordShape; L];
     type TritArrayType = [T::TritArrayType; L];
 }
-
-pub trait BitStates {
-    const ONES: Self;
-    const ZEROS: Self;
-}
-
-macro_rules! impl_bitstats_for_array {
-    ($len:expr) => {
-        impl<T: BitStates> BitStates for [T; $len] {
-            const ONES: Self = [T::ONES; $len];
-            const ZEROS: Self = [T::ZEROS; $len];
-        }
-    };
-}
-
-impl_bitstats_for_array!(1);
-impl_bitstats_for_array!(2);
-impl_bitstats_for_array!(3);
-impl_bitstats_for_array!(4);
 
 pub trait BitMapPack<E: Element<Self::BitShape>>
 where
@@ -537,7 +517,7 @@ where
     type TritShape;
     fn mask_zeros(&self) -> u32;
     fn flip(&mut self, signs: &Self::BitArrayType);
-    fn trit_flip(&mut self, trits: &Self);
+    //fn trit_flip(&mut self, trits: &Self);
     fn get_trit(
         &self,
         index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
@@ -549,22 +529,18 @@ impl<T: TritArray, const L: usize> TritArray for [T; L] {
     type BitArrayType = [T::BitArrayType; L];
     type TritShape = [T::TritShape; L];
     fn mask_zeros(&self) -> u32 {
-        let mut sum = 0u32;
-        for i in 0..L {
-            sum += self[i].mask_zeros();
-        }
-        sum
+        self.iter().map(|x| x.mask_zeros()).sum()
     }
     fn flip(&mut self, signs: &[T::BitArrayType; L]) {
         for i in 0..L {
             self[i].flip(&signs[i]);
         }
     }
-    fn trit_flip(&mut self, trits: &[T; L]) {
-        for i in 0..L {
-            self[i].trit_flip(&trits[i]);
-        }
-    }
+    //fn trit_flip(&mut self, trits: &[T; L]) {
+    //    for i in 0..L {
+    //        self[i].trit_flip(&trits[i]);
+    //    }
+    //}
     fn get_trit(
         &self,
         (head, tail): &(
@@ -617,21 +593,21 @@ macro_rules! for_uints {
         #[derive(Copy, Clone, Serialize, Deserialize)]
         pub struct $t_type(pub $u_type, pub $u_type);
 
-        impl std::ops::Add for $t_type {
-            type Output = $t_type;
-            fn add(self, other: Self) -> $t_type {
-                let a0 = !self.0 & self.1;
-                let a1 = self.0 & self.1;
+        //impl std::ops::Add for $t_type {
+        //    type Output = $t_type;
+        //    fn add(self, other: Self) -> $t_type {
+        //        let a0 = !self.0 & self.1;
+        //        let a1 = self.0 & self.1;
 
-                let b0 = !other.0 & other.1;
-                let b1 = other.0 & other.1;
+        //        let b0 = !other.0 & other.1;
+        //        let b1 = other.0 & other.1;
 
-                let ones = (a1 & !b0) | (b1 & !a0);
-                let zeros = (a0 & !b1) | (b0 & !a1);
+        //        let ones = (a1 & !b0) | (b1 & !a0);
+        //        let zeros = (a0 & !b1) | (b0 & !a1);
 
-                $t_type(ones, ones | zeros)
-            }
-        }
+        //        $t_type(ones, ones | zeros)
+        //    }
+        //}
         impl TritPack for $t_type {
             fn trit_pack(trits: &[Option<bool>; $len]) -> $t_type {
                 let mut signs = <$u_type>::default();
@@ -679,9 +655,9 @@ macro_rules! for_uints {
                 self.0 = grads;
                 self.1 = (magns & !(grads ^ signs)) | !magns;
             }
-            fn trit_flip(&mut self, &trits: &$t_type) {
-                *self = self.add(trits);
-            }
+            //fn trit_flip(&mut self, &trits: &$t_type) {
+            //    *self = self.add(trits);
+            //}
             fn get_trit(&self, &(index, _): &(usize, ())) -> Option<bool> {
                 let sign = (self.0 >> index) & 1 == 1;
                 let magn = (self.1 >> index) & 1 == 1;
@@ -766,10 +742,6 @@ macro_rules! for_uints {
             type WordType = $b_type;
             type WordShape = ();
             type TritArrayType = $t_type;
-        }
-        impl BitStates for $b_type {
-            const ONES: $b_type = $b_type(!0);
-            const ZEROS: $b_type = $b_type(0);
         }
         impl BitArrayOPs for $b_type {
             fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self {
@@ -972,20 +944,6 @@ for_uints!(t16, b16, u16, 16, "{:016b}");
 for_uints!(t32, b32, u32, 32, "{:032b}");
 //for_uints!(b64, u64, 64, "{:064b}");
 //for_uints!(b128, u128, 128, "{:0128b}");
-
-pub trait AndOr {
-    type Val;
-    const IDENTITY: Self;
-    fn andor(&self, val: &Self::Val) -> Self;
-}
-
-impl<T: BitArray + BitStates + ArrayBitAnd + ArrayBitOr> AndOr for [T; 2] {
-    type Val = T;
-    const IDENTITY: Self = [T::ONES, T::ZEROS];
-    fn andor(&self, val: &Self::Val) -> Self {
-        [self[0].bit_and(val), self[1].bit_or(val)]
-    }
-}
 
 #[cfg(test)]
 mod tests {

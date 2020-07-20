@@ -1,10 +1,10 @@
-use crate::bits::{b32, b8, BitStates, BitWord};
+use crate::bits::{b32, b8, BitWord};
 use std::marker::PhantomData;
 
 macro_rules! to_unary {
     ($name:ident, $b_type:ty, $len:expr) => {
         pub fn $name(input: u8) -> $b_type {
-            !(<$b_type>::ONES << (input / (256 / $len) as u8) as usize)
+            !((!<$b_type>::default()) << (input / (256 / $len) as u8) as usize)
         }
     };
 }

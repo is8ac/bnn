@@ -1,19 +1,14 @@
 #![feature(move_ref_pattern)]
 #![feature(const_generics)]
-use bitnn::bits::{
-    b32, BitArray, BitArrayOPs, BitMap, BitMapPack, IncrementFracCounters, MaskedDistance, SetTrit,
-    TritArray,
-};
+use bitnn::bits::{b32, BitArray};
 use bitnn::cluster::{
     self, patch_count_lloyds, sparsify_centroid_count, CentroidCount, ImagePatchLloyds,
 };
 use bitnn::datasets::cifar;
 use bitnn::descend::{sum_loss_correct, TrainWeights, BTBVMM};
 use bitnn::image2d::{Image2D, PixelMap, StaticImage};
-use bitnn::shape::{Element, IndexGet, Map, Shape, ZipFold, ZipMap};
 use bitnn::unary::to_10;
 use rand::distributions;
-use rand::Rng;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;

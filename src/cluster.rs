@@ -10,8 +10,8 @@ use rand_hc::Hc128Rng;
 use rayon::prelude::*;
 
 pub fn class_dist<const C: usize>(
-    examples: &Vec<(Vec<u32>, usize)>,
-    centroids: &Vec<Vec<u32>>,
+    examples: &[(Vec<u32>, usize)],
+    centroids: &[Vec<u32>],
 ) -> Vec<[u32; C]>
 where
     [u32; C]: Default + Copy,
@@ -46,8 +46,8 @@ where
 }
 
 fn cluster_avgs(
-    examples: &Vec<(Vec<u32>, usize)>,
-    centroids: &Vec<Vec<u32>>,
+    examples: &[(Vec<u32>, usize)],
+    centroids: &[Vec<u32>],
     n: usize,
     prune_threshold: usize,
 ) -> Vec<Vec<u32>> {
@@ -93,7 +93,7 @@ fn cluster_avgs(
         .collect()
 }
 
-pub fn vec_distance(a: &Vec<u32>, b: &Vec<u32>) -> u32 {
+pub fn vec_distance(a: &[u32], b: &[u32]) -> u32 {
     assert_eq!(a.len(), b.len());
     a.iter()
         .zip(b.iter())
@@ -103,7 +103,7 @@ pub fn vec_distance(a: &Vec<u32>, b: &Vec<u32>) -> u32 {
 
 // the class is not used.
 pub fn patch_count_lloyds(
-    examples: &Vec<(Vec<u32>, usize)>,
+    examples: &[(Vec<u32>, usize)],
     seed: u64,
     i: usize,
     n_patches: usize,
@@ -129,14 +129,10 @@ where
     //u32: Element<Self::BitShape>,
     Image::PixelType: Element<PatchShape>,
 {
-    fn avgs(
-        examples: &Vec<(Image, usize)>,
-        centroids: &Vec<Self>,
-        prune_threshold: usize,
-    ) -> Vec<Self>;
+    fn avgs(examples: &[(Image, usize)], centroids: &[Self], prune_threshold: usize) -> Vec<Self>;
     fn lloyds<RNG: Rng>(
         rng: &mut RNG,
-        examples: &Vec<(Image, usize)>,
+        examples: &[(Image, usize)],
         k: usize,
         i: usize,
         prune_threshold: usize,
@@ -169,7 +165,7 @@ where
     T::BitShape: Map<u32, bool>,
     bool: Element<T::BitShape>,
 {
-    fn avgs(examples: &Vec<(Image, usize)>, centroids: &Vec<T>, prune_threshold: usize) -> Vec<T> {
+    fn avgs(examples: &[(Image, usize)], centroids: &[T], prune_threshold: usize) -> Vec<T> {
         examples
             .par_iter()
             .fold(
@@ -236,7 +232,7 @@ where
     Self: Sized,
     u32: Element<C>,
 {
-    fn centroid_count(image: &Image, centroids: &Vec<Self>) -> Vec<u32>;
+    fn centroid_count(image: &Image, centroids: &[Self]) -> Vec<u32>;
 }
 
 impl<
@@ -249,7 +245,7 @@ where
     Image::PixelType: Element<PatchShape, Array = T>,
     [u32; C]: Default,
 {
-    fn centroid_count(image: &Image, centroids: &Vec<Self>) -> Vec<u32> {
+    fn centroid_count(image: &Image, centroids: &[Self]) -> Vec<u32> {
         <Image as PatchFold<Vec<u32>, PatchShape>>::patch_fold(
             image,
             centroids.iter().map(|_| 0u32).collect(),
@@ -268,7 +264,7 @@ where
     }
 }
 
-pub fn sparsify_centroid_count(counts: &Vec<u32>, filter_threshold: u32) -> Vec<(usize, u32)> {
+pub fn sparsify_centroid_count(counts: &[u32], filter_threshold: u32) -> Vec<(usize, u32)> {
     counts
         .iter()
         .enumerate()
@@ -281,7 +277,7 @@ pub trait NullCluster<Image, PatchShape>
 where
     Self: Sized,
 {
-    fn null_cluster(examples: &Vec<(Image, usize)>) -> Vec<Self>;
+    fn null_cluster(examples: &[(Image, usize)]) -> Vec<Self>;
 }
 
 impl<
@@ -292,24 +288,18 @@ impl<
 where
     Image::PixelType: Element<PatchShape, Array = T>,
 {
-    fn null_cluster(examples: &Vec<(Image, usize)>) -> Vec<Self> {
+    fn null_cluster(examples: &[(Image, usize)]) -> Vec<Self> {
         examples
             .par_iter()
-            .fold(
-                || Vec::new(),
-                |acc, (image, _)| {
-                    image.patch_fold(acc, |mut a, patch| {
-                        a.push(*patch);
-                        a
-                    })
-                },
-            )
-            .reduce(
-                || Vec::new(),
-                |mut a, mut b| {
-                    a.append(&mut b);
+            .fold(Vec::new, |acc, (image, _)| {
+                image.patch_fold(acc, |mut a, patch| {
+                    a.push(*patch);
                     a
-                },
-            )
+                })
+            })
+            .reduce(Vec::new, |mut a, mut b| {
+                a.append(&mut b);
+                a
+            })
     }
 }
