@@ -656,11 +656,12 @@ macro_rules! for_uints {
             }
         }
 
-        impl std::cmp::PartialEq for $t_type {
+        impl PartialEq for $t_type {
             fn eq(&self, other: &Self) -> bool {
                 ((self.0 & self.1) == (other.0 & self.1)) & (self.1 == other.1)
             }
         }
+        impl Eq for $t_type {}
 
         #[allow(non_camel_case_types)]
         #[derive(Copy, Clone, Serialize, Deserialize)]
@@ -899,6 +900,7 @@ macro_rules! for_uints {
             }
         }
         impl Eq for $b_type {}
+
         impl BitXor for $b_type {
             type Output = Self;
             fn bitxor(self, rhs: Self) -> Self::Output {
