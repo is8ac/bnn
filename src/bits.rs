@@ -1,5 +1,4 @@
-use crate::float::FMA;
-/// the bits mod contains traits to manipulate words of bits
+// the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
 use crate::layer::Apply;
 use crate::shape::{Element, Shape, ZipMap};
@@ -820,16 +819,6 @@ macro_rules! for_uints {
                 sum
             }
         }
-        impl<I: FMA> FFBVM<I, $b_type> for [(I, f32); $len] {
-            fn ffbvm(&self, input: &I) -> $b_type {
-                let mut target = $b_type(0);
-                for b in 0..$len {
-                    target |= $b_type((input.fma(&self[b].0) + self[b].1 > 0f32) as $u_type) << b;
-                }
-                target
-            }
-        }
-
         impl<I: BitArray + BFMA> BFBVMM<I, $b_type>
             for [(<f32 as Element<I::BitShape>>::Array, f32); $len]
         where

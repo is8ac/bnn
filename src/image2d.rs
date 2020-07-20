@@ -1,6 +1,5 @@
 use crate::bits::{BitArray, BitWord, Classify, IncrementFracCounters};
 use crate::count::IncrementCounters;
-use crate::float::FFFVMM;
 use crate::shape::{Element, Map, Merge, Shape, ZipMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -266,45 +265,6 @@ impl_avgpool!(8, 8);
 impl_avgpool!(4, 4);
 */
 
-impl<P: BitArray + IncrementFracCounters, const X: usize, const Y: usize, const C: usize>
-    Classify<StaticImage<P, X, Y>, [(); C]> for [<f32 as Element<P::BitShape>>::Array; C]
-where
-    Self: FFFVMM<[f32; C], InputType = <f32 as Element<P::BitShape>>::Array>,
-    [f32; C]: Default,
-    P::BitShape: Map<u32, f32>,
-    f32: Element<P::BitShape>,
-    u32: Element<P::BitShape>,
-    <u32 as Element<P::BitShape>>::Array: Default,
-{
-    fn max_class(&self, input: &StaticImage<P, X, Y>) -> usize {
-        let channel_counts = {
-            let mut counts = <(usize, <u32 as Element<P::BitShape>>::Array)>::default();
-            for x in 0..X {
-                for y in 0..Y {
-                    input.image[x][y].increment_frac_counters(&mut counts);
-                }
-            }
-            counts
-        };
-        let n = channel_counts.0 as f32;
-        let float_hidden =
-            <<P as BitArray>::BitShape as Map<u32, f32>>::map(&channel_counts.1, |&count| {
-                count as f32 / n
-            });
-        let activations = self.fffvmm(&float_hidden);
-        let mut max_act = 0_f32;
-        let mut max_class = 0_usize;
-
-        for c in 0..C {
-            if activations[c] >= max_act {
-                max_act = activations[c];
-                max_class = c;
-            }
-        }
-        max_class
-    }
-}
-
 pub trait PatchFold<B, PatchShape: Shape>
 where
     Self: Image2D,
@@ -374,32 +334,6 @@ where
 
 pub trait GlobalPool<O> {
     fn global_pool(&self) -> O;
-}
-
-impl<P: BitArray + IncrementFracCounters, const X: usize, const Y: usize>
-    GlobalPool<<f32 as Element<P::BitShape>>::Array> for StaticImage<P, X, Y>
-where
-    u32: Element<P::BitShape>,
-    f32: Element<P::BitShape>,
-    <u32 as Element<P::BitShape>>::Array: Default,
-    P::BitShape: Map<u32, f32>,
-    <f32 as Element<P::BitShape>>::Array: std::fmt::Debug,
-{
-    fn global_pool(&self) -> <f32 as Element<P::BitShape>>::Array {
-        let mut counters = <(usize, <u32 as Element<P::BitShape>>::Array)>::default();
-        for x in 0..X {
-            for y in 0..Y {
-                self.image[x][y].increment_frac_counters(&mut counters);
-            }
-        }
-        let n = counters.0 as f32 / 2f32;
-        let float_hidden =
-            <<P as BitArray>::BitShape as Map<u32, f32>>::map(&counters.1, |&count| {
-                (count as f32 - n) / n
-            });
-        //dbg!(&float_hidden);
-        float_hidden
-    }
 }
 
 pub trait PixelFold<B, PatchShape>
