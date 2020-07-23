@@ -1,4 +1,6 @@
-use crate::bits::{BitArray, BitArrayOPs, Distance, IncrementFracCounters};
+use crate::bits::{
+    BitArray, BitArrayOPs, Distance, IncrementFracCounters, MaskedDistance, TritArray, TritPack,
+};
 use crate::count::ElementwiseAdd;
 use crate::image2d::{Image2D, PatchFold};
 use crate::shape::{Element, Map, Shape};
@@ -8,6 +10,114 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;
+
+pub trait ImagePatchTritLloyds<Image: Image2D, PatchShape>
+where
+    Self: BitArray,
+    PatchShape: Shape,
+    Image::PixelType: Element<PatchShape>,
+{
+    fn avgs(
+        examples: &[(Image, usize)],
+        centroids: &[Self::TritArrayType],
+        prune_threshold: usize,
+    ) -> Vec<Self::TritArrayType>;
+    fn trit_lloyds<RNG: Rng>(
+        rng: &mut RNG,
+        examples: &[(Image, usize)],
+        k: usize,
+        i: usize,
+        prune_threshold: usize,
+    ) -> Vec<Self::TritArrayType>
+    where
+        distributions::Standard: distributions::Distribution<Self::TritArrayType>,
+    {
+        (0..i).fold((0..k).map(|_| rng.gen()).collect(), |centroids, e| {
+            let centroids = Self::avgs(examples, &centroids, prune_threshold);
+            println!(
+                "{}: n:{} {}",
+                e,
+                centroids.len(),
+                centroids.len() as f64 / k as f64
+            );
+            centroids
+        })
+    }
+}
+
+impl<
+        T: BitArray + IncrementFracCounters + BitArrayOPs + Sync + Send,
+        Image: PatchFold<Vec<(usize, <u32 as Element<T::BitShape>>::Array)>, PatchShape> + Image2D + Sync,
+        PatchShape: Shape,
+    > ImagePatchTritLloyds<Image, PatchShape> for T
+where
+    u32: Element<T::BitShape>,
+    Image::PixelType: Element<PatchShape, Array = T>,
+    <u32 as Element<<T as BitArray>::BitShape>>::Array: Default + Sync + Send + ElementwiseAdd,
+    T::BitShape: Map<u32, Option<bool>>,
+    bool: Element<T::BitShape>,
+    Option<bool>: Element<<T::TritArrayType as TritArray>::TritShape>,
+    T::TritArrayType: TritArray<TritShape = T::BitShape> + TritPack + Send + MaskedDistance + Sync,
+{
+    fn avgs(
+        examples: &[(Image, usize)],
+        centroids: &[T::TritArrayType],
+        prune_threshold: usize,
+    ) -> Vec<T::TritArrayType> {
+        examples
+            .par_iter()
+            .fold(
+                || {
+                    (0..centroids.len())
+                        .map(|_| {
+                            <(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>::default()
+                        })
+                        .collect()
+                },
+                |acc: Vec<(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>,
+                 (image, _)| {
+                    <Image as PatchFold<_, PatchShape>>::patch_fold(
+                        image,
+                        acc,
+                        |mut sub_acc, patch| {
+                            let closest_centroid = centroids
+                                .iter()
+                                .map(|centroid| centroid.masked_distance(patch))
+                                .enumerate()
+                                .min_by_key(|(_, count)| *count)
+                                .unwrap()
+                                .0;
+                            patch.increment_frac_counters(&mut sub_acc[closest_centroid]);
+                            sub_acc
+                        },
+                    )
+                },
+            )
+            .reduce_with(
+                //|| (0..centroids.len()).map(|_| <(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>::default()).collect(),
+                |mut a, b| {
+                    a.elementwise_add(&b);
+                    a
+                },
+            )
+            .unwrap()
+            .par_iter()
+            .filter(|(n, _)| *n > prune_threshold)
+            .map(|(n, counts)| {
+                let sign_thresh = *n as u32 / 2;
+                let magn_thresh = *n as u32 / 3;
+                let trits =
+                    <<T as BitArray>::BitShape as Map<u32, Option<bool>>>::map(&counts, |&x| {
+                        Some(x > sign_thresh).filter(|_| {
+                            (sign_thresh.saturating_sub(x) | x.saturating_sub(sign_thresh))
+                                > magn_thresh
+                        })
+                    });
+                T::TritArrayType::trit_pack(&trits)
+            })
+            .collect()
+    }
+}
 
 pub fn class_dist<const C: usize>(
     examples: &[(Vec<u32>, usize)],
@@ -195,19 +305,14 @@ where
                     )
                 },
             )
-            .reduce(
-                || {
-                    (0..centroids.len())
-                        .map(|_| {
-                            <(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>::default()
-                        })
-                        .collect()
-                },
+            .reduce_with(
+                //|| (0..centroids.len()).map(|_| <(usize, <u32 as Element<<T as BitArray>::BitShape>>::Array)>::default()).collect(),
                 |mut a, b| {
                     a.elementwise_add(&b);
                     a
                 },
             )
+            .unwrap()
             .par_iter()
             .filter(|(n, _)| *n > prune_threshold)
             .map(|(n, counts)| {
@@ -227,10 +332,9 @@ where
 /// The Vec<(u32, u32)> bag is of length `k`.
 /// The u32 is the index into the centroids. The u32 is the number of patches in that cell.
 /// The bag will be filtered of empty cells.
-pub trait CentroidCount<Image, PatchShape, C: Shape>
+pub trait CentroidCount<Image, PatchShape, const C: usize>
 where
     Self: Sized,
-    u32: Element<C>,
 {
     fn centroid_count(image: &Image, centroids: &[Self]) -> Vec<u32>;
 }
@@ -240,7 +344,7 @@ impl<
         Image: PatchFold<Vec<u32>, PatchShape> + Image2D + Sync,
         PatchShape: Shape,
         const C: usize,
-    > CentroidCount<Image, PatchShape, [(); C]> for T
+    > CentroidCount<Image, PatchShape, C> for T
 where
     Image::PixelType: Element<PatchShape, Array = T>,
     [u32; C]: Default,

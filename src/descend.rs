@@ -97,33 +97,36 @@ where
             (self, class_acts, cur_sum_loss),
             |(mut aux_weights, class_acts_cache, cur_sum_loss), class_index| {
                 let acc = {
-                    let new_class_acts: Vec<[i32; C]> = class_acts_cache
-                        .par_iter()
-                        .cloned()
-                        .map(|mut new_class_acts| {
-                            new_class_acts[class_index] += weight_delta as i32;
-                            new_class_acts
-                        })
-                        .collect();
+                    if let Some(sum) = aux_weights[class_index].1.checked_add(weight_delta) {
+                        let new_class_acts: Vec<[i32; C]> = class_acts_cache
+                            .par_iter()
+                            .cloned()
+                            .map(|mut new_class_acts| {
+                                new_class_acts[class_index] += weight_delta as i32;
+                                new_class_acts
+                            })
+                            .collect();
 
-                    let new_sum_loss: u64 = new_class_acts
-                        .par_iter()
-                        .zip(class_counts.par_iter())
-                        .map(|(new_class_acts, class_counts)| {
-                            class_counts
-                                .iter()
-                                .enumerate()
-                                .map(|(class, &count)| {
-                                    act_loss(&new_class_acts, class) * count as u64
-                                })
-                                .sum::<u64>()
-                        })
-                        .sum();
+                        let new_sum_loss: u64 = new_class_acts
+                            .par_iter()
+                            .zip(class_counts.par_iter())
+                            .map(|(new_class_acts, class_counts)| {
+                                class_counts
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(class, &count)| {
+                                        act_loss(&new_class_acts, class) * count as u64
+                                    })
+                                    .sum::<u64>()
+                            })
+                            .sum();
 
-                    if new_sum_loss < cur_sum_loss {
-                        aux_weights[class_index].1 =
-                            aux_weights[class_index].1.saturating_add(weight_delta);
-                        (aux_weights, new_class_acts, new_sum_loss)
+                        if new_sum_loss < cur_sum_loss {
+                            aux_weights[class_index].1 = sum;
+                            (aux_weights, new_class_acts, new_sum_loss)
+                        } else {
+                            (aux_weights, class_acts_cache, cur_sum_loss)
+                        }
                     } else {
                         (aux_weights, class_acts_cache, cur_sum_loss)
                     }
@@ -131,31 +134,36 @@ where
                 <I as BitArray>::BitShape::indices().fold(
                     acc,
                     |(mut aux_weights, class_acts_cache, cur_sum_loss), chan_index| {
-                        let new_sum_loss = aux_sum_loss_one_class::<I, C>(
-                            aux_inputs,
-                            class_counts,
-                            &class_acts_cache,
-                            &chan_index,
-                            class_index,
-                            weight_delta as i32,
-                        );
-                        if new_sum_loss < cur_sum_loss {
-                            //dbg!(new_sum_loss);
-                            *aux_weights[class_index].0.index_get_mut(&chan_index) = aux_weights
-                                [class_index]
-                                .0
-                                .index_get(&chan_index)
-                                .saturating_add(weight_delta);
-                            let class_acts_cache: Vec<[i32; C]> = aux_inputs
-                                .par_iter()
-                                .zip(class_acts_cache.par_iter().cloned())
-                                .map(|(input, mut new_acts)| {
-                                    new_acts[class_index] +=
-                                        input.index_get(&chan_index) * weight_delta as i32;
-                                    new_acts
-                                })
-                                .collect();
-                            (aux_weights, class_acts_cache, new_sum_loss)
+                        // if overflow i8, skip.
+                        if let Some(sum) = aux_weights[class_index]
+                            .0
+                            .index_get(&chan_index)
+                            .checked_add(weight_delta)
+                        {
+                            let new_sum_loss = aux_sum_loss_one_class::<I, C>(
+                                aux_inputs,
+                                class_counts,
+                                &class_acts_cache,
+                                &chan_index,
+                                class_index,
+                                weight_delta as i32,
+                            );
+                            if new_sum_loss < cur_sum_loss {
+                                //dbg!(sum);
+                                *aux_weights[class_index].0.index_get_mut(&chan_index) = sum;
+                                let new_class_acts_cache: Vec<[i32; C]> = aux_inputs
+                                    .par_iter()
+                                    .zip(class_acts_cache.par_iter().cloned())
+                                    .map(|(input, mut new_acts)| {
+                                        new_acts[class_index] +=
+                                            input.index_get(&chan_index) * weight_delta as i32;
+                                        new_acts
+                                    })
+                                    .collect();
+                                (aux_weights, new_class_acts_cache, new_sum_loss)
+                            } else {
+                                (aux_weights, class_acts_cache, cur_sum_loss)
+                            }
                         } else {
                             (aux_weights, class_acts_cache, cur_sum_loss)
                         }
@@ -195,7 +203,7 @@ where
     }
 }
 
-trait DescendPatchWeights<P: BitArray, H: BitArray, const C: usize>
+pub trait DescendPatchWeights<P: BitArray, H: BitArray, const C: usize>
 where
     i8: Element<H::BitShape>,
     Self: Sized,
@@ -664,16 +672,19 @@ where
     <u32 as Element<H::BitShape>>::Array: Default,
     <i32 as Element<H::BitShape>>::Array: Default + Send,
     [(<i8 as Element<H::BitShape>>::Array, i8); C]: IIIVMM<H, C> + Default,
-    <(P::TritArrayType, u32) as Element<H::BitShape>>::Array:
-        BTBVMM<P, H> + DescendPatchWeights<P, H, C>,
+    (P::TritArrayType, u32): Element<H::BitShape>,
     P: BitArray,
     H: BitArray + Sync + BitMap<i8> + IncrementFracCounters,
-    H::BitShape: Map<u32, i32> + Map<P::TritArrayType, (P::TritArrayType, u32)>,
+    H::BitShape: Map<u32, i32>
+        + Map<P::TritArrayType, (P::TritArrayType, u32)>
+        + Map<(P::TritArrayType, u32), u32>,
     P::TritArrayType: Default + Copy,
-    (P::TritArrayType, u32): Element<H::BitShape>,
     distributions::Standard: distributions::Distribution<[H; C]>,
     distributions::Standard:
         distributions::Distribution<<P::TritArrayType as Element<H::BitShape>>::Array>,
+    <(P::TritArrayType, u32) as Element<H::BitShape>>::Array:
+        BTBVMM<P, H> + DescendPatchWeights<P, H, C> + std::fmt::Debug,
+    <u32 as Element<H::BitShape>>::Array: std::fmt::Debug,
 {
     fn train_weights(
         patch_centroids: &[P],
@@ -737,30 +748,31 @@ where
             .collect();
 
         // now train for real
-        let (patch_weights, _, aux_weights, _, sum_loss) = (0..iters).fold(
-            (
-                patch_weights,
-                aux_inputs,
-                aux_weights,
-                class_act_cache,
-                sum_loss,
-            ),
-            |(patch_weights, aux_inputs, aux_weights, class_act_cache, sum_loss), _| {
-                let (aux_weights, class_act_cache, sum_loss) =
-                    <[(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C] as IIIVMM<
-                        H,
-                        C,
-                    >>::optimize(
-                        aux_weights,
-                        class_act_cache,
-                        &class_counts,
-                        &aux_inputs,
-                        sum_loss,
-                        aux_iters,
-                    );
+        let (patch_weights, _, aux_weights, _, sum_loss) =
+            (0..iters).fold(
+                (
+                    patch_weights,
+                    aux_inputs,
+                    aux_weights,
+                    class_act_cache,
+                    sum_loss,
+                ),
+                |(patch_weights, aux_inputs, aux_weights, class_act_cache, sum_loss), _| {
+                    let (aux_weights, class_act_cache, sum_loss) =
+                        <[(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C] as IIIVMM<
+                            H,
+                            C,
+                        >>::optimize(
+                            aux_weights,
+                            class_act_cache,
+                            &class_counts,
+                            &aux_inputs,
+                            sum_loss,
+                            aux_iters,
+                        );
 
-                let patch_start = Instant::now();
-                let (
+                    let patch_start = Instant::now();
+                    let (
                         patch_weights,
                         aux_inputs,
                         class_act_cache,
@@ -779,22 +791,59 @@ where
                         sum_loss,
                         true,
                     );
-                dbg!(patch_start.elapsed() / n_weights as u32);
-                dbg!(n_updates);
-                let (aux_weights, class_act_cache, sum_loss) =
-                    <[(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C] as IIIVMM<
-                        H,
-                        C,
-                    >>::optimize(
-                        aux_weights,
-                        class_act_cache,
-                        &class_counts,
-                        &aux_inputs,
-                        sum_loss,
-                        aux_iters,
-                    );
 
-                let (patch_weights, aux_inputs, class_act_cache, sum_loss, (_, n_updates)) =
+                    {
+                        let patch_acts: Vec<H> = patch_centroids
+                            .iter()
+                            .map(|patch| patch_weights.btbvmm(patch))
+                            .collect();
+                        let (true_sum_loss, n_correct, n) = sum_loss_correct::<H, C>(
+                            &patch_acts,
+                            &patch_bags,
+                            &class_counts,
+                            &aux_weights,
+                        );
+                        dbg!(n_correct as f64 / n as f64);
+                        assert_eq!(sum_loss, true_sum_loss);
+                    }
+
+                    dbg!(patch_start.elapsed() / n_weights as u32);
+                    dbg!(n_updates);
+                    let (aux_weights, class_act_cache, sum_loss) =
+                        <[(<i8 as Element<<H as BitArray>::BitShape>>::Array, i8); C] as IIIVMM<
+                            H,
+                            C,
+                        >>::optimize(
+                            aux_weights,
+                            class_act_cache,
+                            &class_counts,
+                            &aux_inputs,
+                            sum_loss,
+                            aux_iters,
+                        );
+
+                    //let thresholds = <H::BitShape as Map<(P::TritArrayType, u32), u32>>::map(&patch_weights, |(_, t)| *t);
+                    //dbg!(thresholds);
+                    //aux_weights.iter().for_each(|(_, t)| {
+                    //    dbg!(t);
+                    //});
+
+                    {
+                        let patch_acts: Vec<H> = patch_centroids
+                            .iter()
+                            .map(|patch| patch_weights.btbvmm(patch))
+                            .collect();
+                        let (true_sum_loss, n_correct, n) = sum_loss_correct::<H, C>(
+                            &patch_acts,
+                            &patch_bags,
+                            &class_counts,
+                            &aux_weights,
+                        );
+                        dbg!(n_correct as f64 / n as f64);
+                        assert_eq!(sum_loss, true_sum_loss);
+                    }
+
+                    let (patch_weights, aux_inputs, class_act_cache, sum_loss, (_, n_updates)) =
                         <<(<P as BitArray>::TritArrayType, u32) as Element<
                             <H as BitArray>::BitShape,
                         >>::Array as DescendPatchWeights<P, H, C>>::descend(
@@ -808,31 +857,31 @@ where
                             sum_loss,
                             false,
                         );
-                dbg!(n_updates);
-                {
-                    let patch_acts: Vec<H> = patch_centroids
-                        .iter()
-                        .map(|patch| patch_weights.btbvmm(patch))
-                        .collect();
-                    let (true_sum_loss, n_correct, n) = sum_loss_correct::<H, C>(
-                        &patch_acts,
-                        &patch_bags,
-                        &class_counts,
-                        &aux_weights,
-                    );
-                    assert_eq!(sum_loss, true_sum_loss);
-                    dbg!(n_correct as f64 / n as f64);
-                }
+                    dbg!(n_updates);
+                    {
+                        let patch_acts: Vec<H> = patch_centroids
+                            .iter()
+                            .map(|patch| patch_weights.btbvmm(patch))
+                            .collect();
+                        let (true_sum_loss, n_correct, n) = sum_loss_correct::<H, C>(
+                            &patch_acts,
+                            &patch_bags,
+                            &class_counts,
+                            &aux_weights,
+                        );
+                        dbg!(n_correct as f64 / n as f64);
+                        assert_eq!(sum_loss, true_sum_loss);
+                    }
 
-                (
-                    patch_weights,
-                    aux_inputs,
-                    aux_weights,
-                    class_act_cache,
-                    sum_loss,
-                )
-            },
-        );
+                    (
+                        patch_weights,
+                        aux_inputs,
+                        aux_weights,
+                        class_act_cache,
+                        sum_loss,
+                    )
+                },
+            );
 
         (patch_weights, aux_weights, sum_loss)
     }

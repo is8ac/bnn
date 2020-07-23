@@ -28,6 +28,7 @@ https://openreview.net/pdf?id=ryxfHnCctX
 - [Ternary Weight Networks](https://arxiv.org/abs/1605.04711)
 - [Ternary Neural Networks with Fine-Grained Quantization](https://arxiv.org/abs/1705.01462)
 - [Ternary Neural Networks for Resource-Efficient AI Applications](https://arxiv.org/abs/1609.00222)
+- [Unrolling Ternary Neural Networks](https://arxiv.org/abs/1909.04509)
 
 ### Two bit / quaternary:
 - [Two-Bit Networks for Deep Learning on Resource-Constrained Embedded Devices](https://arxiv.org/abs/1701.00485)
@@ -51,10 +52,10 @@ https://openreview.net/pdf?id=ryxfHnCctX
 - [Convolutional Clustering for Unsupervised Learning](https://arxiv.org/abs/1511.06241)
 
 # Layerwise training
-https://arxiv.org/abs/1901.06656
-https://arxiv.org/abs/1803.09522
-https://arxiv.org/abs/1812.11446
-https://arxiv.org/abs/1608.05343
-https://arxiv.org/abs/1310.6343
+- https://arxiv.org/abs/1901.06656
+- https://arxiv.org/abs/1803.09522
+- https://arxiv.org/abs/1812.11446
+- https://arxiv.org/abs/1608.05343
+- https://arxiv.org/abs/1310.6343
 - [A Theory of Local Learning, the Learning Channel, and the Optimality of Backpropagation](https://arxiv.org/abs/1506.06472)
-https://arxiv.org/abs/1905.11786
+- https://arxiv.org/abs/1905.11786

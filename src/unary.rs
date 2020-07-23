@@ -112,7 +112,7 @@ impl Preprocess<[[[u8; 3]; 3]; 3]> for Edges {
 // |a| |b|
 // | |b|b|
 // center is ignored by all edges.
-fn edges_from_patch(patch: &[[[u8; 3]; 3]; 3]) -> b32 {
+pub fn edges_from_patch(patch: &[[[u8; 3]; 3]; 3]) -> b32 {
     let mut target = b32::default();
     // horizontal
     target |= extract_partition(patch, [(0, 0), (0, 1), (0, 2)], [(2, 0), (2, 1), (2, 2)]) << 24;
