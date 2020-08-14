@@ -1,6 +1,7 @@
 use crate::bits::BitWord;
 use crate::count::IncrementCounters;
 use crate::shape::{Element, Merge, Shape, ZipMap};
+use rand::Rng;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -353,5 +354,35 @@ impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usiz
             }
         }
         acc
+    }
+}
+
+pub trait RandomPatch<PatchShape: Shape>
+where
+    Self: Image2D,
+    Self::PixelType: Element<PatchShape>,
+{
+    fn random_patch<RNG: Rng>(
+        &self,
+        rng: &mut RNG,
+    ) -> <Self::PixelType as Element<PatchShape>>::Array;
+}
+
+impl<P: Copy, const X: usize, const Y: usize, const PX: usize, const PY: usize>
+    RandomPatch<[[(); PY]; PX]> for StaticImage<P, X, Y>
+where
+    Self: Image2D<PixelType = P>,
+    [[P; PY]; PX]: Default,
+{
+    fn random_patch<RNG: Rng>(&self, rng: &mut RNG) -> [[P; PY]; PX] {
+        let x = rng.gen_range(0, X - (PX / 2) * 2);
+        let y = rng.gen_range(0, Y - (PY / 2) * 2);
+        let mut patch = <[[P; PY]; PX]>::default();
+        for px in 0..PX {
+            for py in 0..PY {
+                patch[px][py] = self.image[x + px][y + py];
+            }
+        }
+        patch
     }
 }

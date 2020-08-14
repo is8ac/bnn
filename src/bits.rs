@@ -1,6 +1,5 @@
 // the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
-use crate::layer::Apply;
 use crate::shape::{Element, Shape, ZipMap};
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
@@ -387,12 +386,6 @@ where
     }
 }
 
-impl<T: FFBVM<I, O>, I, O> Apply<I, O> for T {
-    fn apply(&self, input: &I) -> O {
-        self.ffbvm(input)
-    }
-}
-
 /// Bit Float Bit Vector Multiply
 /// Takes bits input, float matrix, and returns bit array output.
 pub trait BFBVMM<I, O> {
@@ -440,6 +433,7 @@ where
     Self: TritArray,
 {
     /// Returns the number of bits that are different and mask bit is set.
+    /// Note that this is not adjusted for mask count. You should probably add mask_zeros() / 2 to the result.
     fn masked_distance(&self, bits: &Self::BitArrayType) -> u32;
 }
 
@@ -824,7 +818,8 @@ macro_rules! for_uints {
         impl Distribution<$t_type> for Standard {
             #[inline]
             fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> $t_type {
-                $t_type(rng.gen(), rng.gen())
+                //$t_type(rng.gen(), rng.gen())
+                $t_type(rng.gen(), !0)
             }
         }
         impl Not for $b_type {

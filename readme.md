@@ -59,3 +59,8 @@ https://openreview.net/pdf?id=ryxfHnCctX
 - https://arxiv.org/abs/1310.6343
 - [A Theory of Local Learning, the Learning Channel, and the Optimality of Backpropagation](https://arxiv.org/abs/1506.06472)
 - https://arxiv.org/abs/1905.11786
+
+Loc Quang Trinh's thesis paper: https://dspace.mit.edu/bitstream/handle/1721.1/123128/1128279897-MIT.pdf
+
+
+[Neural Network with Binary Activations for Efficient Neuromorphic Computing](http://cs229.stanford.edu/proj2016/report/WanLi-NeuralNetworkWithBinaryActivationsForEfficientNeuromorphicComputing-Report.pdf)

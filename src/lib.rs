@@ -8,8 +8,6 @@ pub mod bits;
 pub mod cluster;
 pub mod count;
 pub mod datasets;
-pub mod descend;
 pub mod image2d;
-pub mod layer;
 pub mod shape;
 pub mod unary;
