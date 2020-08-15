@@ -1,14 +1,12 @@
 # bitnets
-This project is currently in development. Do not expect it to work.
-
-In current greedy layer wise training:
-- Time is liner with number of parameters and also linear with training set size
-- Memory usage is linear with training set size
-
-Memory usage linear with training set size is fine for CIFAR, but will be an issue for ImageNet.
-
-
-
+This project makes extensive use of const generics. You must therefore use rust nightly.
+```
+https://rustup.rs/
+```
+Due to a [bug](https://github.com/rust-lang/rust/issues/73298), you must pin rustc versions
+```
+rustup default nightly-2020-05-15
+```
 
 # Literature
 ## Low precision neural nets

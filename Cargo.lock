@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "bitnn"
+name = "bnn"
 version = "0.2.0"
 dependencies = [
  "bincode 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",

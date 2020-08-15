@@ -23,12 +23,6 @@ pub trait Classify<Input, C: Shape> {
     fn max_class(&self, input: &Input) -> usize;
 }
 
-//impl<T: BitMul<I, O>, I, O> Apply<I, O> for <I as Element<O>>::Array {
-//    fn apply(&self, input: &I) -> O {
-//        self.bit_mul(&input)
-//    }
-//}
-
 /// Bits input, bits matrix, and bits output
 pub trait BitMul<I, O> {
     fn bit_mul(&self, input: &I) -> O;
@@ -51,9 +45,9 @@ where
 pub trait BitArray
 where
     Self: Sized,
-    Self::WordShape: Shape,
+    //Self::WordShape: Shape,
     Self::BitShape: Shape,
-    Self::WordType: Element<Self::WordShape, Array = Self>,
+    //Self::WordType: Element<Self::WordShape, Array = Self>,
     Self::TritArrayType: TritArray<TritShape = Self::BitShape, BitArrayType = Self>,
 {
     /// The shape of the bits.
@@ -61,16 +55,16 @@ where
     /// but rather the shape of the array with bits as elements.
     type BitShape;
     /// The type of the bitword inside the shape.
-    type WordType;
+    //type WordType;
     /// The shape where words are elements.
-    type WordShape;
+    //type WordShape;
     type TritArrayType;
 }
 
 impl<T: BitArray, const L: usize> BitArray for [T; L] {
     type BitShape = [T::BitShape; L];
-    type WordType = T::WordType;
-    type WordShape = [T::WordShape; L];
+    //type WordType = T::WordType;
+    //type WordShape = [T::WordShape; L];
     type TritArrayType = [T::TritArrayType; L];
 }
 
@@ -78,25 +72,23 @@ pub trait BitMapPack<E: Element<Self::BitShape>>
 where
     Self: BitArray,
 {
-    fn bit_map_pack<F: Fn(&E) -> bool>(
-        input: &<E as Element<Self::BitShape>>::Array,
-        map_fn: F,
-    ) -> Self;
+    fn bit_map_pack<F: Fn(&E) -> bool>(input: &<E as Element<Self::BitShape>>::Array, map_fn: F) -> Self;
+    fn bit_map_pack_mut<F: Fn(&E) -> bool>(&mut self, input: &<E as Element<Self::BitShape>>::Array, index: &<Self::BitShape as Shape>::Index, map_fn: F);
 }
 
 impl<E: Element<T::BitShape>, T: BitArray + BitMapPack<E>, const L: usize> BitMapPack<E> for [T; L]
 where
     [T; L]: Default,
 {
-    fn bit_map_pack<F: Fn(&E) -> bool>(
-        input: &[<E as Element<T::BitShape>>::Array; L],
-        map_fn: F,
-    ) -> [T; L] {
+    fn bit_map_pack<F: Fn(&E) -> bool>(input: &[<E as Element<T::BitShape>>::Array; L], map_fn: F) -> [T; L] {
         let mut target = <[T; L]>::default();
         for i in 0..L {
             target[i] = T::bit_map_pack(&input[i], &map_fn);
         }
         target
+    }
+    fn bit_map_pack_mut<F: Fn(&E) -> bool>(&mut self, input: &[<E as Element<T::BitShape>>::Array; L], (index, tail): &<Self::BitShape as Shape>::Index, map_fn: F) {
+        self[*index].bit_map_pack_mut(&input[*index], tail, &map_fn);
     }
 }
 
@@ -105,11 +97,7 @@ where
     Self: BitArray,
 {
     fn bit_map<F: Fn(bool) -> E>(&self, map_fn: F) -> <E as Element<Self::BitShape>>::Array;
-    fn bit_map_mut<F: Fn(&mut E, bool)>(
-        &self,
-        target: &mut <E as Element<Self::BitShape>>::Array,
-        map_fn: F,
-    );
+    fn bit_map_mut<F: Fn(&mut E, bool)>(&self, target: &mut <E as Element<Self::BitShape>>::Array, map_fn: F);
 }
 
 impl<T: BitMap<E>, E: Element<T::BitShape>, const L: usize> BitMap<E> for [T; L]
@@ -123,11 +111,7 @@ where
         }
         target
     }
-    fn bit_map_mut<F: Fn(&mut E, bool)>(
-        &self,
-        target: &mut [<E as Element<T::BitShape>>::Array; L],
-        map_fn: F,
-    ) {
+    fn bit_map_mut<F: Fn(&mut E, bool)>(&self, target: &mut [<E as Element<T::BitShape>>::Array; L], map_fn: F) {
         for i in 0..L {
             self[i].bit_map_mut(&mut target[i], &map_fn);
         }
@@ -176,17 +160,9 @@ where
     fn bitpack(bools: &<bool as Element<Self::BitShape>>::Array) -> Self;
     /// For each bit that is set, increment the corresponding counter.
     fn increment_counters(&self, counters: &mut <u32 as Element<Self::BitShape>>::Array);
-    fn weighted_increment_counters(
-        &self,
-        weight: u32,
-        counters: &mut <u32 as Element<Self::BitShape>>::Array,
-    );
+    fn weighted_increment_counters(&self, weight: u32, counters: &mut <u32 as Element<Self::BitShape>>::Array);
     /// For each bit that is the value of `sign`, increment the corresponding counter.
-    fn flipped_increment_counters(
-        &self,
-        sign: bool,
-        counters: &mut <u32 as Element<Self::BitShape>>::Array,
-    );
+    fn flipped_increment_counters(&self, sign: bool, counters: &mut <u32 as Element<Self::BitShape>>::Array);
 }
 
 impl<T: BitArrayOPs + BitArray, const L: usize> BitArrayOPs for [T; L]
@@ -208,20 +184,12 @@ where
             self[i].increment_counters(&mut counters[i]);
         }
     }
-    fn weighted_increment_counters(
-        &self,
-        weight: u32,
-        counters: &mut <u32 as Element<Self::BitShape>>::Array,
-    ) {
+    fn weighted_increment_counters(&self, weight: u32, counters: &mut <u32 as Element<Self::BitShape>>::Array) {
         for i in 0..L {
             self[i].weighted_increment_counters(weight, &mut counters[i]);
         }
     }
-    fn flipped_increment_counters(
-        &self,
-        sign: bool,
-        counters: &mut [<u32 as Element<T::BitShape>>::Array; L],
-    ) {
+    fn flipped_increment_counters(&self, sign: bool, counters: &mut [<u32 as Element<T::BitShape>>::Array; L]) {
         for i in 0..L {
             self[i].flipped_increment_counters(sign, &mut counters[i]);
         }
@@ -233,19 +201,9 @@ where
     Self: BitArray,
     u32: Element<Self::BitShape>,
 {
-    fn bitpack_fracs(
-        a: &(usize, <u32 as Element<Self::BitShape>>::Array),
-        b: &(usize, <u32 as Element<Self::BitShape>>::Array),
-    ) -> Self;
-    fn increment_frac_counters(
-        &self,
-        counters: &mut (usize, <u32 as Element<Self::BitShape>>::Array),
-    );
-    fn weighted_increment_frac_counters(
-        &self,
-        weight: u32,
-        counters: &mut (usize, <u32 as Element<Self::BitShape>>::Array),
-    );
+    fn bitpack_fracs(a: &(usize, <u32 as Element<Self::BitShape>>::Array), b: &(usize, <u32 as Element<Self::BitShape>>::Array)) -> Self;
+    fn increment_frac_counters(&self, counters: &mut (usize, <u32 as Element<Self::BitShape>>::Array));
+    fn weighted_increment_frac_counters(&self, weight: u32, counters: &mut (usize, <u32 as Element<Self::BitShape>>::Array));
 }
 
 impl<B: BitArray + BitArrayOPs> IncrementFracCounters for B
@@ -254,31 +212,17 @@ where
     u32: Element<Self::BitShape>,
     Self::BitShape: ZipMap<u32, u32, bool>,
 {
-    fn bitpack_fracs(
-        a: &(usize, <u32 as Element<Self::BitShape>>::Array),
-        b: &(usize, <u32 as Element<Self::BitShape>>::Array),
-    ) -> Self {
+    fn bitpack_fracs(a: &(usize, <u32 as Element<Self::BitShape>>::Array), b: &(usize, <u32 as Element<Self::BitShape>>::Array)) -> Self {
         let ac = a.0 as u64;
         let bc = b.0 as u64;
-        let diffs = <<Self as BitArray>::BitShape as ZipMap<u32, u32, bool>>::zip_map(
-            &a.1,
-            &b.1,
-            |&a, &b| (a as u64 * bc) > (b as u64 * ac),
-        );
+        let diffs = <<Self as BitArray>::BitShape as ZipMap<u32, u32, bool>>::zip_map(&a.1, &b.1, |&a, &b| (a as u64 * bc) > (b as u64 * ac));
         Self::bitpack(&diffs)
     }
-    fn increment_frac_counters(
-        &self,
-        counters: &mut (usize, <u32 as Element<B::BitShape>>::Array),
-    ) {
+    fn increment_frac_counters(&self, counters: &mut (usize, <u32 as Element<B::BitShape>>::Array)) {
         counters.0 += 1;
         self.increment_counters(&mut counters.1);
     }
-    fn weighted_increment_frac_counters(
-        &self,
-        weight: u32,
-        counters: &mut (usize, <u32 as Element<B::BitShape>>::Array),
-    ) {
+    fn weighted_increment_frac_counters(&self, weight: u32, counters: &mut (usize, <u32 as Element<B::BitShape>>::Array)) {
         counters.0 += weight as usize;
         self.weighted_increment_counters(weight, &mut counters.1);
     }
@@ -288,45 +232,22 @@ pub trait BitZipMap<E: Element<Self::BitShape>, O: Element<Self::BitShape>>
 where
     Self: BitArray,
 {
-    fn bit_zip_map<F: Fn(bool, E) -> O>(
-        &self,
-        vals: &<E as Element<Self::BitShape>>::Array,
-        map_fn: F,
-    ) -> <O as Element<Self::BitShape>>::Array;
-    fn bit_zip_map_mut<F: Fn(&mut O, bool, E)>(
-        &self,
-        target: &mut <O as Element<Self::BitShape>>::Array,
-        vals: &<E as Element<Self::BitShape>>::Array,
-        map_fn: F,
-    );
+    fn bit_zip_map<F: Fn(bool, E) -> O>(&self, vals: &<E as Element<Self::BitShape>>::Array, map_fn: F) -> <O as Element<Self::BitShape>>::Array;
+    fn bit_zip_map_mut<F: Fn(&mut O, bool, E)>(&self, target: &mut <O as Element<Self::BitShape>>::Array, vals: &<E as Element<Self::BitShape>>::Array, map_fn: F);
 }
 
-impl<
-        T: BitArray + BitZipMap<E, O>,
-        E: Element<T::BitShape>,
-        O: Element<T::BitShape>,
-        const L: usize,
-    > BitZipMap<E, O> for [T; L]
+impl<T: BitArray + BitZipMap<E, O>, E: Element<T::BitShape>, O: Element<T::BitShape>, const L: usize> BitZipMap<E, O> for [T; L]
 where
     [<O as Element<T::BitShape>>::Array; L]: Default,
 {
-    fn bit_zip_map<F: Fn(bool, E) -> O>(
-        &self,
-        vals: &[<E as Element<T::BitShape>>::Array; L],
-        map_fn: F,
-    ) -> [<O as Element<T::BitShape>>::Array; L] {
+    fn bit_zip_map<F: Fn(bool, E) -> O>(&self, vals: &[<E as Element<T::BitShape>>::Array; L], map_fn: F) -> [<O as Element<T::BitShape>>::Array; L] {
         let mut target = <[<O as Element<T::BitShape>>::Array; L]>::default();
         for i in 0..L {
             target[i] = self[i].bit_zip_map(&vals[i], &map_fn);
         }
         target
     }
-    fn bit_zip_map_mut<F: Fn(&mut O, bool, E)>(
-        &self,
-        target: &mut [<O as Element<T::BitShape>>::Array; L],
-        vals: &[<E as Element<T::BitShape>>::Array; L],
-        map_fn: F,
-    ) {
+    fn bit_zip_map_mut<F: Fn(&mut O, bool, E)>(&self, target: &mut [<O as Element<T::BitShape>>::Array; L], vals: &[<E as Element<T::BitShape>>::Array; L], map_fn: F) {
         for i in 0..L {
             self[i].bit_zip_map_mut(&mut target[i], &vals[i], &map_fn);
         }
@@ -504,7 +425,7 @@ pub trait TritArray
 where
     Self: Sized,
     Self::TritShape: Shape,
-    Self::BitArrayType: BitArray<BitShape = Self::TritShape, TritArrayType = Self>,
+    Self::BitArrayType: BitArray<BitShape = Self::TritShape, TritArrayType = Self> + Sized,
 {
     const N: usize;
     type BitArrayType;
@@ -512,10 +433,7 @@ where
     fn mask_zeros(&self) -> u32;
     fn flip(&mut self, signs: &Self::BitArrayType);
     //fn trit_flip(&mut self, trits: &Self);
-    fn get_trit(
-        &self,
-        index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
-    ) -> Option<bool>;
+    fn get_trit(&self, index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index) -> Option<bool>;
 }
 
 impl<T: TritArray, const L: usize> TritArray for [T; L] {
@@ -535,13 +453,7 @@ impl<T: TritArray, const L: usize> TritArray for [T; L] {
     //        self[i].trit_flip(&trits[i]);
     //    }
     //}
-    fn get_trit(
-        &self,
-        (head, tail): &(
-            usize,
-            <<T::BitArrayType as BitArray>::BitShape as Shape>::Index,
-        ),
-    ) -> Option<bool> {
+    fn get_trit(&self, (head, tail): &(usize, <<T::BitArrayType as BitArray>::BitShape as Shape>::Index)) -> Option<bool> {
         self[*head].get_trit(tail)
     }
 }
@@ -550,25 +462,14 @@ pub trait SetTrit
 where
     Self: TritArray,
 {
-    fn set_trit(
-        &self,
-        trit: Option<bool>,
-        index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
-    ) -> Self;
+    fn set_trit(&self, trit: Option<bool>, index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index) -> Self;
 }
 
 impl<T: SetTrit + TritArray, const L: usize> SetTrit for [T; L]
 where
     Self: Copy,
 {
-    fn set_trit(
-        &self,
-        trit: Option<bool>,
-        (head, tail): &(
-            usize,
-            <<T::BitArrayType as BitArray>::BitShape as Shape>::Index,
-        ),
-    ) -> Self {
+    fn set_trit(&self, trit: Option<bool>, (head, tail): &(usize, <<T::BitArrayType as BitArray>::BitShape as Shape>::Index)) -> Self {
         let mut target = *self;
         target[*head] = self[*head].set_trit(trit, tail);
         target
@@ -615,11 +516,7 @@ macro_rules! for_uints {
             fn trit_expand(&self) -> [Option<bool>; $len] {
                 let mut target = <[Option<bool>; $len]>::default();
                 for b in 0..$len {
-                    target[b] = if ((self.1 >> b) & 1) == 1 {
-                        Some(((self.0 >> b) & 1) == 1)
-                    } else {
-                        None
-                    };
+                    target[b] = if ((self.1 >> b) & 1) == 1 { Some(((self.0 >> b) & 1) == 1) } else { None };
                 }
                 target
             }
@@ -661,8 +558,7 @@ macro_rules! for_uints {
 
         impl SetTrit for $t_type {
             fn set_trit(&self, trit: Option<bool>, &(index, _): &(usize, ())) -> Self {
-                let signs =
-                    (self.0 & !(1 << index)) | ((trit.unwrap_or(false) as $u_type) << index);
+                let signs = (self.0 & !(1 << index)) | ((trit.unwrap_or(false) as $u_type) << index);
                 let magns = (self.1 & !(1 << index)) | ((trit.is_some() as $u_type) << index);
                 $t_type(signs, magns)
             }
@@ -681,12 +577,7 @@ macro_rules! for_uints {
                 }
                 target
             }
-            fn bit_zip_map_mut<F: Fn(&mut O, bool, E)>(
-                &self,
-                target: &mut [O; $len],
-                vals: &[E; $len],
-                map_fn: F,
-            ) {
+            fn bit_zip_map_mut<F: Fn(&mut O, bool, E)>(&self, target: &mut [O; $len], vals: &[E; $len], map_fn: F) {
                 for b in 0..$len {
                     map_fn(&mut target[b], self.bit(b), vals[b]);
                 }
@@ -699,6 +590,10 @@ macro_rules! for_uints {
                     target |= (map_fn(&input[b]) as $u_type) << b;
                 }
                 $b_type(target)
+            }
+            fn bit_map_pack_mut<F: Fn(&E) -> bool>(&mut self, input: &[E; $len], &(index, ()): &(usize, ()), map_fn: F) {
+                self.0 &= !(1 << index);
+                self.0 |= (map_fn(&input[index]) as $u_type) << index;
             }
         }
         impl<E> BitMap<E> for $b_type
@@ -733,8 +628,8 @@ macro_rules! for_uints {
         }
         impl BitArray for $b_type {
             type BitShape = [(); $len];
-            type WordType = $b_type;
-            type WordShape = ();
+            //type WordType = $b_type;
+            //type WordShape = ();
             type TritArrayType = $t_type;
         }
         impl BitArrayOPs for $b_type {
@@ -785,8 +680,7 @@ macro_rules! for_uints {
                 sum
             }
         }
-        impl<I: BitArray + BFMA> BFBVMM<I, $b_type>
-            for [(<f32 as Element<I::BitShape>>::Array, f32); $len]
+        impl<I: BitArray + BFMA> BFBVMM<I, $b_type> for [(<f32 as Element<I::BitShape>>::Array, f32); $len]
         where
             f32: Element<I::BitShape>,
         {
@@ -802,9 +696,7 @@ macro_rules! for_uints {
             fn bit_mul(&self, input: &I) -> $b_type {
                 let mut target = $b_type(0);
                 for b in 0..$len {
-                    target |= $b_type(
-                        ((self[b].distance(input) < (I::BIT_LEN as u32 / 2)) as $u_type) << b,
-                    );
+                    target |= $b_type(((self[b].distance(input) < (I::BIT_LEN as u32 / 2)) as $u_type) << b);
                 }
                 target
             }
@@ -818,8 +710,8 @@ macro_rules! for_uints {
         impl Distribution<$t_type> for Standard {
             #[inline]
             fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> $t_type {
-                //$t_type(rng.gen(), rng.gen())
-                $t_type(rng.gen(), !0)
+                $t_type(rng.gen(), rng.gen())
+                //$t_type(rng.gen(), !0)
             }
         }
         impl Not for $b_type {
@@ -948,11 +840,7 @@ mod tests {
     fn unpack_t16(trits: t16) -> [Option<bool>; 16] {
         let mut options = <[Option<bool>; 16]>::default();
         for b in 0..16 {
-            options[b] = if b16(trits.1).bit(b) {
-                Some(b16(trits.0).bit(b))
-            } else {
-                None
-            }
+            options[b] = if b16(trits.1).bit(b) { Some(b16(trits.0).bit(b)) } else { None }
         }
         options
     }
@@ -1001,11 +889,7 @@ mod tests {
         let mut trits = t16(u16_shift(1), u16_shift(2));
         let before = unpack_t16(trits);
         trits.flip(&signs);
-        for ((&t, &b), &o) in before
-            .iter()
-            .zip(unpack_b16(signs).iter())
-            .zip(unpack_t16(trits).iter())
-        {
+        for ((&t, &b), &o) in before.iter().zip(unpack_b16(signs).iter()).zip(unpack_t16(trits).iter()) {
             assert_eq!(trit_bit_update(t, b), o);
         }
     }
@@ -1048,12 +932,7 @@ mod tests {
     fn trit_flip_test() {
         let grads = t16(u16_shift(0), u16_shift(1));
         let trits = t16(u16_shift(2), u16_shift(3));
-        for (i, ((&t, &b), &o)) in unpack_t16(trits)
-            .iter()
-            .zip(unpack_t16(grads).iter())
-            .zip(unpack_t16(trits + grads).iter())
-            .enumerate()
-        {
+        for (i, ((&t, &b), &o)) in unpack_t16(trits).iter().zip(unpack_t16(grads).iter()).zip(unpack_t16(trits + grads).iter()).enumerate() {
             dbg!(i);
             let add_result_option = trit_trit_add_option(t, b);
             let add_result_i8 = trit_trit_add_i8(t, b);

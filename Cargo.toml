@@ -1,5 +1,5 @@
 [package]
-name = "bitnn"
+name = "bnn"
 version = "0.2.0"
 authors = ["Isaac Leonard <ifleonar@us.ibm.com>"]
 edition = "2018"

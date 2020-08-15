@@ -67,7 +67,42 @@ pub mod cifar {
     use std::io::prelude::*;
     use std::path::Path;
 
-    pub fn load_images_from_base(
+    pub fn load_images_from_base(base_path: &Path, n: usize) -> Vec<([[[u8; 3]; 32]; 32], usize)> {
+        if n > 50000 {
+            panic!("n must be <= 50,000");
+        }
+        (1..6)
+            .map(|i| {
+                let mut file = File::open(&base_path.join(format!("data_batch_{}.bin", i)))
+                    .expect("can't open data");
+
+                let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
+                let mut label: [u8; 1] = [0; 1];
+                let mut images: Vec<([[[u8; 3]; 32]; 32], usize)> = Vec::new();
+                for _ in 0..10000 {
+                    file.read_exact(&mut label).expect("can't read label");
+                    file.read_exact(&mut image_bytes)
+                        .expect("can't read images");
+                    let mut image = [[[0_u8; 3]; 32]; 32];
+                    for x in 0..32 {
+                        for y in 0..32 {
+                            image[x][y] = [
+                                image_bytes[0 + (y * 32) + x],
+                                image_bytes[1024 + (y * 32) + x],
+                                image_bytes[2048 + (y * 32) + x],
+                            ];
+                        }
+                    }
+                    images.push((image, label[0] as usize));
+                }
+                images
+            })
+            .flatten()
+            .take(n)
+            .collect()
+    }
+
+    pub fn load_static_images_from_base(
         base_path: &Path,
         n: usize,
     ) -> Vec<(StaticImage<[u8; 3], 32, 32>, usize)> {
