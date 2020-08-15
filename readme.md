@@ -8,6 +8,15 @@ Due to a [bug](https://github.com/rust-lang/rust/issues/73298), you must pin rus
 rustup default nightly-2020-05-15
 ```
 
+
+To run:
+```
+cargo run --release --bin mnist_one_layer_fc -- mnist
+```
+where `mnist` is the path the MNIST dataset.
+If needed, download from http://yann.lecun.com/exdb/mnist/
+
+
 # Literature
 ## Low precision neural nets
 
