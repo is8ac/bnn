@@ -9,5 +9,6 @@ pub mod cluster;
 pub mod count;
 pub mod datasets;
 pub mod image2d;
+pub mod layers;
 pub mod shape;
 pub mod unary;

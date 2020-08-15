@@ -1,6 +1,7 @@
 #![feature(const_generics)]
 use bnn::bits::{b32, BitArray, BitMapPack, MaskedDistance, SetTrit, TritArray};
 use bnn::datasets::mnist;
+use bnn::layers::DescendFCaux;
 use bnn::shape::{Element, Map, Shape};
 use rand::Rng;
 use rand::SeedableRng;
@@ -9,127 +10,6 @@ use rayon::prelude::*;
 use std::env;
 use std::iter;
 use std::path::PathBuf;
-
-pub trait SoftMaxLoss {
-    fn softmax_loss(&self, true_class: usize) -> f32;
-}
-
-impl<const C: usize> SoftMaxLoss for [f32; C]
-where
-    [f32; C]: Default,
-{
-    fn softmax_loss(&self, true_class: usize) -> f32 {
-        let mut exp = <[f32; C]>::default();
-        let mut sum_exp = 0f32;
-        for c in 0..C {
-            exp[c] = self[c].exp();
-            sum_exp += exp[c];
-        }
-        let mut sum_loss = 0f32;
-        for c in 0..C {
-            let scaled = exp[c] / sum_exp;
-            sum_loss += (scaled - (c == true_class) as u8 as f32).powi(2);
-        }
-        sum_loss
-    }
-}
-
-trait DescendAux<I: BitArray, const C: usize> {
-    fn chan_act(trits: &I::TritArrayType, input: &I) -> f32;
-    fn observe_loss(chan_weights: &I::TritArrayType, inputs: &[I], acts_cache: &Vec<[f32; C]>, classes: &[usize], c: usize) -> f64;
-    fn descend_chan(chan_weights: I::TritArrayType, inputs: &[I], acts_cache: &Vec<[f32; C]>, classes: &[usize], k: usize, sign: bool, c: usize) -> I::TritArrayType;
-    fn descend_aux_weights_full_set(weights: [I::TritArrayType; C], inputs: &[I], classes: &[usize], k: usize, sign: bool) -> [I::TritArrayType; C];
-    fn descend_aux_weights(weights: [I::TritArrayType; C], inputs: &[I], classes: &[usize], k: usize, sign: bool) -> [I::TritArrayType; C];
-    fn minibatch_train(weights: [I::TritArrayType; C], inputs: &[I], classes: &[usize], k: usize, n: usize) -> [I::TritArrayType; C];
-}
-
-impl<I, const C: usize> DescendAux<I, C> for ()
-where
-    I: Sync + BitArray + Send,
-    [f32; C]: SoftMaxLoss,
-    I::TritArrayType: MaskedDistance + SetTrit + TritArray + Sync + Copy,
-    <<I as BitArray>::BitShape as Shape>::IndexIter: Iterator<Item = <I::BitShape as Shape>::Index>,
-    <I::BitShape as Shape>::Index: Send + Sync + Copy,
-    [(); C]: Map<I::TritArrayType, f32>,
-{
-    fn chan_act(trits: &I::TritArrayType, input: &I) -> f32 {
-        (trits.masked_distance(input) as f32 - <I as BitArray>::BitShape::N as f32 / 4f32) / (<I as BitArray>::BitShape::N as f32 / 16f32)
-    }
-    fn observe_loss(trits: &I::TritArrayType, inputs: &[I], acts_cache: &Vec<[f32; C]>, classes: &[usize], c: usize) -> f64 {
-        inputs
-            .iter()
-            .zip(acts_cache.iter().cloned().zip(classes.iter()))
-            .map(|(input, (mut acts, &class))| {
-                acts[c] = <()>::chan_act(trits, input);
-                acts.softmax_loss(class) as f64
-            })
-            .sum()
-    }
-    fn descend_chan(trits: I::TritArrayType, inputs: &[I], acts_cache: &Vec<[f32; C]>, classes: &[usize], k: usize, sign: bool, c: usize) -> I::TritArrayType {
-        let indices: Vec<_> = <I as BitArray>::BitShape::indices().map(|i| Some(i)).chain(iter::once(None)).collect();
-        let mut mutations: Vec<_> = indices
-            .par_iter()
-            .map(|index| {
-                let trits = if let Some(i) = index {
-                    trits.set_trit(if trits.get_trit(&i).is_some() { None } else { Some(sign) }, &i)
-                } else {
-                    trits
-                };
-                let sum_loss = <()>::observe_loss(&trits, inputs, acts_cache, classes, c);
-                (sum_loss, index)
-            })
-            .collect();
-        mutations.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap());
-        let (n, weights) = mutations
-            .iter()
-            .take(k)
-            .take_while(|(_, i)| i.is_some())
-            .map(|(l, i)| (l, i.unwrap()))
-            .fold((0, trits), |(n, trits), (loss, i)| {
-                (n + 1, trits.set_trit(if trits.get_trit(&i).is_some() { None } else { Some(sign) }, &i))
-            });
-        weights
-    }
-    fn descend_aux_weights_full_set(weights: [I::TritArrayType; C], inputs: &[I], classes: &[usize], k: usize, sign: bool) -> [I::TritArrayType; C] {
-        assert_eq!(inputs.len(), classes.len());
-        let chunk_len = inputs.len() / C;
-        (0..C).fold(weights, |mut weights, c| {
-            let acts: Vec<[f32; C]> = inputs
-                .par_iter()
-                .map(|input| <[(); C] as Map<<I as BitArray>::TritArrayType, f32>>::map(&weights, |trits| <()>::chan_act(trits, input)))
-                .collect();
-            let updated_chan_trits = <()>::descend_chan(weights[c], inputs, &acts, classes, k, sign, c);
-            weights[c] = updated_chan_trits;
-            weights
-        })
-    }
-    fn descend_aux_weights(weights: [I::TritArrayType; C], inputs: &[I], classes: &[usize], k: usize, sign: bool) -> [I::TritArrayType; C] {
-        assert_eq!(inputs.len(), classes.len());
-        let chunk_len = inputs.len() / C;
-        (0..C).fold(weights, |mut weights, c| {
-            let acts: Vec<[f32; C]> = inputs[c * chunk_len..c * chunk_len + chunk_len]
-                .par_iter()
-                .map(|input| <[(); C] as Map<<I as BitArray>::TritArrayType, f32>>::map(&weights, |trits| <()>::chan_act(trits, input)))
-                .collect();
-            let updated_chan_trits = <()>::descend_chan(weights[c], inputs, &acts, classes, k, sign, c);
-            weights[c] = updated_chan_trits;
-            weights
-        })
-    }
-    fn minibatch_train(weights: [I::TritArrayType; C], inputs: &[I], classes: &[usize], k: usize, n: usize) -> [I::TritArrayType; C] {
-        assert_eq!(inputs.len(), classes.len());
-        let minibatch_size = inputs.len() / n;
-        (0..n).fold(weights, |weights, i| {
-            <()>::descend_aux_weights(
-                weights,
-                &inputs[i * minibatch_size..(i + 1) * minibatch_size],
-                &classes[i * minibatch_size..(i + 1) * minibatch_size],
-                k,
-                (i % 2) == 0,
-            )
-        })
-    }
-}
 
 const N_EXAMPLES: usize = 60_000;
 
@@ -141,11 +21,14 @@ fn main() {
     let base_path = {
         let mut args = env::args();
         args.next();
-        let path = args.next().expect("you must give path to base of mnist dir");
+        let path = args
+            .next()
+            .expect("you must give path to base of mnist dir");
         PathBuf::from(&path)
     };
 
-    let images = mnist::load_images_bitpacked_u32(&base_path.join("train-images-idx3-ubyte"), N_EXAMPLES);
+    let images =
+        mnist::load_images_bitpacked_u32(&base_path.join("train-images-idx3-ubyte"), N_EXAMPLES);
     let labels = mnist::load_labels(&base_path.join("train-labels-idx1-ubyte"), N_EXAMPLES);
 
     let weights: [<ExampleType as BitArray>::TritArrayType; 10] = rng.gen();
@@ -164,24 +47,51 @@ fn main() {
             .iter()
             .zip(labels.iter())
             .map(|(image, &class)| {
-                let acts: [u32; 10] = <[(); 10] as Map<<ExampleType as BitArray>::TritArrayType, u32>>::map(&weights, |trits| trits.masked_distance(image));
-                (acts.iter().enumerate().max_by_key(|(_, act)| *act).unwrap().0 == class) as u64
+                let acts: [u32; 10] =
+                    <[(); 10] as Map<<ExampleType as BitArray>::TritArrayType, u32>>::map(
+                        &weights,
+                        |trits| trits.masked_distance(image),
+                    );
+                (acts
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, act)| *act)
+                    .unwrap()
+                    .0
+                    == class) as u64
             })
             .sum();
-        println!("train acc: {:.3}%", (n_correct_train as f64 / images.len() as f64) * 100f64);
+        println!(
+            "train acc: {:.3}%",
+            (n_correct_train as f64 / images.len() as f64) * 100f64
+        );
     }
     {
-        let test_images = mnist::load_images_bitpacked_u32(&base_path.join("t10k-images-idx3-ubyte"), 10_000);
+        let test_images =
+            mnist::load_images_bitpacked_u32(&base_path.join("t10k-images-idx3-ubyte"), 10_000);
         let test_labels = mnist::load_labels(&base_path.join("t10k-labels-idx1-ubyte"), 10_000);
 
         let n_correct_test: u64 = test_images
             .iter()
             .zip(test_labels.iter())
             .map(|(image, &class)| {
-                let acts: [u32; 10] = <[(); 10] as Map<<ExampleType as BitArray>::TritArrayType, u32>>::map(&weights, |trits| trits.masked_distance(image));
-                (acts.iter().enumerate().max_by_key(|(_, act)| *act).unwrap().0 == class) as u64
+                let acts: [u32; 10] =
+                    <[(); 10] as Map<<ExampleType as BitArray>::TritArrayType, u32>>::map(
+                        &weights,
+                        |trits| trits.masked_distance(image),
+                    );
+                (acts
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, act)| *act)
+                    .unwrap()
+                    .0
+                    == class) as u64
             })
             .sum();
-        println!("test acc: {:.3}%", (n_correct_test as f64 / test_images.len() as f64) * 100f64);
+        println!(
+            "test acc: {:.3}%",
+            (n_correct_test as f64 / test_images.len() as f64) * 100f64
+        );
     }
 }
