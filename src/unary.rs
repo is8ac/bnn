@@ -1,4 +1,4 @@
-use crate::bits::{b32, b8, BitWord};
+use crate::bits::{b32, b8};
 use std::marker::PhantomData;
 
 pub fn u8x3_to_b32(input: [u8; 3]) -> b32 {
@@ -15,95 +15,6 @@ macro_rules! to_unary {
 
 to_unary!(to_10, b32, 10);
 to_unary!(to_32, b32, 32);
-
-pub trait Preprocess<Input> {
-    type Output;
-    fn preprocess(input: &Input) -> Self::Output;
-}
-
-pub struct Normalize<P> {
-    post_process: PhantomData<P>,
-}
-
-impl<P: Preprocess<[u8; 3]>> Preprocess<[[[u8; 3]; 3]; 3]> for Normalize<P>
-where
-    P::Output: Default,
-{
-    type Output = [[P::Output; 3]; 3];
-    fn preprocess(input: &[[[u8; 3]; 3]; 3]) -> [[P::Output; 3]; 3] {
-        let mut mins = [255_u8; 3];
-        for x in 0..3 {
-            for y in 0..3 {
-                for c in 0..3 {
-                    mins[c] = input[x][y][c].min(mins[c]);
-                }
-            }
-        }
-        let mut target = <[[P::Output; 3]; 3]>::default();
-        for x in 0..3 {
-            for y in 0..3 {
-                let mut pixel = [0_u8; 3];
-                for c in 0..3 {
-                    pixel[c] = input[x][y][c] - mins[c];
-                }
-                target[x][y] = P::preprocess(&pixel);
-            }
-        }
-        target
-    }
-}
-
-pub struct Unary<T> {
-    output_type: PhantomData<T>,
-}
-
-impl<I, O, const L: usize> Preprocess<[I; L]> for Unary<[O; L]>
-where
-    Unary<O>: Preprocess<I, Output = O>,
-    [O; L]: Default,
-{
-    type Output = [O; L];
-    fn preprocess(input: &[I; L]) -> [O; L] {
-        let mut target = <[O; L]>::default();
-        for i in 0..L {
-            target[i] = Unary::<O>::preprocess(&input[i]);
-        }
-        target
-    }
-}
-
-impl Preprocess<u8> for Unary<b32> {
-    type Output = b32;
-    fn preprocess(&input: &u8) -> b32 {
-        to_32(input)
-    }
-}
-
-impl Preprocess<[u8; 3]> for Unary<b32> {
-    type Output = b32;
-    fn preprocess(input: &[u8; 3]) -> b32 {
-        to_10(input[0]) | (to_10(input[1]) << 10) | (to_10(input[2]) << 20)
-    }
-}
-
-pub struct Identity();
-
-impl<I: Copy> Preprocess<I> for Identity {
-    type Output = I;
-    #[inline]
-    fn preprocess(&input: &I) -> I {
-        input
-    }
-}
-
-pub struct Edges();
-
-impl Preprocess<[[[u8; 3]; 3]; 3]> for Edges {
-    type Output = b32;
-    fn preprocess(input: &[[[u8; 3]; 3]; 3]) -> b32 {
-        edges_from_patch(input)
-    }
-}
 
 // Given a 3x3 patch of 3 color channels, extract the 32 edges.
 // Each edge compares two sets of three pixels.

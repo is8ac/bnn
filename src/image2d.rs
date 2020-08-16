@@ -1,4 +1,3 @@
-use crate::bits::BitWord;
 use crate::count::IncrementCounters;
 use crate::shape::{Element, Merge, Shape, ZipMap};
 use rand::Rng;
@@ -32,35 +31,20 @@ impl<P: fmt::Debug, const X: usize, const Y: usize> fmt::Debug for StaticImage<P
     }
 }
 
-impl<P: BitWord, const X: usize, const Y: usize> fmt::Display for StaticImage<P, X, Y> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for b in 0..P::BIT_LEN {
-            for y in 0..Y {
-                for x in 0..X {
-                    write!(f, "{}", if self.image[x][y].bit(b) { 1 } else { 0 })?
-                }
-                writeln!(f)?
-            }
-            writeln!(f, "{}", b)?
-        }
-        Ok(())
-    }
-}
-
-impl<const X: usize, const Y: usize> fmt::Display for StaticImage<[u8; 3], X, Y> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for b in 0..3 {
-            for y in 0..Y {
-                for x in 0..X {
-                    write!(f, "{}", if self.image[x][y][b] > 128 { 1 } else { 0 })?
-                }
-                writeln!(f)?
-            }
-            writeln!(f, "{}", b)?
-        }
-        Ok(())
-    }
-}
+//impl<P, const X: usize, const Y: usize> fmt::Display for StaticImage<P, X, Y> {
+//    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//        for b in 0..P::BIT_LEN {
+//            for y in 0..Y {
+//                for x in 0..X {
+//                    write!(f, "{}", if self.image[x][y].bit(b) { 1 } else { 0 })?
+//                }
+//                writeln!(f)?
+//            }
+//            writeln!(f, "{}", b)?
+//        }
+//        Ok(())
+//    }
+//}
 
 pub trait Conv2D<PatchShape: Shape, O>
 where

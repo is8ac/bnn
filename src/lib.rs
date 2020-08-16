@@ -5,7 +5,6 @@
 #![feature(associated_type_defaults)]
 
 pub mod bits;
-pub mod cluster;
 pub mod count;
 pub mod datasets;
 pub mod image2d;

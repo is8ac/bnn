@@ -1,5 +1,5 @@
-use crate::bits::{b32, BitArray, BitMapPack, MaskedDistance, SetTrit, TritArray};
-use crate::shape::{Element, Map, Shape};
+use crate::bits::{BitArray, MaskedDistance, TritArray};
+use crate::shape::{Map, Shape};
 use rayon::prelude::*;
 use std::iter;
 
@@ -36,6 +36,7 @@ pub trait DescendFCaux<I: BitArray, const C: usize> {
         classes: &[usize],
         c: usize,
     ) -> f64;
+    fn full_acts(weights: &[I::TritArrayType; C], inputs: &[I]) -> Vec<[f32; C]>;
     fn descend_chan(
         chan_weights: I::TritArrayType,
         inputs: &[I],
@@ -72,7 +73,7 @@ impl<I, const C: usize> DescendFCaux<I, C> for ()
 where
     I: Sync + BitArray + Send,
     [f32; C]: SoftMaxLoss,
-    I::TritArrayType: MaskedDistance + SetTrit + TritArray + Sync + Copy,
+    I::TritArrayType: MaskedDistance + TritArray + Sync + Copy,
     <<I as BitArray>::BitShape as Shape>::IndexIter: Iterator<Item = <I::BitShape as Shape>::Index>,
     <I::BitShape as Shape>::Index: Send + Sync + Copy,
     [(); C]: Map<I::TritArrayType, f32>,
@@ -98,6 +99,16 @@ where
             })
             .sum()
     }
+    fn full_acts(weights: &[I::TritArrayType; C], inputs: &[I]) -> Vec<[f32; C]> {
+        inputs
+            .par_iter()
+            .map(|input| {
+                <[(); C] as Map<<I as BitArray>::TritArrayType, f32>>::map(&weights, |trits| {
+                    <()>::chan_act(trits, input)
+                })
+            })
+            .collect()
+    }
     fn descend_chan(
         trits: I::TritArrayType,
         inputs: &[I],
@@ -114,19 +125,18 @@ where
         let mut mutations: Vec<_> = indices
             .par_iter()
             .map(|index| {
-                let trits = if let Some(i) = index {
-                    trits.set_trit(
+                let mut mutant_trits = trits;
+                if let Some(i) = index {
+                    mutant_trits.set_trit(
                         if trits.get_trit(&i).is_some() {
                             None
                         } else {
                             Some(sign)
                         },
                         &i,
-                    )
-                } else {
-                    trits
-                };
-                let sum_loss = <()>::observe_loss(&trits, inputs, acts_cache, classes, c);
+                    );
+                }
+                let sum_loss = <()>::observe_loss(&mutant_trits, inputs, acts_cache, classes, c);
                 (sum_loss, index)
             })
             .collect();
@@ -136,18 +146,16 @@ where
             .take(k)
             .take_while(|(_, i)| i.is_some())
             .map(|(l, i)| (l, i.unwrap()))
-            .fold((0, trits), |(n, trits), (loss, i)| {
-                (
-                    n + 1,
-                    trits.set_trit(
-                        if trits.get_trit(&i).is_some() {
-                            None
-                        } else {
-                            Some(sign)
-                        },
-                        &i,
-                    ),
-                )
+            .fold((0, trits), |(n, mut t), (loss, i)| {
+                t.set_trit(
+                    if t.get_trit(&i).is_some() {
+                        None
+                    } else {
+                        Some(sign)
+                    },
+                    &i,
+                );
+                (n + 1, t)
             });
         weights
     }
@@ -161,14 +169,7 @@ where
         assert_eq!(inputs.len(), classes.len());
         let chunk_len = inputs.len() / C;
         (0..C).fold(weights, |mut weights, c| {
-            let acts: Vec<[f32; C]> = inputs
-                .par_iter()
-                .map(|input| {
-                    <[(); C] as Map<<I as BitArray>::TritArrayType, f32>>::map(&weights, |trits| {
-                        <()>::chan_act(trits, input)
-                    })
-                })
-                .collect();
+            let acts = <()>::full_acts(&weights, inputs);
             let updated_chan_trits =
                 <()>::descend_chan(weights[c], inputs, &acts, classes, k, sign, c);
             weights[c] = updated_chan_trits;
@@ -185,14 +186,7 @@ where
         assert_eq!(inputs.len(), classes.len());
         let chunk_len = inputs.len() / C;
         (0..C).fold(weights, |mut weights, c| {
-            let acts: Vec<[f32; C]> = inputs[c * chunk_len..c * chunk_len + chunk_len]
-                .par_iter()
-                .map(|input| {
-                    <[(); C] as Map<<I as BitArray>::TritArrayType, f32>>::map(&weights, |trits| {
-                        <()>::chan_act(trits, input)
-                    })
-                })
-                .collect();
+            let acts = <()>::full_acts(&weights, &inputs[c * chunk_len..c * chunk_len + chunk_len]);
             let updated_chan_trits =
                 <()>::descend_chan(weights[c], inputs, &acts, classes, k, sign, c);
             weights[c] = updated_chan_trits;

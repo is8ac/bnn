@@ -1,5 +1,5 @@
 #![feature(const_generics)]
-use bnn::bits::{b32, BitArray, BitMapPack, MaskedDistance, SetTrit, TritArray};
+use bnn::bits::{b32, BitArray, MaskedDistance};
 use bnn::datasets::mnist;
 use bnn::layers::DescendFCaux;
 use bnn::shape::{Element, Map, Shape};
