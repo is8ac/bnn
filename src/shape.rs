@@ -191,10 +191,17 @@ where
     }
 }
 
-pub trait IndexGet<I> {
+pub trait IndexGet<I>
+where
+    Self: Sized,
+{
     type Element;
     fn index_get(&self, i: &I) -> &Self::Element;
     fn index_get_mut(&mut self, i: &I) -> &mut Self::Element;
+    fn index_set(mut self, i: &I, val: Self::Element) -> Self {
+        *self.index_get_mut(i) = val;
+        self
+    }
 }
 
 impl<T> IndexGet<()> for T {

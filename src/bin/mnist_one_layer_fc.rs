@@ -1,5 +1,6 @@
 #![feature(const_generics)]
 use bnn::bits::{b32, BitArray, MaskedDistance};
+use bnn::datasets::minibatch::minibatchs;
 use bnn::datasets::mnist;
 use bnn::layers::DescendFCaux;
 use bnn::shape::{Element, Map, Shape};
@@ -33,14 +34,7 @@ fn main() {
 
     let weights: [<ExampleType as BitArray>::TritArrayType; 10] = rng.gen();
 
-    let weights = <()>::minibatch_train(weights, &images, &labels, 13, 16);
-    let weights = <()>::minibatch_train(weights, &images, &labels, 13, 8);
-    let weights = <()>::minibatch_train(weights, &images, &labels, 13, 4);
-    let weights = <()>::minibatch_train(weights, &images, &labels, 13, 3);
-    let weights = <()>::minibatch_train(weights, &images, &labels, 7, 2);
-    let weights = <()>::minibatch_train(weights, &images, &labels, 7, 1);
-    let weights = <()>::descend_aux_weights_full_set(weights, &images, &labels, 5, false);
-    let weights = <()>::descend_aux_weights_full_set(weights, &images, &labels, 5, true);
+    let weights = <()>::minibatch_train(weights, &images, &labels, 50, (3, 4), 5);
 
     {
         let n_correct_train: u64 = images
@@ -95,3 +89,10 @@ fn main() {
         );
     }
 }
+
+//train acc: 76.072%
+//test acc: 77.530%
+//
+//real	0m6.987s
+//user	3m22.683s
+//sys	0m2.086s

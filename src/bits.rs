@@ -60,7 +60,11 @@ where
     //type WordShape;
     type TritArrayType;
     fn get_bit(&self, i: &<Self::BitShape as Shape>::Index) -> bool;
-    fn set_bit(&mut self, bit: bool, i: &<Self::BitShape as Shape>::Index);
+    fn set_bit_in_place(&mut self, bit: bool, i: &<Self::BitShape as Shape>::Index);
+    fn set_bit(mut self, bit: bool, i: &<Self::BitShape as Shape>::Index) -> Self {
+        self.set_bit_in_place(bit, i);
+        self
+    }
 }
 
 impl<T: BitArray, const L: usize> BitArray for [T; L] {
@@ -71,8 +75,8 @@ impl<T: BitArray, const L: usize> BitArray for [T; L] {
     fn get_bit(&self, (i, tail): &(usize, <T::BitShape as Shape>::Index)) -> bool {
         self[*i].get_bit(tail)
     }
-    fn set_bit(&mut self, bit: bool, (i, tail): &(usize, <T::BitShape as Shape>::Index)) {
-        self[*i].set_bit(bit, tail)
+    fn set_bit_in_place(&mut self, bit: bool, (i, tail): &(usize, <T::BitShape as Shape>::Index)) {
+        self[*i].set_bit_in_place(bit, tail)
     }
 }
 
@@ -382,11 +386,19 @@ where
         &self,
         index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
     ) -> Option<bool>;
-    fn set_trit(
+    fn set_trit_in_place(
         &mut self,
         trit: Option<bool>,
         index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
     );
+    fn set_trit(
+        mut self,
+        trit: Option<bool>,
+        index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
+    ) -> Self {
+        self.set_trit_in_place(trit, index);
+        self
+    }
 }
 
 impl<T: TritArray, const L: usize> TritArray for [T; L] {
@@ -410,7 +422,7 @@ impl<T: TritArray, const L: usize> TritArray for [T; L] {
     ) -> Option<bool> {
         self[*head].get_trit(tail)
     }
-    fn set_trit(
+    fn set_trit_in_place(
         &mut self,
         trit: Option<bool>,
         (head, tail): &(
@@ -418,7 +430,7 @@ impl<T: TritArray, const L: usize> TritArray for [T; L] {
             <<T::BitArrayType as BitArray>::BitShape as Shape>::Index,
         ),
     ) {
-        self[*head].set_trit(trit, tail);
+        self[*head].set_trit_in_place(trit, tail);
     }
 }
 
@@ -496,7 +508,7 @@ macro_rules! for_uints {
                 let magn = (self.1 >> index) & 1 == 1;
                 Some(sign).filter(|_| magn)
             }
-            fn set_trit(&mut self, trit: Option<bool>, &(index, _): &(usize, ())) {
+            fn set_trit_in_place(&mut self, trit: Option<bool>, &(index, _): &(usize, ())) {
                 self.0 &= !(1 << index);
                 self.0 |= ((trit.unwrap_or(false) as $u_type) << index);
 
@@ -576,7 +588,7 @@ macro_rules! for_uints {
             fn get_bit(&self, &(i, _): &(usize, ())) -> bool {
                 ((self.0 >> i) & 1) == 1
             }
-            fn set_bit(&mut self, bit: bool, &(i, _): &(usize, ())) {
+            fn set_bit_in_place(&mut self, bit: bool, &(i, _): &(usize, ())) {
                 self.0 &= !(1 << i);
                 self.0 |= ((bit as $u_type) << i) as $u_type;
             }

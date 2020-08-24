@@ -3,6 +3,24 @@ use crate::shape::{Map, Shape};
 use rayon::prelude::*;
 use std::iter;
 
+fn minibatchs(len: usize, n: usize, m: usize) -> Vec<(usize, usize)> {
+    assert!(m <= len);
+    (0..n)
+        .map(|i| {
+            let offset = (i * (len - m)) / (n - 1);
+            (offset, offset + m)
+        })
+        .collect()
+}
+
+pub fn epoc_set(len: usize, batch_sizes: &[usize]) -> Vec<(usize, usize)> {
+    batch_sizes
+        .iter()
+        .map(|m| (0..len / m).map(move |i| (i * m, (i + 1) * m)))
+        .flatten()
+        .collect()
+}
+
 pub trait SoftMaxLoss {
     fn softmax_loss(&self, true_class: usize) -> f32;
 }
@@ -29,7 +47,7 @@ where
 
 pub trait DescendFCaux<I: BitArray, const C: usize> {
     fn chan_act(trits: &I::TritArrayType, input: &I) -> f32;
-    fn observe_loss(
+    fn observe_avg_loss_cached(
         chan_weights: &I::TritArrayType,
         inputs: &[I],
         acts_cache: &Vec<[f32; C]>,
@@ -46,17 +64,11 @@ pub trait DescendFCaux<I: BitArray, const C: usize> {
         sign: bool,
         c: usize,
     ) -> I::TritArrayType;
-    fn descend_aux_weights_full_set(
-        weights: [I::TritArrayType; C],
-        inputs: &[I],
-        classes: &[usize],
-        k: usize,
-        sign: bool,
-    ) -> [I::TritArrayType; C];
     fn descend_aux_weights(
         weights: [I::TritArrayType; C],
         inputs: &[I],
         classes: &[usize],
+        chunks: &[(usize, usize)],
         k: usize,
         sign: bool,
     ) -> [I::TritArrayType; C];
@@ -64,8 +76,9 @@ pub trait DescendFCaux<I: BitArray, const C: usize> {
         weights: [I::TritArrayType; C],
         inputs: &[I],
         classes: &[usize],
+        min: usize,
+        scale: (usize, usize),
         k: usize,
-        n: usize,
     ) -> [I::TritArrayType; C];
 }
 
@@ -82,7 +95,7 @@ where
         (trits.masked_distance(input) as f32 - <I as BitArray>::BitShape::N as f32 / 4f32)
             / (<I as BitArray>::BitShape::N as f32 / 16f32)
     }
-    fn observe_loss(
+    fn observe_avg_loss_cached(
         trits: &I::TritArrayType,
         inputs: &[I],
         acts_cache: &Vec<[f32; C]>,
@@ -125,91 +138,102 @@ where
         let mut mutations: Vec<_> = indices
             .par_iter()
             .map(|index| {
-                let mut mutant_trits = trits;
-                if let Some(i) = index {
-                    mutant_trits.set_trit(
+                let mutant_trits = if let Some(i) = index {
+                    trits.set_trit(
                         if trits.get_trit(&i).is_some() {
                             None
                         } else {
                             Some(sign)
                         },
                         &i,
-                    );
-                }
-                let sum_loss = <()>::observe_loss(&mutant_trits, inputs, acts_cache, classes, c);
+                    )
+                } else {
+                    trits
+                };
+                let sum_loss =
+                    <()>::observe_avg_loss_cached(&mutant_trits, inputs, acts_cache, classes, c);
                 (sum_loss, index)
             })
             .collect();
         mutations.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap());
-        let (n, weights) = mutations
+        let (n, updated_trits) = mutations
             .iter()
             .take(k)
             .take_while(|(_, i)| i.is_some())
             .map(|(l, i)| (l, i.unwrap()))
-            .fold((0, trits), |(n, mut t), (loss, i)| {
-                t.set_trit(
-                    if t.get_trit(&i).is_some() {
-                        None
-                    } else {
-                        Some(sign)
-                    },
-                    &i,
-                );
-                (n + 1, t)
+            .fold((0, trits), |(n, t), (loss, i)| {
+                (
+                    n + 1,
+                    t.set_trit(
+                        if t.get_trit(&i).is_some() {
+                            None
+                        } else {
+                            Some(sign)
+                        },
+                        &i,
+                    ),
+                )
             });
-        weights
-    }
-    fn descend_aux_weights_full_set(
-        weights: [I::TritArrayType; C],
-        inputs: &[I],
-        classes: &[usize],
-        k: usize,
-        sign: bool,
-    ) -> [I::TritArrayType; C] {
-        assert_eq!(inputs.len(), classes.len());
-        let chunk_len = inputs.len() / C;
-        (0..C).fold(weights, |mut weights, c| {
-            let acts = <()>::full_acts(&weights, inputs);
-            let updated_chan_trits =
-                <()>::descend_chan(weights[c], inputs, &acts, classes, k, sign, c);
-            weights[c] = updated_chan_trits;
-            weights
-        })
+        updated_trits
     }
     fn descend_aux_weights(
         weights: [I::TritArrayType; C],
         inputs: &[I],
         classes: &[usize],
+        chunks: &[(usize, usize)],
         k: usize,
         sign: bool,
     ) -> [I::TritArrayType; C] {
         assert_eq!(inputs.len(), classes.len());
-        let chunk_len = inputs.len() / C;
-        (0..C).fold(weights, |mut weights, c| {
-            let acts = <()>::full_acts(&weights, &inputs[c * chunk_len..c * chunk_len + chunk_len]);
-            let updated_chan_trits =
-                <()>::descend_chan(weights[c], inputs, &acts, classes, k, sign, c);
-            weights[c] = updated_chan_trits;
-            weights
-        })
+        assert_eq!(C, chunks.len());
+        (0..C)
+            .zip(chunks.iter())
+            .fold(weights, |mut weights, (c, &(start, end))| {
+                let acts = <()>::full_acts(&weights, &inputs[start..end]);
+                weights[c] = <()>::descend_chan(
+                    weights[c],
+                    &inputs[start..end],
+                    &acts,
+                    &classes[start..end],
+                    k,
+                    sign,
+                    c,
+                );
+                weights
+            })
     }
     fn minibatch_train(
         weights: [I::TritArrayType; C],
         inputs: &[I],
         classes: &[usize],
+        min: usize,
+        scale: (usize, usize),
         k: usize,
-        n: usize,
     ) -> [I::TritArrayType; C] {
         assert_eq!(inputs.len(), classes.len());
-        let minibatch_size = inputs.len() / n;
-        (0..n).fold(weights, |weights, i| {
-            <()>::descend_aux_weights(
-                weights,
-                &inputs[i * minibatch_size..(i + 1) * minibatch_size],
-                &classes[i * minibatch_size..(i + 1) * minibatch_size],
-                k,
-                (i % 2) == 0,
-            )
-        })
+        let sizes = minibatch_sizes(min, inputs.len(), scale);
+        dbg!(sizes.len());
+        sizes
+            .iter()
+            .map(|m| (0..inputs.len() / m).map(move |i| (i * m, (i + 1) * m)))
+            .flatten()
+            .collect::<Vec<(usize, usize)>>()
+            .chunks_exact(C)
+            .enumerate()
+            .fold(weights, |weights, (i, chunks)| {
+                <()>::descend_aux_weights(weights, &inputs, &classes, chunks, k, (i % 2) == 0)
+            })
+    }
+}
+
+pub fn minibatch_sizes(min: usize, size: usize, scale: (usize, usize)) -> Vec<usize> {
+    assert!(scale.0 < scale.1);
+    let next_size = (size * scale.0) / scale.1;
+    if next_size < min {
+        vec![size]
+    } else {
+        let mut sizes = minibatch_sizes(min, next_size, scale);
+        sizes.push(size);
+        sizes
     }
 }
