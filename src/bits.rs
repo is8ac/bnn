@@ -1,12 +1,11 @@
 // the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
-use crate::shape::{Element, Shape, ZipMap};
+use crate::shape::{Element, Shape};
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::num::Wrapping;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
 
 pub trait IndexedFlipBit<I, O> {

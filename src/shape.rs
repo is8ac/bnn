@@ -246,96 +246,6 @@ impl<S: Shape + Fold<B, I>, B, I: Element<S> + Sized, const L: usize> Fold<B, I>
     }
 }
 
-pub trait ZipFold<Acc, A: Element<Self>, B: Element<Self>>
-where
-    Self: Shape + Sized,
-{
-    fn zip_fold<F: Fn(Acc, &A, &B) -> Acc>(
-        a: &<A as Element<Self>>::Array,
-        b: &<B as Element<Self>>::Array,
-        acc: Acc,
-        fold_fn: F,
-    ) -> Acc;
-}
-
-impl<Acc, A, B> ZipFold<Acc, A, B> for () {
-    fn zip_fold<F: Fn(Acc, &A, &B) -> Acc>(a: &A, b: &B, acc: Acc, fold_fn: F) -> Acc {
-        fold_fn(acc, a, b)
-    }
-}
-
-impl<
-        S: Shape + ZipFold<Acc, A, B>,
-        Acc,
-        A: Element<S> + Sized,
-        B: Element<S> + Sized,
-        const L: usize,
-    > ZipFold<Acc, A, B> for [S; L]
-{
-    fn zip_fold<F: Fn(Acc, &A, &B) -> Acc>(
-        a: &[<A as Element<S>>::Array; L],
-        b: &[<B as Element<S>>::Array; L],
-        mut acc: Acc,
-        fold_fn: F,
-    ) -> Acc {
-        for i in 0..L {
-            acc = <S as ZipFold<Acc, A, B>>::zip_fold(&a[i], &b[i], acc, &fold_fn);
-        }
-        acc
-    }
-}
-
-pub trait ZipMapMut<A: Element<Self>, B: Element<Self>, O: Element<Self>>
-where
-    Self: Shape + Sized,
-{
-    fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
-        target: &mut <O as Element<Self>>::Array,
-        a: &<A as Element<Self>>::Array,
-        b: &<B as Element<Self>>::Array,
-        map_fn: F,
-    );
-}
-
-impl<A: Element<(), Array = A>, B: Element<(), Array = B>, O> ZipMapMut<A, B, O> for () {
-    fn zip_map_mut<F: Fn(&mut O, &A, &B)>(target: &mut O, a: &A, b: &B, map_fn: F) {
-        map_fn(target, a, b)
-    }
-}
-
-impl<
-        S: Shape + ZipMapMut<A, B, O>,
-        A: Element<S>,
-        B: Element<S>,
-        O: Element<S>,
-        const L: usize,
-    > ZipMapMut<A, B, O> for [S; L]
-{
-    fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
-        target: &mut <O as Element<Self>>::Array,
-        a: &<A as Element<[S; L]>>::Array,
-        b: &<B as Element<[S; L]>>::Array,
-        map_fn: F,
-    ) {
-        for i in 0..L {
-            S::zip_map_mut(&mut target[i], &a[i], &b[i], &map_fn);
-        }
-    }
-}
-
-//impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>> ZipMapMut<A, B, O>
-//    for Box<S>
-//{
-//    fn zip_map_mut<F: Fn(&mut O, &A, &B)>(
-//        target: &mut <O as Element<Self>>::Array,
-//        a: &<A as Element<Self>>::Array,
-//        b: &<B as Element<Self>>::Array,
-//        map_fn: F,
-//    ) {
-//        S::zip_map_mut(target, &a, &b, &map_fn);
-//    }
-//}
-
 pub trait ZipMap<A: Element<Self>, B: Element<Self>, O: Element<Self>>
 where
     Self: Shape + Sized,
@@ -347,18 +257,26 @@ where
     ) -> <O as Element<Self>>::Array;
 }
 
-impl<S: Shape + ZipMapMut<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>> ZipMap<A, B, O>
-    for S
+impl<A: Element<(), Array = A>, B: Element<(), Array = B>, O> ZipMap<A, B, O> for () {
+    fn zip_map<F: Fn(&A, &B) -> O>(a: &A, b: &B, map_fn: F) -> O {
+        map_fn(a, b)
+    }
+}
+
+impl<S: Shape + ZipMap<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>, const L: usize>
+    ZipMap<A, B, O> for [S; L]
 where
-    <O as Element<S>>::Array: Default,
+    [<O as Element<S>>::Array; L]: Default,
 {
     fn zip_map<F: Fn(&A, &B) -> O>(
-        a: &<A as Element<S>>::Array,
-        b: &<B as Element<S>>::Array,
+        a: &<A as Element<[S; L]>>::Array,
+        b: &<B as Element<[S; L]>>::Array,
         map_fn: F,
-    ) -> <O as Element<S>>::Array {
-        let mut target = <<O as Element<S>>::Array>::default();
-        S::zip_map_mut(&mut target, &a, &b, |t, x, y| *t = map_fn(x, y));
+    ) -> [<O as Element<S>>::Array; L] {
+        let mut target = <[<O as Element<S>>::Array; L]>::default();
+        for i in 0..L {
+            target[i] = S::zip_map(&a[i], &b[i], &map_fn);
+        }
         target
     }
 }

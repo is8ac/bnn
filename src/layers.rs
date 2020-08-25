@@ -1,24 +1,64 @@
-use crate::bits::{BitArray, MaskedDistance, TritArray};
-use crate::shape::{Map, Shape};
+use crate::bits::{BitArray, BitMapPack, MaskedDistance, TritArray};
+use crate::shape::{Element, IndexGet, Map, Shape};
 use rayon::prelude::*;
 use std::iter;
 
-fn minibatchs(len: usize, n: usize, m: usize) -> Vec<(usize, usize)> {
-    assert!(m <= len);
-    (0..n)
-        .map(|i| {
-            let offset = (i * (len - m)) / (n - 1);
-            (offset, offset + m)
-        })
-        .collect()
+pub fn minibatch_sizes(min: usize, size: usize, scale: (usize, usize)) -> Vec<usize> {
+    assert!(scale.0 < scale.1);
+    let next_size = (size * scale.0) / scale.1;
+    if next_size < min {
+        vec![size]
+    } else {
+        let mut sizes = minibatch_sizes(min, next_size, scale);
+        sizes.push(size);
+        sizes
+    }
 }
 
-pub fn epoc_set(len: usize, batch_sizes: &[usize]) -> Vec<(usize, usize)> {
-    batch_sizes
-        .iter()
-        .map(|m| (0..len / m).map(move |i| (i * m, (i + 1) * m)))
-        .flatten()
-        .collect()
+pub trait FcObjective<T> {
+    fn loss(&self, input: &T, class: usize) -> f32;
+}
+
+pub trait Trainable<T> {
+    type Params;
+    fn descend(self, inputs: &[T], classes: &[usize], params: &Self::Params) -> Self;
+}
+
+pub struct FcAuxTrainParams {
+    pub min: usize,
+    pub scale: (usize, usize),
+    pub k: usize,
+}
+
+impl<I: BitArray, const C: usize> Trainable<I> for [I::TritArrayType; C]
+where
+    (): DescendFCaux<I, C>,
+{
+    type Params = FcAuxTrainParams;
+    fn descend(self, inputs: &[I], classes: &[usize], params: &Self::Params) -> Self {
+        <() as DescendFCaux<I, C>>::minibatch_train(
+            self,
+            inputs,
+            classes,
+            params.min,
+            params.scale,
+            params.k,
+        )
+    }
+}
+
+impl<T: BitArray, const C: usize> FcObjective<T> for [T::TritArrayType; C]
+where
+    [f32; C]: SoftMaxLoss,
+    (): DescendFCaux<T, C>,
+    [(); C]: Map<<T as BitArray>::TritArrayType, f32>,
+{
+    fn loss(&self, input: &T, class: usize) -> f32 {
+        <[(); C] as Map<<T as BitArray>::TritArrayType, f32>>::map(self, |trits| {
+            <() as DescendFCaux<T, C>>::chan_act(trits, input)
+        })
+        .softmax_loss(class)
+    }
 }
 
 pub trait SoftMaxLoss {
@@ -106,7 +146,7 @@ where
             .iter()
             .zip(acts_cache.iter().cloned().zip(classes.iter()))
             .map(|(input, (mut acts, &class))| {
-                acts[c] = <()>::chan_act(trits, input);
+                acts[c] = <() as DescendFCaux<I, C>>::chan_act(trits, input);
                 acts.softmax_loss(class) as f64
                 //0f64
             })
@@ -117,7 +157,7 @@ where
             .par_iter()
             .map(|input| {
                 <[(); C] as Map<<I as BitArray>::TritArrayType, f32>>::map(&weights, |trits| {
-                    <()>::chan_act(trits, input)
+                    <() as DescendFCaux<I, C>>::chan_act(trits, input)
                 })
             })
             .collect()
@@ -156,25 +196,21 @@ where
             })
             .collect();
         mutations.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap());
-        let (n, updated_trits) = mutations
+        mutations
             .iter()
             .take(k)
             .take_while(|(_, i)| i.is_some())
-            .map(|(l, i)| (l, i.unwrap()))
-            .fold((0, trits), |(n, t), (loss, i)| {
-                (
-                    n + 1,
-                    t.set_trit(
-                        if t.get_trit(&i).is_some() {
-                            None
-                        } else {
-                            Some(sign)
-                        },
-                        &i,
-                    ),
+            .map(|(_, i)| i.unwrap())
+            .fold(trits, |t, i| {
+                t.set_trit(
+                    if t.get_trit(&i).is_some() {
+                        None
+                    } else {
+                        Some(sign)
+                    },
+                    &i,
                 )
-            });
-        updated_trits
+            })
     }
     fn descend_aux_weights(
         weights: [I::TritArrayType; C],
@@ -189,8 +225,8 @@ where
         (0..C)
             .zip(chunks.iter())
             .fold(weights, |mut weights, (c, &(start, end))| {
-                let acts = <()>::full_acts(&weights, &inputs[start..end]);
-                weights[c] = <()>::descend_chan(
+                let acts = <() as DescendFCaux<I, C>>::full_acts(&weights, &inputs[start..end]);
+                weights[c] = <() as DescendFCaux<I, C>>::descend_chan(
                     weights[c],
                     &inputs[start..end],
                     &acts,
@@ -212,7 +248,6 @@ where
     ) -> [I::TritArrayType; C] {
         assert_eq!(inputs.len(), classes.len());
         let sizes = minibatch_sizes(min, inputs.len(), scale);
-        dbg!(sizes.len());
         sizes
             .iter()
             .map(|m| (0..inputs.len() / m).map(move |i| (i * m, (i + 1) * m)))
@@ -226,14 +261,218 @@ where
     }
 }
 
-pub fn minibatch_sizes(min: usize, size: usize, scale: (usize, usize)) -> Vec<usize> {
-    assert!(scale.0 < scale.1);
-    let next_size = (size * scale.0) / scale.1;
-    if next_size < min {
-        vec![size]
-    } else {
-        let mut sizes = minibatch_sizes(min, next_size, scale);
-        sizes.push(size);
+pub trait FClayer<I: BitArray, O: BitArray, A: Trainable<O> + FcObjective<O>>
+where
+    I::TritArrayType: Element<O::BitShape>,
+{
+    fn chan_act(trits: &I::TritArrayType, input: &I) -> bool;
+    fn full_hidden_acts(
+        weights: &<I::TritArrayType as Element<O::BitShape>>::Array,
+        input: &I,
+    ) -> O;
+    fn update_hidden_acts(
+        trits: &I::TritArrayType,
+        input: &I,
+        target: O,
+        index: &<O::BitShape as Shape>::Index,
+    ) -> O;
+    fn descend_chan(
+        trits: I::TritArrayType,
+        aux: &A,
+        inputs: &[I],
+        hidden_cache: &[O],
+        classes: &[usize],
+        index: &<O::BitShape as Shape>::Index,
+        k: usize,
+        sign: bool,
+    ) -> I::TritArrayType;
+    fn minibatch_train(
+        weights: <I::TritArrayType as Element<O::BitShape>>::Array,
+        aux: &A,
+        inputs: &[I],
+        classes: &[usize],
+        chunks: &[(usize, usize)],
+        k: usize,
+        sign: bool,
+    ) -> <I::TritArrayType as Element<O::BitShape>>::Array;
+    fn descend_weights_minibatched(
+        weights: <I::TritArrayType as Element<O::BitShape>>::Array,
+        aux: A,
+        aux_params: &A::Params,
+        inputs: &[I],
+        classes: &[usize],
+        k: usize,
+        min: usize,
+        scale: (usize, usize),
+    ) -> (<I::TritArrayType as Element<O::BitShape>>::Array, A);
+}
+
+impl<I, O, A> FClayer<I, O, A> for ()
+where
+    I: BitArray + Sync,
+    O: BitArray + Sync + Copy + Send,
+    A: FcObjective<O> + Trainable<O> + Sync + Send,
+    I::TritArrayType: Copy + MaskedDistance + Element<O::BitShape> + TritArray + Sync,
+    <O::BitShape as Shape>::Index: Sync,
+    <I::BitShape as Shape>::Index: Send + Sync + Copy,
+    <<I as BitArray>::BitShape as Shape>::IndexIter: Iterator<Item = <I::BitShape as Shape>::Index>,
+    <<O as BitArray>::BitShape as Shape>::IndexIter: Iterator<Item = <O::BitShape as Shape>::Index>,
+    O: BitMapPack<I::TritArrayType>,
+    <I::TritArrayType as Element<O::BitShape>>::Array:
+        IndexGet<<O::BitShape as Shape>::Index, Element = I::TritArrayType> + Sync,
+{
+    fn chan_act(trits: &I::TritArrayType, input: &I) -> bool {
+        trits.masked_distance(input) > (I::BitShape::N as u32 / 4)
+    }
+    fn full_hidden_acts(
+        weights: &<I::TritArrayType as Element<O::BitShape>>::Array,
+        input: &I,
+    ) -> O {
+        O::bit_map_pack(&weights, |trits: &<I as BitArray>::TritArrayType| {
+            <() as FClayer<I, O, A>>::chan_act(trits, input)
+        })
+    }
+    fn update_hidden_acts(
+        trits: &I::TritArrayType,
+        input: &I,
+        target: O,
+        index: &<O::BitShape as Shape>::Index,
+    ) -> O {
+        target.set_bit(<() as FClayer<I, O, A>>::chan_act(trits, input), index)
+    }
+    fn descend_chan(
+        trits: I::TritArrayType,
+        aux: &A,
+        inputs: &[I],
+        hidden_cache: &[O],
+        classes: &[usize],
+        channel: &<O::BitShape as Shape>::Index,
+        k: usize,
+        sign: bool,
+    ) -> I::TritArrayType {
+        let indices: Vec<_> = <I as BitArray>::BitShape::indices()
+            .map(|i| Some(i))
+            .chain(iter::once(None))
+            .collect();
+        let mut mutations: Vec<(f64, Option<<I::BitShape as Shape>::Index>)> = indices
+            .par_iter()
+            .map(|index| {
+                let mutant_trits = if let Some(i) = index {
+                    trits.set_trit(
+                        if trits.get_trit(&i).is_some() {
+                            None
+                        } else {
+                            Some(sign)
+                        },
+                        &i,
+                    )
+                } else {
+                    trits
+                };
+                let sum_loss = inputs
+                    .iter()
+                    .zip(hidden_cache.iter())
+                    .zip(classes.iter().cloned())
+                    .map(|((input, act), class)| {
+                        let new_act = <() as FClayer<I, O, A>>::update_hidden_acts(
+                            &mutant_trits,
+                            input,
+                            *act,
+                            channel,
+                        );
+                        aux.loss(&new_act, class) as f64
+                    })
+                    .sum();
+                (sum_loss, *index)
+            })
+            .collect();
+        mutations.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap());
+        mutations
+            .iter()
+            .take(k)
+            .take_while(|(_, i)| i.is_some())
+            .map(|(l, i)| (l, i.unwrap()))
+            .fold(trits, |t, (_, i)| {
+                t.set_trit(
+                    if t.get_trit(&i).is_some() {
+                        None
+                    } else {
+                        Some(sign)
+                    },
+                    &i,
+                )
+            })
+    }
+    fn minibatch_train(
+        weights: <I::TritArrayType as Element<O::BitShape>>::Array,
+        aux: &A,
+        inputs: &[I],
+        classes: &[usize],
+        chunks: &[(usize, usize)],
+        k: usize,
+        sign: bool,
+    ) -> <I::TritArrayType as Element<O::BitShape>>::Array {
+        assert_eq!(chunks.len(), <O::BitShape as Shape>::N);
+        chunks.iter().zip(O::BitShape::indices()).fold(
+            weights,
+            |weights, (&(chunk_start, chunk_end), channel)| {
+                let hidden_cache: Vec<O> = inputs[chunk_start..chunk_end]
+                    .par_iter()
+                    .map(|input| <() as FClayer<I, O, A>>::full_hidden_acts(&weights, input))
+                    .collect();
+                let updated_chan_trits = <() as FClayer<I, O, A>>::descend_chan(
+                    *weights.index_get(&channel),
+                    &aux,
+                    &inputs[chunk_start..chunk_end],
+                    &hidden_cache,
+                    &classes[chunk_start..chunk_end],
+                    &channel,
+                    k,
+                    sign,
+                );
+                weights.index_set(&channel, updated_chan_trits)
+            },
+        )
+    }
+    fn descend_weights_minibatched(
+        weights: <I::TritArrayType as Element<O::BitShape>>::Array,
+        aux: A,
+        aux_params: &A::Params,
+        inputs: &[I],
+        classes: &[usize],
+        k: usize,
+        min: usize,
+        scale: (usize, usize),
+    ) -> (<I::TritArrayType as Element<O::BitShape>>::Array, A) {
+        assert_eq!(inputs.len(), classes.len());
+        let sizes = minibatch_sizes(min, inputs.len(), scale);
+        dbg!(sizes.len());
         sizes
+            .iter()
+            .map(|m| (0..inputs.len() / m).map(move |i| (i * m, (i + 1) * m)))
+            .flatten()
+            .collect::<Vec<(usize, usize)>>()
+            .chunks_exact(O::BitShape::N)
+            .enumerate()
+            .fold((weights, aux), |(weights, aux), (index, chunks)| {
+                dbg!(chunks[0].1 - chunks[0].0);
+                let hidden_examples: Vec<O> = inputs
+                    .par_iter()
+                    .map(|input| <() as FClayer<I, O, A>>::full_hidden_acts(&weights, input))
+                    .collect();
+                let aux = aux.descend(&hidden_examples, classes, aux_params);
+                (
+                    <() as FClayer<I, O, A>>::minibatch_train(
+                        weights,
+                        &aux,
+                        inputs,
+                        classes,
+                        chunks,
+                        k,
+                        (index % 2) == 0,
+                    ),
+                    aux,
+                )
+            })
     }
 }

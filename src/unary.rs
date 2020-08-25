@@ -1,5 +1,4 @@
 use crate::bits::{b32, b8};
-use std::marker::PhantomData;
 
 pub fn u8x3_to_b32(input: [u8; 3]) -> b32 {
     to_10(input[0]) | (to_10(input[1]) << 10) | (to_10(input[2]) << 20)
