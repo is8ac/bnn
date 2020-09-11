@@ -4,32 +4,30 @@ use rand::Rng;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-pub struct StaticImage<P, const X: usize, const Y: usize> {
-    pub image: [[P; Y]; X],
-}
-
-impl<P, const X: usize, const Y: usize> Default for StaticImage<P, X, Y>
-where
-    [[P; Y]; X]: Default,
-{
-    fn default() -> Self {
-        StaticImage {
-            image: <[[P; Y]; X]>::default(),
-        }
-    }
-}
-
-impl<P: fmt::Debug, const X: usize, const Y: usize> fmt::Debug for StaticImage<P, X, Y> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for y in 0..Y {
-            for x in 0..X {
-                writeln!(f, "{:?}", self.image[x][y])?
-            }
-            writeln!(f, "{}", y)?
-        }
-        Ok(())
-    }
-}
+//pub struct StaticImage<P, const X: usize, const Y: usize> {
+//    pub image: [[P; Y]; X],
+//}
+//
+//impl<P, const X: usize, const Y: usize> Default for StaticImage<P, X, Y>
+//where
+//    [[P; Y]; X]: Default,
+//{
+//    fn default() -> Self {
+//        StaticImage { image: <[[P; Y]; X]>::default() }
+//    }
+//}
+//
+//impl<P: fmt::Debug, const X: usize, const Y: usize> fmt::Debug for StaticImage<P, X, Y> {
+//    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//        for y in 0..Y {
+//            for x in 0..X {
+//                writeln!(f, "{:?}", self.image[x][y])?
+//            }
+//            writeln!(f, "{}", y)?
+//        }
+//        Ok(())
+//    }
+//}
 
 //impl<P, const X: usize, const Y: usize> fmt::Display for StaticImage<P, X, Y> {
 //    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,78 +57,97 @@ where
 }
 
 impl<I: Copy, O, const X: usize, const Y: usize, const PX: usize, const PY: usize>
-    Conv2D<[[(); PY]; PX], O> for StaticImage<I, X, Y>
+    Conv2D<[[(); PY]; PX], O> for [[I; Y]; X]
 where
     [[I; PY]; PX]: Default,
-    StaticImage<O, X, Y>: Default,
+    [[O; Y]; X]: Default,
 {
-    type OutputType = StaticImage<O, X, Y>;
+    type OutputType = [[O; Y]; X];
     fn conv2d<F: Fn(&[[I; PY]; PX]) -> O>(&self, map_fn: F) -> Self::OutputType {
-        let mut target = StaticImage::<O, X, Y>::default();
+        let mut target = <[[O; Y]; X]>::default();
         for x in 0..(X - (PX / 2) * 2) {
             for y in 0..(Y - (PY / 2) * 2) {
                 let mut patch = <[[I; PY]; PX]>::default();
                 for px in 0..PX {
                     for py in 0..PY {
-                        patch[px][py] = self.image[x + px][y + py];
+                        patch[px][py] = self[x + px][y + py];
                     }
                 }
-                target.image[x + (PX / 2)][y + (PY / 2)] = map_fn(&patch);
+                target[x + (PX / 2)][y + (PY / 2)] = map_fn(&patch);
             }
         }
         target
     }
 }
 
-impl<P, const X: usize, const Y: usize> Hash for StaticImage<P, X, Y>
-where
-    [[P; Y]; X]: Hash,
-{
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.image.hash(state);
-    }
-}
+//impl<I: Copy, O, const X: usize, const Y: usize, const PX: usize, const PY: usize> Conv2D<[[(); PY]; PX], O> for StaticImage<I, X, Y>
+//where
+//    [[I; PY]; PX]: Default,
+//    StaticImage<O, X, Y>: Default,
+//{
+//    type OutputType = StaticImage<O, X, Y>;
+//    fn conv2d<F: Fn(&[[I; PY]; PX]) -> O>(&self, map_fn: F) -> Self::OutputType {
+//        let mut target = StaticImage::<O, X, Y>::default();
+//        for x in 0..(X - (PX / 2) * 2) {
+//            for y in 0..(Y - (PY / 2) * 2) {
+//                let mut patch = <[[I; PY]; PX]>::default();
+//                for px in 0..PX {
+//                    for py in 0..PY {
+//                        patch[px][py] = self.image[x + px][y + py];
+//                    }
+//                }
+//                target.image[x + (PX / 2)][y + (PY / 2)] = map_fn(&patch);
+//            }
+//        }
+//        target
+//    }
+//}
 
-impl<Pixel: Copy, P, Accumulator, const X: usize, const Y: usize>
-    IncrementCounters<[[(); 3]; 3], P, Accumulator> for StaticImage<Pixel, X, Y>
-where
-    [[Pixel; 3]; 3]: Default + IncrementCounters<(), P, Accumulator>,
-{
-    fn increment_counters(&self, class: usize, counters: &mut Accumulator) {
-        for x in 0..X - 2 {
-            for y in 0..Y - 2 {
-                {
-                    let mut patch = <[[Pixel; 3]; 3]>::default();
-                    for px in 0..3 {
-                        for py in 0..3 {
-                            patch[px][py] = self.image[x + px][y + py]
-                        }
-                    }
-                    patch
-                }
-                .increment_counters(class, counters);
-            }
-        }
-    }
-}
+//impl<P, const X: usize, const Y: usize> Hash for StaticImage<P, X, Y>
+//where
+//    [[P; Y]; X]: Hash,
+//{
+//    fn hash<H: Hasher>(&self, state: &mut H) {
+//        self.image.hash(state);
+//    }
+//}
+
+//impl<Pixel: Copy, P, Accumulator, const X: usize, const Y: usize> IncrementCounters<[[(); 3]; 3], P, Accumulator> for StaticImage<Pixel, X, Y>
+//where
+//    [[Pixel; 3]; 3]: Default + IncrementCounters<(), P, Accumulator>,
+//{
+//    fn increment_counters(&self, class: usize, counters: &mut Accumulator) {
+//        for x in 0..X - 2 {
+//            for y in 0..Y - 2 {
+//                {
+//                    let mut patch = <[[Pixel; 3]; 3]>::default();
+//                    for px in 0..3 {
+//                        for py in 0..3 {
+//                            patch[px][py] = self.image[x + px][y + py]
+//                        }
+//                    }
+//                    patch
+//                }
+//                .increment_counters(class, counters);
+//            }
+//        }
+//    }
+//}
 
 pub trait Concat<A, B> {
     fn concat(a: &A, b: &B) -> Self;
 }
 
-impl<A, B, O: Merge<A, B>, const X: usize, const Y: usize>
-    Concat<StaticImage<A, X, Y>, StaticImage<B, X, Y>> for StaticImage<O, X, Y>
-where
-    [[(); Y]; X]: ZipMap<A, B, O>,
-{
-    fn concat(a: &StaticImage<A, X, Y>, b: &StaticImage<B, X, Y>) -> Self {
-        StaticImage {
-            image: <[[(); Y]; X] as ZipMap<A, B, O>>::zip_map(&a.image, &b.image, |a, b| {
-                O::merge(a, b)
-            }),
-        }
-    }
-}
+//impl<A, B, O: Merge<A, B>, const X: usize, const Y: usize> Concat<StaticImage<A, X, Y>, StaticImage<B, X, Y>> for StaticImage<O, X, Y>
+//where
+//    [[(); Y]; X]: ZipMap<A, B, O>,
+//{
+//    fn concat(a: &StaticImage<A, X, Y>, b: &StaticImage<B, X, Y>) -> Self {
+//        StaticImage {
+//            image: <[[(); Y]; X] as ZipMap<A, B, O>>::zip_map(&a.image, &b.image, |a, b| O::merge(a, b)),
+//        }
+//    }
+//}
 
 pub trait Image2D
 where
@@ -140,25 +157,25 @@ where
     type ImageShape;
 }
 
-impl<P, const X: usize, const Y: usize> Image2D for StaticImage<P, X, Y> {
-    type PixelType = P;
-    type ImageShape = StaticImage<(), X, Y>;
-}
+//impl<P, const X: usize, const Y: usize> Image2D for StaticImage<P, X, Y> {
+//    type PixelType = P;
+//    type ImageShape = StaticImage<(), X, Y>;
+//}
 
 pub struct ImageIndexIter {}
 
-impl<const X: usize, const Y: usize> Shape for StaticImage<(), X, Y> {
-    const N: usize = X * Y;
-    type Index = [usize; 2];
-    type IndexIter = ImageIndexIter;
-    fn indices() -> ImageIndexIter {
-        ImageIndexIter {}
-    }
-}
+//impl<const X: usize, const Y: usize> Shape for StaticImage<(), X, Y> {
+//    const N: usize = X * Y;
+//    type Index = [usize; 2];
+//    type IndexIter = ImageIndexIter;
+//    fn indices() -> ImageIndexIter {
+//        ImageIndexIter {}
+//    }
+//}
 
-impl<P, const X: usize, const Y: usize> Element<StaticImage<(), X, Y>> for P {
-    type Array = StaticImage<P, X, Y>;
-}
+//impl<P, const X: usize, const Y: usize> Element<StaticImage<(), X, Y>> for P {
+//    type Array = StaticImage<P, X, Y>;
+//}
 
 impl<P, const X: usize, const Y: usize> Image2D for [[P; Y]; X] {
     type PixelType = P;
@@ -263,7 +280,7 @@ where
 }
 
 impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usize>
-    PatchFold<B, [[(); PY]; PX]> for StaticImage<P, X, Y>
+    PatchFold<B, [[(); PY]; PX]> for [[P; Y]; X]
 where
     [[P; PY]; PX]: Default,
 {
@@ -277,7 +294,7 @@ where
                 let mut patch = <[[P; PY]; PX]>::default();
                 for px in 0..PX {
                     for py in 0..PY {
-                        patch[px][py] = self.image[x + px][y + py];
+                        patch[px][py] = self[x + px][y + py];
                     }
                 }
                 acc = fold_fn(acc, &patch);
@@ -297,25 +314,20 @@ where
     ) -> <O as Element<Self::ImageShape>>::Array;
 }
 
-impl<
-        I,
-        O: Element<StaticImage<(), X, Y>, Array = StaticImage<O, X, Y>>,
-        const X: usize,
-        const Y: usize,
-    > PixelMap<O> for StaticImage<I, X, Y>
-where
-    StaticImage<O, X, Y>: Default,
-{
-    fn pixel_map<F: Fn(&I) -> O>(&self, map_fn: F) -> StaticImage<O, X, Y> {
-        let mut target = StaticImage::default();
-        for x in 0..X {
-            for y in 0..Y {
-                target.image[x][y] = map_fn(&self.image[x][y]);
-            }
-        }
-        target
-    }
-}
+//impl<I, O: Element<StaticImage<(), X, Y>, Array = StaticImage<O, X, Y>>, const X: usize, const Y: usize> PixelMap<O> for StaticImage<I, X, Y>
+//where
+//    StaticImage<O, X, Y>: Default,
+//{
+//    fn pixel_map<F: Fn(&I) -> O>(&self, map_fn: F) -> StaticImage<O, X, Y> {
+//        let mut target = StaticImage::default();
+//        for x in 0..X {
+//            for y in 0..Y {
+//                target.image[x][y] = map_fn(&self.image[x][y]);
+//            }
+//        }
+//        target
+//    }
+//}
 
 pub trait GlobalPool<O> {
     fn global_pool(&self) -> O;
@@ -328,18 +340,16 @@ where
     fn pixel_fold<F: Fn(B, &Self::PixelType) -> B>(&self, acc: B, fold_fn: F) -> B;
 }
 
-impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usize>
-    PixelFold<B, [[(); PY]; PX]> for StaticImage<P, X, Y>
-{
-    fn pixel_fold<F: Fn(B, &P) -> B>(&self, mut acc: B, fold_fn: F) -> B {
-        for x in 0..(X - (PX / 2) * 2) {
-            for y in 0..(X - (PY / 2) * 2) {
-                acc = fold_fn(acc, &self.image[x + PX / 2][y + PY / 2]);
-            }
-        }
-        acc
-    }
-}
+//impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usize> PixelFold<B, [[(); PY]; PX]> for StaticImage<P, X, Y> {
+//    fn pixel_fold<F: Fn(B, &P) -> B>(&self, mut acc: B, fold_fn: F) -> B {
+//        for x in 0..(X - (PX / 2) * 2) {
+//            for y in 0..(X - (PY / 2) * 2) {
+//                acc = fold_fn(acc, &self.image[x + PX / 2][y + PY / 2]);
+//            }
+//        }
+//        acc
+//    }
+//}
 
 pub trait RandomPatch<PatchShape: Shape>
 where
@@ -352,21 +362,37 @@ where
     ) -> <Self::PixelType as Element<PatchShape>>::Array;
 }
 
-impl<P: Copy, const X: usize, const Y: usize, const PX: usize, const PY: usize>
-    RandomPatch<[[(); PY]; PX]> for StaticImage<P, X, Y>
-where
-    Self: Image2D<PixelType = P>,
-    [[P; PY]; PX]: Default,
-{
-    fn random_patch<RNG: Rng>(&self, rng: &mut RNG) -> [[P; PY]; PX] {
-        let x = rng.gen_range(0, X - (PX / 2) * 2);
-        let y = rng.gen_range(0, Y - (PY / 2) * 2);
-        let mut patch = <[[P; PY]; PX]>::default();
-        for px in 0..PX {
-            for py in 0..PY {
-                patch[px][py] = self.image[x + px][y + py];
-            }
-        }
-        patch
-    }
+//impl<P: Copy, const X: usize, const Y: usize, const PX: usize, const PY: usize> RandomPatch<[[(); PY]; PX]> for StaticImage<P, X, Y>
+//where
+//    Self: Image2D<PixelType = P>,
+//    [[P; PY]; PX]: Default,
+//{
+//    fn random_patch<RNG: Rng>(&self, rng: &mut RNG) -> [[P; PY]; PX] {
+//        let x = rng.gen_range(0, X - (PX / 2) * 2);
+//        let y = rng.gen_range(0, Y - (PY / 2) * 2);
+//        let mut patch = <[[P; PY]; PX]>::default();
+//        for px in 0..PX {
+//            for py in 0..PY {
+//                patch[px][py] = self.image[x + px][y + py];
+//            }
+//        }
+//        patch
+//    }
+//}
+
+pub trait Poolable2D<const X: usize, const Y: usize> {
+    type Pooled;
 }
+
+macro_rules! impl_poolable {
+    ($x:expr, $y:expr) => {
+        impl Poolable2D<$x, $y> for [[(); $y]; $x] {
+            type Pooled = [[(); $y / 2]; $x / 2];
+        }
+    };
+}
+
+impl_poolable!(32, 32);
+impl_poolable!(16, 16);
+impl_poolable!(8, 8);
+impl_poolable!(4, 4);

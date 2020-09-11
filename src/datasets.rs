@@ -1,6 +1,6 @@
 pub mod mnist {
     use crate::bits::b32;
-    use crate::image2d::StaticImage;
+    //use crate::image2d::StaticImage;
     use std::fs::File;
     use std::io::prelude::*;
     use std::path::Path;
@@ -40,29 +40,28 @@ pub mod mnist {
         images
     }
 
-    pub fn load_images_u8(path: &Path, size: usize) -> Vec<StaticImage<u8, 28, 28>> {
-        let mut file = File::open(&path).expect("can't open images");
-        let mut header: [u8; 16] = [0; 16];
-        file.read_exact(&mut header).expect("can't read header");
+    //pub fn load_images_u8(path: &Path, size: usize) -> Vec<StaticImage<u8, 28, 28>> {
+    //    let mut file = File::open(&path).expect("can't open images");
+    //    let mut header: [u8; 16] = [0; 16];
+    //    file.read_exact(&mut header).expect("can't read header");
 
-        let mut images_bytes: [u8; 784] = [0; 784];
+    //    let mut images_bytes: [u8; 784] = [0; 784];
 
-        let mut images: Vec<StaticImage<u8, 28, 28>> = Vec::new();
-        for _ in 0..size {
-            file.read_exact(&mut images_bytes)
-                .expect("can't read images");
-            let mut image = StaticImage::default();
-            for p in 0..784 {
-                image.image[p / 28][p % 28] = images_bytes[p];
-            }
-            images.push(image);
-        }
-        images
-    }
+    //    let mut images: Vec<StaticImage<u8, 28, 28>> = Vec::new();
+    //    for _ in 0..size {
+    //        file.read_exact(&mut images_bytes).expect("can't read images");
+    //        let mut image = StaticImage::default();
+    //        for p in 0..784 {
+    //            image.image[p / 28][p % 28] = images_bytes[p];
+    //        }
+    //        images.push(image);
+    //    }
+    //    images
+    //}
 }
 
 pub mod cifar {
-    use crate::image2d::StaticImage;
+    //use crate::image2d::StaticImage;
     use std::fs::File;
     use std::io::prelude::*;
     use std::path::Path;
@@ -105,7 +104,7 @@ pub mod cifar {
     pub fn load_static_images_from_base(
         base_path: &Path,
         n: usize,
-    ) -> Vec<(StaticImage<[u8; 3], 32, 32>, usize)> {
+    ) -> Vec<([[[u8; 3]; 32]; 32], usize)> {
         if n > 50000 {
             panic!("n must be <= 50,000");
         }
@@ -116,17 +115,15 @@ pub mod cifar {
 
                 let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
                 let mut label: [u8; 1] = [0; 1];
-                let mut images: Vec<(StaticImage<[u8; 3], 32, 32>, usize)> = Vec::new();
+                let mut images: Vec<([[[u8; 3]; 32]; 32], usize)> = Vec::new();
                 for _ in 0..10000 {
                     file.read_exact(&mut label).expect("can't read label");
                     file.read_exact(&mut image_bytes)
                         .expect("can't read images");
-                    let mut image = StaticImage {
-                        image: [[[0_u8; 3]; 32]; 32],
-                    };
+                    let mut image = [[[0_u8; 3]; 32]; 32];
                     for x in 0..32 {
                         for y in 0..32 {
-                            image.image[x][y] = [
+                            image[x][y] = [
                                 image_bytes[0 + (y * 32) + x],
                                 image_bytes[1024 + (y * 32) + x],
                                 image_bytes[2048 + (y * 32) + x],

@@ -1,4 +1,7 @@
 # bitnets
+
+See description: https://www.isaacleonard.com/ml/distributed/
+
 This project makes extensive use of const generics. You must therefore use rust nightly.
 ```
 https://rustup.rs/
@@ -58,7 +61,7 @@ https://openreview.net/pdf?id=ryxfHnCctX
 - [Learning Feature Representations with K-means](https://www-cs.stanford.edu/~acoates/papers/coatesng_nntot2012.pdf)
 - [Convolutional Clustering for Unsupervised Learning](https://arxiv.org/abs/1511.06241)
 
-# Layerwise training
+## Layerwise training
 - https://arxiv.org/abs/1901.06656
 - https://arxiv.org/abs/1803.09522
 - https://arxiv.org/abs/1812.11446
@@ -71,3 +74,7 @@ Loc Quang Trinh's thesis paper: https://dspace.mit.edu/bitstream/handle/1721.1/1
 
 
 [Neural Network with Binary Activations for Efficient Neuromorphic Computing](http://cs229.stanford.edu/proj2016/report/WanLi-NeuralNetworkWithBinaryActivationsForEfficientNeuromorphicComputing-Report.pdf)
+
+## Gradient compression
+- [TernGrad: Ternary Gradients to Reduce Communication in Distributed Deep Learning](https://arxiv.org/abs/1705.07878)
+- [Deep Gradient Compression: Reducing the Communication Bandwidth for Distributed Training](https://arxiv.org/abs/1712.01887)

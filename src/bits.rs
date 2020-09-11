@@ -6,17 +6,18 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::num::Wrapping;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
 
-pub trait IndexedFlipBit<I, O> {
-    fn indexed_flip_bit(&mut self, o: usize, i: usize);
-}
-
-impl<I, O, T: IndexedFlipBit<I, O>, const L: usize> IndexedFlipBit<I, [O; L]> for [T; L] {
-    fn indexed_flip_bit(&mut self, o: usize, i: usize) {
-        self[o % L].indexed_flip_bit(o / L, i)
-    }
-}
+//pub trait IndexedFlipBit<I, O> {
+//    fn indexed_flip_bit(&mut self, o: usize, i: usize);
+//}
+//
+//impl<I, O, T: IndexedFlipBit<I, O>, const L: usize> IndexedFlipBit<I, [O; L]> for [T; L] {
+//    fn indexed_flip_bit(&mut self, o: usize, i: usize) {
+//        self[o % L].indexed_flip_bit(o / L, i)
+//    }
+//}
 
 pub trait Classify<Input, C: Shape> {
     fn max_class(&self, input: &Input) -> usize;
@@ -58,9 +59,9 @@ where
     /// The shape where words are elements.
     //type WordShape;
     type TritArrayType;
-    fn get_bit(&self, i: &<Self::BitShape as Shape>::Index) -> bool;
-    fn set_bit_in_place(&mut self, bit: bool, i: &<Self::BitShape as Shape>::Index);
-    fn set_bit(mut self, bit: bool, i: &<Self::BitShape as Shape>::Index) -> Self {
+    fn get_bit(&self, i: <Self::BitShape as Shape>::Index) -> bool;
+    fn set_bit_in_place(&mut self, bit: bool, i: <Self::BitShape as Shape>::Index);
+    fn set_bit(mut self, bit: bool, i: <Self::BitShape as Shape>::Index) -> Self {
         self.set_bit_in_place(bit, i);
         self
     }
@@ -71,11 +72,11 @@ impl<T: BitArray, const L: usize> BitArray for [T; L] {
     //type WordType = T::WordType;
     //type WordShape = [T::WordShape; L];
     type TritArrayType = [T::TritArrayType; L];
-    fn get_bit(&self, (i, tail): &(usize, <T::BitShape as Shape>::Index)) -> bool {
-        self[*i].get_bit(tail)
+    fn get_bit(&self, (i, tail): (u8, <T::BitShape as Shape>::Index)) -> bool {
+        self[i as usize].get_bit(tail)
     }
-    fn set_bit_in_place(&mut self, bit: bool, (i, tail): &(usize, <T::BitShape as Shape>::Index)) {
-        self[*i].set_bit_in_place(bit, tail)
+    fn set_bit_in_place(&mut self, bit: bool, (i, tail): (u8, <T::BitShape as Shape>::Index)) {
+        self[i as usize].set_bit_in_place(bit, tail)
     }
 }
 
@@ -90,7 +91,7 @@ where
     fn bit_map_pack_mut<F: Fn(&E) -> bool>(
         &mut self,
         input: &<E as Element<Self::BitShape>>::Array,
-        index: &<Self::BitShape as Shape>::Index,
+        index: <Self::BitShape as Shape>::Index,
         map_fn: F,
     );
 }
@@ -112,10 +113,10 @@ where
     fn bit_map_pack_mut<F: Fn(&E) -> bool>(
         &mut self,
         input: &[<E as Element<T::BitShape>>::Array; L],
-        (index, tail): &<Self::BitShape as Shape>::Index,
+        (index, tail): <Self::BitShape as Shape>::Index,
         map_fn: F,
     ) {
-        self[*index].bit_map_pack_mut(&input[*index], tail, &map_fn);
+        self[index as usize].bit_map_pack_mut(&input[index as usize], tail, &map_fn);
     }
 }
 
@@ -375,25 +376,22 @@ where
     Self::TritShape: Shape,
     Self::BitArrayType: BitArray<BitShape = Self::TritShape, TritArrayType = Self> + Sized,
 {
-    const N: usize;
     type BitArrayType;
     type TritShape;
     fn mask_zeros(&self) -> u32;
-    fn flip(&mut self, signs: &Self::BitArrayType);
-    //fn trit_flip(&mut self, trits: &Self);
     fn get_trit(
         &self,
-        index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
+        index: <<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
     ) -> Option<bool>;
     fn set_trit_in_place(
         &mut self,
         trit: Option<bool>,
-        index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
+        index: <<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
     );
     fn set_trit(
         mut self,
         trit: Option<bool>,
-        index: &<<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
+        index: <<Self::BitArrayType as BitArray>::BitShape as Shape>::Index,
     ) -> Self {
         self.set_trit_in_place(trit, index);
         self
@@ -401,35 +399,50 @@ where
 }
 
 impl<T: TritArray, const L: usize> TritArray for [T; L] {
-    const N: usize = T::N * L;
     type BitArrayType = [T::BitArrayType; L];
     type TritShape = [T::TritShape; L];
     fn mask_zeros(&self) -> u32 {
         self.iter().map(|x| x.mask_zeros()).sum()
     }
-    fn flip(&mut self, signs: &[T::BitArrayType; L]) {
-        for i in 0..L {
-            self[i].flip(&signs[i]);
-        }
-    }
     fn get_trit(
         &self,
-        (head, tail): &(
-            usize,
+        (head, tail): (
+            u8,
             <<T::BitArrayType as BitArray>::BitShape as Shape>::Index,
         ),
     ) -> Option<bool> {
-        self[*head].get_trit(tail)
+        self[head as usize].get_trit(tail)
     }
     fn set_trit_in_place(
         &mut self,
         trit: Option<bool>,
-        (head, tail): &(
-            usize,
+        (head, tail): (
+            u8,
             <<T::BitArrayType as BitArray>::BitShape as Shape>::Index,
         ),
     ) {
-        self[*head].set_trit_in_place(trit, tail);
+        self[head as usize].set_trit_in_place(trit, tail);
+    }
+}
+
+pub trait TritGrads
+where
+    Self: TritArray,
+{
+    /// which trits have the potential to move the distance in the sign direction, and if so, which direction.
+    fn grads(&self, input: &Self::BitArrayType, sign: bool) -> Self;
+}
+
+impl<T: TritGrads + TritArray, const L: usize> TritGrads for [T; L]
+where
+    Self: Default + TritArray<TritShape = [T::TritShape; L], BitArrayType = [T::BitArrayType; L]>,
+{
+    fn grads(&self, input: &Self::BitArrayType, sign: bool) -> [T; L] {
+        let mut target = Self::default();
+        for i in 0..L {
+            target[i] = self[i].grads(&input[i], sign);
+        }
+        target
     }
 }
 
@@ -440,21 +453,6 @@ macro_rules! for_uints {
         #[derive(Copy, Clone, Serialize, Deserialize)]
         pub struct $t_type(pub $u_type, pub $u_type);
 
-        //impl std::ops::Add for $t_type {
-        //    type Output = $t_type;
-        //    fn add(self, other: Self) -> $t_type {
-        //        let a0 = !self.0 & self.1;
-        //        let a1 = self.0 & self.1;
-
-        //        let b0 = !other.0 & other.1;
-        //        let b1 = other.0 & other.1;
-
-        //        let ones = (a1 & !b0) | (b1 & !a0);
-        //        let zeros = (a0 & !b1) | (b0 & !a1);
-
-        //        $t_type(ones, ones | zeros)
-        //    }
-        //}
         impl TritPack for $t_type {
             fn trit_pack(trits: &[Option<bool>; $len]) -> $t_type {
                 let mut signs = <$u_type>::default();
@@ -478,6 +476,17 @@ macro_rules! for_uints {
             }
         }
 
+        impl TritGrads for $t_type {
+            #[inline(always)]
+            fn grads(&self, &input: &$b_type, sign: bool) -> Self {
+                let sign = (Wrapping(0) - Wrapping(sign as $u_type)).0;
+                let acts = self.0 ^ input.0;
+                let mask = !((acts ^ sign) & self.1);
+
+                $t_type(input.0 ^ sign, mask)
+            }
+        }
+
         impl PartialEq for $t_type {
             fn eq(&self, other: &Self) -> bool {
                 ((self.0 & self.1) == (other.0 & self.1)) & (self.1 == other.1)
@@ -490,24 +499,17 @@ macro_rules! for_uints {
         pub struct $b_type(pub $u_type);
 
         impl TritArray for $t_type {
-            const N: usize = $len;
             type BitArrayType = $b_type;
             type TritShape = [(); $len];
             fn mask_zeros(&self) -> u32 {
                 self.1.count_zeros()
             }
-            fn flip(&mut self, &$b_type(grads): &$b_type) {
-                let signs = self.0;
-                let magns = self.1;
-                self.0 = grads;
-                self.1 = (magns & !(grads ^ signs)) | !magns;
-            }
-            fn get_trit(&self, &(index, _): &(usize, ())) -> Option<bool> {
+            fn get_trit(&self, (index, _): (u8, ())) -> Option<bool> {
                 let sign = (self.0 >> index) & 1 == 1;
                 let magn = (self.1 >> index) & 1 == 1;
                 Some(sign).filter(|_| magn)
             }
-            fn set_trit_in_place(&mut self, trit: Option<bool>, &(index, _): &(usize, ())) {
+            fn set_trit_in_place(&mut self, trit: Option<bool>, (index, _): (u8, ())) {
                 self.0 &= !(1 << index);
                 self.0 |= ((trit.unwrap_or(false) as $u_type) << index);
 
@@ -554,11 +556,11 @@ macro_rules! for_uints {
             fn bit_map_pack_mut<F: Fn(&E) -> bool>(
                 &mut self,
                 input: &[E; $len],
-                &(index, ()): &(usize, ()),
+                (index, ()): (u8, ()),
                 map_fn: F,
             ) {
                 self.0 &= !(1 << index);
-                self.0 |= (map_fn(&input[index]) as $u_type) << index;
+                self.0 |= (map_fn(&input[index as usize]) as $u_type) << index;
             }
         }
         impl<E> BitMap<E> for $b_type
@@ -584,10 +586,10 @@ macro_rules! for_uints {
             //type WordType = $b_type;
             //type WordShape = ();
             type TritArrayType = $t_type;
-            fn get_bit(&self, &(i, _): &(usize, ())) -> bool {
+            fn get_bit(&self, (i, _): (u8, ())) -> bool {
                 ((self.0 >> i) & 1) == 1
             }
-            fn set_bit_in_place(&mut self, bit: bool, &(i, _): &(usize, ())) {
+            fn set_bit_in_place(&mut self, bit: bool, (i, _): (u8, ())) {
                 self.0 &= !(1 << i);
                 self.0 |= ((bit as $u_type) << i) as $u_type;
             }
@@ -603,13 +605,11 @@ macro_rules! for_uints {
             }
         }
         impl Distribution<$b_type> for Standard {
-            #[inline]
             fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> $b_type {
                 $b_type(rng.gen())
             }
         }
         impl Distribution<$t_type> for Standard {
-            #[inline]
             fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> $t_type {
                 $t_type(rng.gen(), rng.gen())
                 //$t_type(rng.gen(), !0)
@@ -732,3 +732,60 @@ for_uints!(t16, b16, u16, 16, "{:016b}");
 for_uints!(t32, b32, u32, 32, "{:032b}");
 //for_uints!(b64, u64, 64, "{:064b}");
 //for_uints!(b128, u128, 128, "{:0128b}");
+
+/// A word of 1 trits
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Serialize, Deserialize, Default, Debug)]
+pub struct t1(pub Option<bool>);
+
+impl TritArray for t1 {
+    type BitArrayType = b1;
+    type TritShape = [(); 1];
+    fn mask_zeros(&self) -> u32 {
+        self.0.is_none() as u32
+    }
+    fn get_trit(&self, _: (u8, ())) -> Option<bool> {
+        self.0
+    }
+    fn set_trit_in_place(&mut self, trit: Option<bool>, _: (u8, ())) {
+        self.0 = trit;
+    }
+}
+
+impl MaskedDistance for t1 {
+    fn masked_distance(&self, &bits: &b1) -> u32 {
+        ((bits.0 ^ self.0.unwrap_or_default()) & self.0.is_some()) as u32
+    }
+}
+
+/// A word of 1 bits
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Serialize, Deserialize, Default)]
+pub struct b1(pub bool);
+
+impl BitArray for b1 {
+    type BitShape = [(); 1];
+    type TritArrayType = t1;
+    fn get_bit(&self, _: (u8, ())) -> bool {
+        self.0
+    }
+    fn set_bit_in_place(&mut self, bit: bool, _: (u8, ())) {
+        self.0 = bit;
+    }
+}
+impl Distance for b1 {
+    fn distance(&self, rhs: &Self) -> u32 {
+        (self.0 ^ rhs.0) as u32
+    }
+}
+
+impl fmt::Display for b1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:01b}", self.0 as u8)
+    }
+}
+impl fmt::Debug for b1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:01b}", self.0 as u8)
+    }
+}

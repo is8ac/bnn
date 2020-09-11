@@ -1,3 +1,5 @@
+use std::convert::TryInto;
+
 /// A shape.
 /// This trait has no concept of what it contains, just the shape.
 /// It is implemented for arrays.
@@ -37,7 +39,7 @@ impl Shape for () {
 
 #[derive(Debug)]
 pub struct ShapeIndicesIter<T: Shape, const L: usize> {
-    index: usize,
+    index: u8,
     inner: T::IndexIter,
 }
 
@@ -45,13 +47,13 @@ impl<T: Shape, const L: usize> Iterator for ShapeIndicesIter<T, L>
 where
     T::IndexIter: Iterator<Item = T::Index>,
 {
-    type Item = (usize, T::Index);
-    fn next(&mut self) -> Option<(usize, T::Index)> {
+    type Item = (u8, T::Index);
+    fn next(&mut self) -> Option<(u8, T::Index)> {
         self.inner
             .next()
             .or_else(|| {
                 self.index += 1;
-                if self.index < L {
+                if self.index < L.try_into().unwrap() {
                     self.inner = T::indices();
                     self.inner.next()
                 } else {
@@ -64,7 +66,7 @@ where
 
 impl<T: Shape, const L: usize> Shape for [T; L] {
     const N: usize = T::N * L;
-    type Index = (usize, T::Index);
+    type Index = (u8, T::Index);
     type IndexIter = ShapeIndicesIter<T, L>;
     fn indices() -> ShapeIndicesIter<T, L> {
         ShapeIndicesIter::<T, L> {
@@ -87,9 +89,9 @@ impl<T: Copy> Wrap<()> for T {
     }
 }
 
-impl<T: Wrap<W>, W> Wrap<(usize, W)> for T {
-    type Wrapped = (usize, <T as Wrap<W>>::Wrapped);
-    fn wrap(self, (i, w): (usize, W)) -> (usize, <T as Wrap<W>>::Wrapped) {
+impl<T: Wrap<W>, W> Wrap<(u8, W)> for T {
+    type Wrapped = (u8, <T as Wrap<W>>::Wrapped);
+    fn wrap(self, (i, w): (u8, W)) -> (u8, <T as Wrap<W>>::Wrapped) {
         (i, <T as Wrap<W>>::wrap(self, w))
     }
 }
@@ -173,7 +175,7 @@ where
     <[(); L] as Element<W>>::Array: Shape,
     <S as Element<<[(); L] as Element<W>>::Array>>::Array: Shape,
     [<O as Element<S>>::Array; L]: Default,
-    (usize, ()): Wrap<W::Index, Wrapped = <<[(); L] as Element<W>>::Array as Shape>::Index>,
+    (u8, ()): Wrap<W::Index, Wrapped = <<[(); L] as Element<W>>::Array as Shape>::Index>,
     W::Index: Copy,
 {
     fn index_map<F: Fn(&<<[S; L] as Element<W>>::Array as Shape>::Index) -> O>(
@@ -183,7 +185,7 @@ where
         let mut target = <[<O as Element<S>>::Array; L]>::default();
         for i in 0..L {
             target[i] = <S as IndexMap<O, <[(); L] as Element<W>>::Array>>::index_map(
-                (i, ()).wrap(outer_index),
+                (i as u8, ()).wrap(outer_index),
                 &map_fn,
             );
         }
@@ -196,9 +198,9 @@ where
     Self: Sized,
 {
     type Element;
-    fn index_get(&self, i: &I) -> &Self::Element;
-    fn index_get_mut(&mut self, i: &I) -> &mut Self::Element;
-    fn index_set(mut self, i: &I, val: Self::Element) -> Self {
+    fn index_get(&self, i: I) -> &Self::Element;
+    fn index_get_mut(&mut self, i: I) -> &mut Self::Element;
+    fn index_set(mut self, i: I, val: Self::Element) -> Self {
         *self.index_get_mut(i) = val;
         self
     }
@@ -206,21 +208,21 @@ where
 
 impl<T> IndexGet<()> for T {
     type Element = T;
-    fn index_get(&self, _: &()) -> &T {
+    fn index_get(&self, _: ()) -> &T {
         self
     }
-    fn index_get_mut(&mut self, _: &()) -> &mut T {
+    fn index_get_mut(&mut self, _: ()) -> &mut T {
         self
     }
 }
 
-impl<I, T: IndexGet<I>, const L: usize> IndexGet<(usize, I)> for [T; L] {
+impl<I, T: IndexGet<I>, const L: usize> IndexGet<(u8, I)> for [T; L] {
     type Element = T::Element;
-    fn index_get(&self, (i, ii): &(usize, I)) -> &T::Element {
-        self[*i].index_get(ii)
+    fn index_get(&self, (i, ii): (u8, I)) -> &T::Element {
+        self[i as usize].index_get(ii)
     }
-    fn index_get_mut(&mut self, (i, ii): &(usize, I)) -> &mut T::Element {
-        self[*i].index_get_mut(ii)
+    fn index_get_mut(&mut self, (i, ii): (u8, I)) -> &mut T::Element {
+        self[i as usize].index_get_mut(ii)
     }
 }
 
