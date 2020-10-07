@@ -3,7 +3,11 @@ use std::convert::TryInto;
 /// A shape.
 /// This trait has no concept of what it contains, just the shape.
 /// It is implemented for arrays.
-pub trait Shape {
+pub trait Shape
+where
+    Self::IndexIter: Iterator<Item = Self::Index>,
+    Self::Index: Copy,
+{
     /// The number of elements in the shape.
     const N: usize;
     /// The type used to index into the shape.
@@ -147,7 +151,7 @@ where
     Self: Shape + Sized + Element<W>,
     <Self as Element<W>>::Array: Shape,
 {
-    fn index_map<F: Fn(&<<Self as Element<W>>::Array as Shape>::Index) -> O>(
+    fn index_map<F: Fn(<<Self as Element<W>>::Array as Shape>::Index) -> O>(
         outer_index: W::Index,
         map_fn: F,
     ) -> <O as Element<Self>>::Array;
@@ -157,8 +161,8 @@ impl<O, W: Shape> IndexMap<O, W> for ()
 where
     (): Element<W, Array = W>,
 {
-    fn index_map<F: Fn(&W::Index) -> O>(outer_index: W::Index, map_fn: F) -> O {
-        map_fn(&outer_index)
+    fn index_map<F: Fn(W::Index) -> O>(outer_index: W::Index, map_fn: F) -> O {
+        map_fn(outer_index)
     }
 }
 
@@ -178,7 +182,7 @@ where
     (u8, ()): Wrap<W::Index, Wrapped = <<[(); L] as Element<W>>::Array as Shape>::Index>,
     W::Index: Copy,
 {
-    fn index_map<F: Fn(&<<[S; L] as Element<W>>::Array as Shape>::Index) -> O>(
+    fn index_map<F: Fn(<<[S; L] as Element<W>>::Array as Shape>::Index) -> O>(
         outer_index: W::Index,
         map_fn: F,
     ) -> [<O as Element<S>>::Array; L] {
