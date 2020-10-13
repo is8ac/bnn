@@ -1,5 +1,5 @@
-use crate::bits::{BitArray, BitMapPack, MaskedDistance, TritArray};
-use crate::shape::{Element, IndexGet, Map, Shape};
+use crate::bits::{BitArray, BitMapPack, MaskedDistance, TritArray, Weight, WeightArray};
+use crate::shape::{Element, IndexGet, IndexMap, Map, Shape};
 use rayon::prelude::*;
 use std::iter;
 use std::marker::PhantomData;
@@ -12,8 +12,7 @@ where
     type ChanValue;
     type Input;
     type ChanCache;
-    fn chan_cache(&self, chan_val: Self::ChanValue, chan_index: Self::ChanIndex)
-        -> Self::ChanCache;
+    fn chan_cache(&self, chan_val: Self::ChanValue, chan_index: Self::ChanIndex) -> Self::ChanCache;
 }
 
 pub trait ChanCache {
@@ -34,19 +33,29 @@ where
     type WeightIndex;
     type BaseCacheType;
     fn loss(&self, input: &I, class: usize) -> u64;
-    fn grads(&self, input: &I, class: usize) -> Vec<(Self::WeightIndex, Option<bool>, u64)>;
+    //fn grads(&self, input: &I, class: usize) -> Vec<(Self::WeightIndex, Option<bool>, u64)>;
     fn grads_slow(&self, input: &I, class: usize) -> Vec<(Self::WeightIndex, Option<bool>, u64)>;
-    fn base_cache(&self, input: &I, class: usize) -> Self::BaseCacheType;
+    //fn base_cache(&self, input: &I, class: usize) -> Self::BaseCacheType;
 }
 
-pub struct FcTritMSE<I: BitArray, const C: usize> {
-    pub fc: [I::TritArrayType; C],
+pub struct FcMSE<I: BitArray, W: Weight<I>, const C: usize> {
+    pub fc: [<W as Weight<I>>::Weights; C],
 }
 
-impl<I: BitArray, const C: usize> Layer<I> for FcTritMSE<I, C>
+impl<I: BitArray, W: Weight<I>, const C: usize> FcMSE<I, W, C> {
+    fn mutate(mut self, value: W, class: usize, index: <I::BitShape as Shape>::Index) -> Self {
+        self
+    }
+}
+
+impl<I: BitArray, W: Weight<I>, const C: usize> Layer<I> for FcMSE<I, W, C>
 where
+    bool: Element<I::BitShape>,
+    I::BitShape: IndexMap<bool, ()>,
     I::TritArrayType: MaskedDistance + Copy,
     [u32; C]: Default,
+    W: Weight<I> + Copy,
+    <W as Weight<I>>::Weights: WeightArray<W>,
 {
     type WeightIndex = (u8, <I::BitShape as Shape>::Index);
     type BaseCacheType = FcTritMseBaseCache<I, C>;
@@ -55,13 +64,14 @@ where
             .iter()
             .enumerate()
             .map(|(i, trits)| {
-                let act = trits.masked_distance(input);
-                let target = (I::BitShape::N as u32 / 2) * (class == i) as u32;
+                let act = trits.bma(input);
+                let target = I::BitShape::N as u32 * (class == i) as u32;
                 let dist = target.saturating_sub(act) | act.saturating_sub(target);
                 (dist as u64).pow(2)
             })
             .sum()
     }
+    /*
     fn grads(&self, input: &I, class: usize) -> Vec<(Self::WeightIndex, Option<bool>, u64)> {
         let sum_loss = self.loss(input, class);
         self.fc
@@ -105,20 +115,30 @@ where
             .flatten()
             .collect()
     }
+    */
     fn grads_slow(&self, input: &I, class: usize) -> Vec<(Self::WeightIndex, Option<bool>, u64)> {
-        vec![]
+        let null_loss = self.loss(input, class);
+        I::BitShape::indices()
+            .map(|i| {
+                (0..C).map(|c| {
+                    let index = (c as u8, i);
+                    let mut weights = *self;
+                    let loss = null_loss;
+                    let value = None;
+                    (index, value, loss)
+                })
+            })
+            .flatten()
+            .collect()
     }
-    fn base_cache(&self, input: &I, class: usize) -> Self::BaseCacheType {
-        let mut acts = <[u32; C]>::default();
-        for c in 0..C {
-            acts[c] = self.fc[c].masked_distance(input);
-        }
+    //fn base_cache(&self, input: &I, class: usize) -> Self::BaseCacheType {
+    //    let mut acts = <[u32; C]>::default();
+    //    for c in 0..C {
+    //        acts[c] = self.fc[c].masked_distance(input);
+    //    }
 
-        FcTritMseBaseCache {
-            input_type: PhantomData::default(),
-            acts,
-        }
-    }
+    //    FcTritMseBaseCache { input_type: PhantomData::default(), acts }
+    //}
 }
 
 pub struct FcTritMseBaseCache<I: BitArray, const C: usize> {
@@ -131,14 +151,8 @@ impl<I: BitArray, const C: usize> BaseCache for FcTritMseBaseCache<I, C> {
     type ChanValue = bool;
     type Input = I;
     type ChanCache = FcTritMseChanCache<I, C>;
-    fn chan_cache(
-        &self,
-        chan_val: Self::ChanValue,
-        chan_index: Self::ChanIndex,
-    ) -> Self::ChanCache {
-        FcTritMseChanCache {
-            input_type: PhantomData::default(),
-        }
+    fn chan_cache(&self, chan_val: Self::ChanValue, chan_index: Self::ChanIndex) -> Self::ChanCache {
+        FcTritMseChanCache { input_type: PhantomData::default() }
     }
 }
 

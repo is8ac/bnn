@@ -132,13 +132,13 @@ impl<I, O> Map<I, O> for () {
 
 impl<S: Shape + Map<I, O>, I: Element<S>, O: Element<S>, const L: usize> Map<I, O> for [S; L]
 where
-    <O as Element<Self>>::Array: Default,
+    <O as Element<Self>>::Array: LongDefault,
 {
     fn map<F: Fn(&I) -> O>(
         input: &[<I as Element<S>>::Array; L],
         map_fn: F,
     ) -> <O as Element<Self>>::Array {
-        let mut target = <<O as Element<Self>>::Array>::default();
+        let mut target = <<O as Element<Self>>::Array>::long_default();
         for i in 0..L {
             target[i] = <S as Map<I, O>>::map(&input[i], &map_fn);
         }
@@ -178,7 +178,7 @@ where
     [(); L]: Element<W>,
     <[(); L] as Element<W>>::Array: Shape,
     <S as Element<<[(); L] as Element<W>>::Array>>::Array: Shape,
-    [<O as Element<S>>::Array; L]: Default,
+    [<O as Element<S>>::Array; L]: LongDefault,
     (u8, ()): Wrap<W::Index, Wrapped = <<[(); L] as Element<W>>::Array as Shape>::Index>,
     W::Index: Copy,
 {
@@ -186,7 +186,7 @@ where
         outer_index: W::Index,
         map_fn: F,
     ) -> [<O as Element<S>>::Array; L] {
-        let mut target = <[<O as Element<S>>::Array; L]>::default();
+        let mut target = <[<O as Element<S>>::Array; L]>::long_default();
         for i in 0..L {
             target[i] = <S as IndexMap<O, <[(); L] as Element<W>>::Array>>::index_map(
                 (i as u8, ()).wrap(outer_index),
@@ -272,20 +272,50 @@ impl<A: Element<(), Array = A>, B: Element<(), Array = B>, O> ZipMap<A, B, O> fo
 impl<S: Shape + ZipMap<A, B, O>, A: Element<S>, B: Element<S>, O: Element<S>, const L: usize>
     ZipMap<A, B, O> for [S; L]
 where
-    [<O as Element<S>>::Array; L]: Default,
+    [<O as Element<S>>::Array; L]: LongDefault,
 {
     fn zip_map<F: Fn(&A, &B) -> O>(
         a: &<A as Element<[S; L]>>::Array,
         b: &<B as Element<[S; L]>>::Array,
         map_fn: F,
     ) -> [<O as Element<S>>::Array; L] {
-        let mut target = <[<O as Element<S>>::Array; L]>::default();
+        let mut target = <[<O as Element<S>>::Array; L]>::long_default();
         for i in 0..L {
             target[i] = S::zip_map(&a[i], &b[i], &map_fn);
         }
         target
     }
 }
+
+pub trait LongDefault {
+    fn long_default() -> Self;
+}
+
+macro_rules! impl_long_default_for_array {
+    ($len:expr) => {
+        impl<T: Copy + LongDefault> LongDefault for [T; $len] {
+            fn long_default() -> [T; $len] {
+                [T::long_default(); $len]
+            }
+        }
+    };
+}
+
+impl_long_default_for_array!(1);
+impl_long_default_for_array!(2);
+impl_long_default_for_array!(3);
+impl_long_default_for_array!(4);
+impl_long_default_for_array!(5);
+impl_long_default_for_array!(6);
+impl_long_default_for_array!(7);
+impl_long_default_for_array!(8);
+impl_long_default_for_array!(16);
+impl_long_default_for_array!(32);
+impl_long_default_for_array!(64);
+impl_long_default_for_array!(128);
+impl_long_default_for_array!(256);
+impl_long_default_for_array!(512);
+impl_long_default_for_array!(1024);
 
 pub trait Flatten<T: Copy + Element<Self>>
 where
@@ -308,11 +338,11 @@ impl<T: Copy + Element<(), Array = T>> Flatten<T> for () {
 
 impl<S: Shape + Flatten<T>, T: Element<S> + Copy, const L: usize> Flatten<T> for [S; L]
 where
-    [<T as Element<S>>::Array; L]: Default,
+    [<T as Element<S>>::Array; L]: LongDefault,
 {
     fn from_vec(slice: &[T]) -> [<T as Element<S>>::Array; L] {
         assert_eq!(slice.len(), S::N * L);
-        let mut target = <[<T as Element<S>>::Array; L]>::default();
+        let mut target = <[<T as Element<S>>::Array; L]>::long_default();
         for i in 0..L {
             target[i] = S::from_vec(&slice[S::N * i..S::N * (i + 1)]);
         }
@@ -358,9 +388,9 @@ impl<T: Copy> Merge<[[T; 2]; 2], [T; 2]> for [T; 6] {
 
 macro_rules! impl_array_array_merge {
     ($a:expr, $b:expr) => {
-        impl<T: Copy + Default> Merge<[T; $a], [T; $b]> for [T; $a + $b] {
+        impl<T: Copy + LongDefault> Merge<[T; $a], [T; $b]> for [T; $a + $b] {
             fn merge(&a: &[T; $a], &b: &[T; $b]) -> Self {
-                let mut target = <[T; $a + $b]>::default();
+                let mut target = <[T; $a + $b]>::long_default();
                 for i in 0..$a {
                     target[i] = a[i];
                 }
