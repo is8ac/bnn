@@ -9,4 +9,4 @@ pub mod datasets;
 pub mod image2d;
 //pub mod layers;
 pub mod shape;
-pub mod unary;
+//pub mod unary;
