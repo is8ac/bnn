@@ -41,22 +41,10 @@ pub fn edges_from_patch(patch: &[[[u8; 3]; 3]; 3]) -> b32 {
 
 // Given the patch and the indices of the two sides of an edge, extract the 8 colors.
 // It returns a b32, but only the first 8 bits are used.
-fn extract_partition(
-    patch: &[[[u8; 3]; 3]; 3],
-    a: [(usize, usize); 3],
-    b: [(usize, usize); 3],
-) -> b32 {
+fn extract_partition(patch: &[[[u8; 3]; 3]; 3], a: [(usize, usize); 3], b: [(usize, usize); 3]) -> b32 {
     b32(color_features_from_partition(
-        elementwise_sum_3(
-            patch[a[0].0][a[0].1],
-            patch[a[1].0][a[1].1],
-            patch[a[2].0][a[2].1],
-        ),
-        elementwise_sum_3(
-            patch[b[0].0][b[0].1],
-            patch[b[1].0][b[1].1],
-            patch[b[2].0][b[2].1],
-        ),
+        elementwise_sum_3(patch[a[0].0][a[0].1], patch[a[1].0][a[1].1], patch[a[2].0][a[2].1]),
+        elementwise_sum_3(patch[b[0].0][b[0].1], patch[b[1].0][b[1].1], patch[b[2].0][b[2].1]),
     )
     .0 as u32)
 }
