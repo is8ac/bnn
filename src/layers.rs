@@ -1,24 +1,25 @@
-use crate::bits::{BitArray, BitMapPack, MaskedDistance, TritArray, Weight, WeightArray};
-use crate::shape::{Element, IndexGet, IndexMap, Map, Shape};
+use crate::bits::{PackedArray, PackedElement, Weight, WeightArray};
+use crate::shape::{Element, IndexGet, IndexMap, LongDefault, Map, Shape};
+use rand::Rng;
 use rayon::prelude::*;
 use std::iter;
 use std::marker::PhantomData;
 
-pub trait BaseCache
-where
-    Self::ChanCache: ChanCache,
-{
-    type ChanIndex;
-    type ChanValue;
-    type Input;
-    type ChanCache;
-    fn chan_cache(&self, chan_val: Self::ChanValue, chan_index: Self::ChanIndex) -> Self::ChanCache;
-}
-
-pub trait ChanCache {
-    type Mutation;
-    fn loss(&self, mutation: &Self::Mutation) -> u64;
-}
+//pub trait BaseCache
+//where
+//    Self::ChanCache: ChanCache,
+//{
+//    type ChanIndex;
+//    type ChanValue;
+//    type Input;
+//    type ChanCache;
+//    fn chan_cache(&self, chan_val: Self::ChanValue, chan_index: Self::ChanIndex) -> Self::ChanCache;
+//}
+//
+//pub trait ChanCache {
+//    type Mutation;
+//    fn loss(&self, mutation: &Self::Mutation) -> u64;
+//}
 
 #[derive(Copy, Clone)]
 pub enum LayerIndex<H: Copy, T: Copy> {
@@ -26,143 +27,139 @@ pub enum LayerIndex<H: Copy, T: Copy> {
     Tail(T),
 }
 
-pub trait Layer<I>
+pub trait Model<I>
 where
-    Self::BaseCacheType: BaseCache,
+    Self: Sized + Copy,
+    Self::Weight: 'static + Weight,
+    Self::IndexIter: Iterator<Item = Self::Index>,
+    Self::Index: Copy,
 {
-    type WeightIndex;
-    type BaseCacheType;
-    fn loss(&self, input: &I, class: usize) -> u64;
-    //fn grads(&self, input: &I, class: usize) -> Vec<(Self::WeightIndex, Option<bool>, u64)>;
-    fn grads_slow(&self, input: &I, class: usize) -> Vec<(Self::WeightIndex, Option<bool>, u64)>;
-    //fn base_cache(&self, input: &I, class: usize) -> Self::BaseCacheType;
-}
-
-pub struct FcMSE<I: BitArray, W: Weight<I>, const C: usize> {
-    pub fc: [<W as Weight<I>>::Weights; C],
-}
-
-impl<I: BitArray, W: Weight<I>, const C: usize> FcMSE<I, W, C> {
-    fn mutate(mut self, value: W, class: usize, index: <I::BitShape as Shape>::Index) -> Self {
+    type Index;
+    type Weight;
+    type IndexIter;
+    fn rand<R: Rng>(rng: &mut R) -> Self;
+    fn indices() -> Self::IndexIter;
+    fn mutate_in_place(&mut self, index: Self::Index, weight: Self::Weight);
+    fn mutate(mut self, index: Self::Index, weight: Self::Weight) -> Self {
+        self.mutate_in_place(index, weight);
         self
     }
-}
-
-impl<I: BitArray, W: Weight<I>, const C: usize> Layer<I> for FcMSE<I, W, C>
-where
-    bool: Element<I::BitShape>,
-    I::BitShape: IndexMap<bool, ()>,
-    I::TritArrayType: MaskedDistance + Copy,
-    [u32; C]: Default,
-    W: Weight<I> + Copy,
-    <W as Weight<I>>::Weights: WeightArray<W>,
-{
-    type WeightIndex = (u8, <I::BitShape as Shape>::Index);
-    type BaseCacheType = FcTritMseBaseCache<I, C>;
-    fn loss(&self, input: &I, class: usize) -> u64 {
-        self.fc
-            .iter()
-            .enumerate()
-            .map(|(i, trits)| {
-                let act = trits.bma(input);
-                let target = I::BitShape::N as u32 * (class == i) as u32;
-                let dist = target.saturating_sub(act) | act.saturating_sub(target);
-                (dist as u64).pow(2)
-            })
-            .sum()
-    }
-    /*
-    fn grads(&self, input: &I, class: usize) -> Vec<(Self::WeightIndex, Option<bool>, u64)> {
-        let sum_loss = self.loss(input, class);
-        self.fc
-            .iter()
-            .enumerate()
-            .map(|(c, trits)| {
-                let target = (I::BitShape::N as u32 / 2) * (class == c) as u32;
-                let act = trits.masked_distance(input);
-                let dist = target.saturating_sub(act) | act.saturating_sub(target);
-                let else_loss = sum_loss - (dist as u64).pow(2);
-
-                let mut losses = [0u64; 4];
-                for m in 0..2 {
-                    let new_act = act.saturating_add(m as u32 + 1);
-                    let dist = target.saturating_sub(new_act) | new_act.saturating_sub(target);
-                    losses[m] = else_loss + (dist as u64).pow(2);
-                }
-                for m in 0..2 {
-                    let new_act = act.saturating_sub(m as u32 + 1);
-                    let dist = target.saturating_sub(new_act) | new_act.saturating_sub(target);
-                    losses[2 + m] = else_loss + (dist as u64).pow(2);
-                }
-                dbg!(losses);
-
-                // we have 5 bits:
-                // - input sign
-                // - cur sign
-                // - cur magn
-                // - targ sign
-                // - targ magn
-                let loss_lut = [0u64; 32];
-                //for i in [false, true] {}
-
-                <I::BitShape as Shape>::indices().map(move |i| {
-                    let trit = trits.get_trit(i);
-                    let dist = target.saturating_sub(act) | act.saturating_sub(target);
-                    let full_loss = else_loss + (dist as u64).pow(2);
-                    ((c as u8, i), trit, full_loss)
-                })
-            })
-            .flatten()
-            .collect()
-    }
-    */
-    fn grads_slow(&self, input: &I, class: usize) -> Vec<(Self::WeightIndex, Option<bool>, u64)> {
+    fn loss(&self, input: &I, class: usize) -> u64;
+    /// losses for all mutations of all weights.
+    fn losses(&self, input: &I, class: usize) -> Vec<(Self::Index, Self::Weight, u64)>;
+    /// same as losses but a lot slower.
+    fn losses_slow(&self, input: &I, class: usize) -> Vec<(Self::Index, Self::Weight, u64)> {
         let null_loss = self.loss(input, class);
-        I::BitShape::indices()
-            .map(|i| {
-                (0..C).map(|c| {
-                    let index = (c as u8, i);
-                    let mut weights = *self;
-                    let loss = null_loss;
-                    let value = None;
-                    (index, value, loss)
-                })
+        <Self::Weight as Weight>::states()
+            .map(|w| {
+                Self::indices()
+                    .map(|i| (i, w, self.mutate(i, w).loss(input, class)))
+                    .collect::<Vec<_>>()
             })
             .flatten()
+            .filter(|(_, _, l)| *l != null_loss)
             .collect()
     }
-    //fn base_cache(&self, input: &I, class: usize) -> Self::BaseCacheType {
-    //    let mut acts = <[u32; C]>::default();
-    //    for c in 0..C {
-    //        acts[c] = self.fc[c].masked_distance(input);
-    //    }
-
-    //    FcTritMseBaseCache { input_type: PhantomData::default(), acts }
-    //}
 }
 
-pub struct FcTritMseBaseCache<I: BitArray, const C: usize> {
-    input_type: PhantomData<I>,
-    acts: [u32; C],
+#[derive(Copy, Clone, Debug)]
+pub struct FcMSE<I, const C: usize> {
+    pub fc: [I; C],
 }
 
-impl<I: BitArray, const C: usize> BaseCache for FcTritMseBaseCache<I, C> {
-    type ChanIndex = <<I as BitArray>::BitShape as Shape>::Index;
-    type ChanValue = bool;
-    type Input = I;
-    type ChanCache = FcTritMseChanCache<I, C>;
-    fn chan_cache(&self, chan_val: Self::ChanValue, chan_index: Self::ChanIndex) -> Self::ChanCache {
-        FcTritMseChanCache { input_type: PhantomData::default() }
+pub struct FcMSEindexIter<I: Shape, const C: usize> {
+    class_index: usize,
+    input_iter: I::IndexIter,
+}
+
+impl<I: Shape, const C: usize> Iterator for FcMSEindexIter<I, C> {
+    type Item = (usize, I::Index);
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(i) = self.input_iter.next() {
+            Some((self.class_index, i))
+        } else {
+            self.class_index += 1;
+            if self.class_index >= C {
+                None
+            } else {
+                self.input_iter = I::indices();
+                self.input_iter.next().map(|i| (self.class_index, i))
+            }
+        }
     }
 }
 
-pub struct FcTritMseChanCache<I, const C: usize> {
-    input_type: PhantomData<I>,
+impl<A, const C: usize> Model<<bool as PackedElement<A::Shape>>::Array> for FcMSE<A, C>
+where
+    [A; C]: LongDefault,
+    A: WeightArray + Sized,
+    bool: PackedElement<A::Shape>,
+    [A; C]: LongDefault,
+    <bool as PackedElement<A::Shape>>::Array: Copy + PackedArray<Weight = bool, Shape = A::Shape>,
+{
+    type Index = (usize, <A::Shape as Shape>::Index);
+    type Weight = A::Weight;
+    type IndexIter = FcMSEindexIter<A::Shape, C>;
+    fn rand<R: Rng>(rng: &mut R) -> Self {
+        let mut weights = <[A; C]>::long_default();
+        for c in 0..C {
+            weights[c] = <A>::rand(rng);
+        }
+        FcMSE { fc: weights }
+    }
+    fn indices() -> FcMSEindexIter<A::Shape, C> {
+        FcMSEindexIter {
+            class_index: 0,
+            input_iter: A::Shape::indices(),
+        }
+    }
+    fn mutate_in_place(
+        &mut self,
+        (head, tail): (usize, <A::Shape as Shape>::Index),
+        weight: A::Weight,
+    ) {
+        self.fc[head].mutate_in_place(tail, weight);
+    }
+    fn loss(&self, input: &<bool as PackedElement<A::Shape>>::Array, class: usize) -> u64 {
+        0u64
+    }
+    fn losses(
+        &self,
+        input: &<bool as PackedElement<A::Shape>>::Array,
+        class: usize,
+    ) -> Vec<(Self::Index, A::Weight, u64)> {
+        vec![]
+    }
 }
 
-impl<I: BitArray, const C: usize> ChanCache for FcTritMseChanCache<I, C> {
-    type Mutation = bool;
-    fn loss(&self, mutation: &bool) -> u64 {
-        0u64
+#[cfg(test)]
+mod tests {
+    use super::{FcMSE, Model};
+    use crate::bits::{PackedElement, Weight, WeightArray};
+    use rand::Rng;
+    use rand::SeedableRng;
+    use rand_hc::Hc128Rng;
+    extern crate test;
+    use crate::shape::Shape;
+
+    type InputShape = [[(); 32]; 3];
+    type InputType = <bool as PackedElement<InputShape>>::Array;
+    type BitWeightArrayType = <bool as PackedElement<InputShape>>::Array;
+    type TritWeightArrayType = (<Option<bool> as PackedElement<InputShape>>::Array, u32);
+
+    #[test]
+    fn rand_fcmse_bit_losses() {
+        let mut rng = Hc128Rng::seed_from_u64(0);
+        (0..100).for_each(|_| {
+            let inputs: InputType = rng.gen();
+            let weights = <FcMSE<TritWeightArrayType, 7> as Model<InputType>>::rand(&mut rng);
+            for class in 0..7 {
+                let mut true_losses = weights.losses_slow(&inputs, class);
+                true_losses.sort();
+                let mut losses = weights.losses(&inputs, class);
+                losses.sort();
+                assert_eq!(true_losses, losses);
+            }
+        })
     }
 }

@@ -291,6 +291,12 @@ pub trait LongDefault {
     fn long_default() -> Self;
 }
 
+impl<T: LongDefault> LongDefault for (T, u32) {
+    fn long_default() -> Self {
+        (T::long_default(), 0)
+    }
+}
+
 macro_rules! impl_long_default_for_array {
     ($len:expr) => {
         impl<T: Copy + LongDefault> LongDefault for [T; $len] {
