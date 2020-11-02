@@ -130,7 +130,7 @@ where
 {
     type Shape;
     type Weight;
-    const FOOBAR: u32;
+    const MAX: u32;
     const RANGE: u32;
     const THRESHOLD: u32;
     fn rand<R: Rng>(rng: &mut R) -> Self;
@@ -217,7 +217,7 @@ where
 {
     type Shape = B::Shape;
     type Weight = bool;
-    const FOOBAR: u32 = 2;
+    const MAX: u32 = <B::Shape as Shape>::N as u32;
     const RANGE: u32 = 2;
     const THRESHOLD: u32 = B::Shape::N as u32 / 2;
     fn rand<R: Rng>(rng: &mut R) -> Self {
@@ -310,7 +310,7 @@ where
 {
     type Shape = T::Shape;
     type Weight = Option<bool>;
-    const FOOBAR: u32 = 2;
+    const MAX: u32 = <T::Shape as Shape>::N as u32 * 2;
     const RANGE: u32 = 2;
     const THRESHOLD: u32 = T::Shape::N as u32;
     fn rand<R: Rng>(rng: &mut R) -> Self {
@@ -1377,6 +1377,7 @@ mod tests {
     type BitWeightArrayType = <bool as PackedElement<InputShape>>::Array;
     type TritWeightArrayType = <Option<bool> as PackedElement<InputShape>>::Array;
 
+    /*
     #[test]
     fn rand_bit_acts() {
         let mut rng = Hc128Rng::seed_from_u64(0);
@@ -1467,4 +1468,5 @@ mod tests {
             assert_eq!(losses, true_losses);
         })
     }
+    */
 }

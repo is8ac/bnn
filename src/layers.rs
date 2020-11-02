@@ -95,6 +95,7 @@ where
     A: WeightArray + Sized,
     bool: PackedElement<A::Shape>,
     [A; C]: LongDefault,
+    <A::Shape as Shape>::Index: Copy,
     <bool as PackedElement<A::Shape>>::Array: Copy + PackedArray<Weight = bool, Shape = A::Shape>,
 {
     type Index = (usize, <A::Shape as Shape>::Index);
@@ -121,14 +122,43 @@ where
         self.fc[head].mutate_in_place(tail, weight);
     }
     fn loss(&self, input: &<bool as PackedElement<A::Shape>>::Array, class: usize) -> u64 {
-        0u64
+        self.fc
+            .iter()
+            .enumerate()
+            .map(|(c, w)| {
+                let target_act = (c == class) as u32 * A::MAX;
+                let act = w.bma(input);
+                let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
+                (dist as u64).pow(2)
+            })
+            .sum()
     }
     fn losses(
         &self,
         input: &<bool as PackedElement<A::Shape>>::Array,
         class: usize,
     ) -> Vec<(Self::Index, A::Weight, u64)> {
-        vec![]
+        let sum_loss = self.loss(input, class);
+
+        self.fc
+            .iter()
+            .enumerate()
+            .map(|(c, w)| {
+                let target_act = (c == class) as u32 * A::MAX;
+                let act = w.bma(input);
+                let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
+                let part_loss = sum_loss - (dist as u64).pow(2);
+                w.losses(input, |act| {
+                    part_loss
+                        + ((act.saturating_sub(target_act) | target_act.saturating_sub(act)) as u64)
+                            .pow(2)
+                })
+                .iter()
+                .map(|(i, w, l)| ((c, *i), *w, *l))
+                .collect::<Vec<_>>()
+            })
+            .flatten()
+            .collect()
     }
 }
 
@@ -142,13 +172,28 @@ mod tests {
     extern crate test;
     use crate::shape::Shape;
 
-    type InputShape = [[(); 32]; 3];
+    type InputShape = [[(); 32]; 2];
     type InputType = <bool as PackedElement<InputShape>>::Array;
     type BitWeightArrayType = <bool as PackedElement<InputShape>>::Array;
     type TritWeightArrayType = (<Option<bool> as PackedElement<InputShape>>::Array, u32);
 
     #[test]
     fn rand_fcmse_bit_losses() {
+        let mut rng = Hc128Rng::seed_from_u64(0);
+        (0..100).for_each(|_| {
+            let inputs: InputType = rng.gen();
+            let weights = <FcMSE<BitWeightArrayType, 7> as Model<InputType>>::rand(&mut rng);
+            for class in 0..7 {
+                let mut true_losses = weights.losses_slow(&inputs, class);
+                true_losses.sort();
+                let mut losses = weights.losses(&inputs, class);
+                losses.sort();
+                assert_eq!(true_losses, losses);
+            }
+        })
+    }
+    #[test]
+    fn rand_fcmse_trit_losses() {
         let mut rng = Hc128Rng::seed_from_u64(0);
         (0..100).for_each(|_| {
             let inputs: InputType = rng.gen();

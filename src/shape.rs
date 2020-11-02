@@ -323,6 +323,7 @@ impl_long_default_for_array!(13);
 impl_long_default_for_array!(14);
 impl_long_default_for_array!(15);
 impl_long_default_for_array!(16);
+impl_long_default_for_array!(25);
 impl_long_default_for_array!(32);
 impl_long_default_for_array!(64);
 impl_long_default_for_array!(128);
