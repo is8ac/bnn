@@ -19,6 +19,9 @@ cargo run --release --bin mnist_one_layer_fc -- mnist
 where `mnist` is the path the MNIST dataset.
 If needed, download from http://yann.lecun.com/exdb/mnist/
 
+# Testing
+Until [78632](https://github.com/rust-lang/rust/issues/78632) is fixed, you cannot run the tests in the bits mod and layers mod at the same time.
+Comment out whichever one you don't need.
 
 # Literature
 ## Low precision neural nets

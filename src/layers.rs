@@ -45,19 +45,25 @@ where
         self
     }
     fn loss(&self, input: &I, class: usize) -> u64;
-    /// losses for all mutations of all weights.
-    fn losses(&self, input: &I, class: usize) -> Vec<(Self::Index, Self::Weight, u64)>;
+    /// loss deltas for all mutations of all weights.
+    fn loss_deltas(&self, input: &I, class: usize) -> Vec<(Self::Index, Self::Weight, i64)>;
     /// same as losses but a lot slower.
-    fn losses_slow(&self, input: &I, class: usize) -> Vec<(Self::Index, Self::Weight, u64)> {
-        let null_loss = self.loss(input, class);
+    fn loss_deltas_slow(&self, input: &I, class: usize) -> Vec<(Self::Index, Self::Weight, i64)> {
+        let null_loss = self.loss(input, class) as i64;
         <Self::Weight as Weight>::states()
             .map(|w| {
                 Self::indices()
-                    .map(|i| (i, w, self.mutate(i, w).loss(input, class)))
+                    .map(|i| {
+                        (
+                            i,
+                            w,
+                            self.mutate(i, w).loss(input, class) as i64 - null_loss,
+                        )
+                    })
+                    .filter(|(_, _, l)| *l != 0)
                     .collect::<Vec<_>>()
             })
             .flatten()
-            .filter(|(_, _, l)| *l != null_loss)
             .collect()
     }
 }
@@ -133,12 +139,12 @@ where
             })
             .sum()
     }
-    fn losses(
+    fn loss_deltas(
         &self,
         input: &<bool as PackedElement<A::Shape>>::Array,
         class: usize,
-    ) -> Vec<(Self::Index, A::Weight, u64)> {
-        let sum_loss = self.loss(input, class);
+    ) -> Vec<(Self::Index, A::Weight, i64)> {
+        //let sum_loss = self.loss(input, class);
 
         self.fc
             .iter()
@@ -147,11 +153,11 @@ where
                 let target_act = (c == class) as u32 * A::MAX;
                 let act = w.bma(input);
                 let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
-                let part_loss = sum_loss - (dist as u64).pow(2);
-                w.losses(input, |act| {
-                    part_loss
-                        + ((act.saturating_sub(target_act) | target_act.saturating_sub(act)) as u64)
-                            .pow(2)
+                let class_null_loss = (dist as u64).pow(2) as i64;
+                w.loss_deltas(input, |act| {
+                    ((act.saturating_sub(target_act) | target_act.saturating_sub(act)) as u64)
+                        .pow(2) as i64
+                        - class_null_loss
                 })
                 .iter()
                 .map(|(i, w, l)| ((c, *i), *w, *l))
@@ -172,11 +178,12 @@ mod tests {
     extern crate test;
     use crate::shape::Shape;
 
-    type InputShape = [[(); 32]; 2];
+    type InputShape = [[(); 32]; 3];
     type InputType = <bool as PackedElement<InputShape>>::Array;
     type BitWeightArrayType = <bool as PackedElement<InputShape>>::Array;
     type TritWeightArrayType = (<Option<bool> as PackedElement<InputShape>>::Array, u32);
 
+    ///*
     #[test]
     fn rand_fcmse_bit_losses() {
         let mut rng = Hc128Rng::seed_from_u64(0);
@@ -184,9 +191,9 @@ mod tests {
             let inputs: InputType = rng.gen();
             let weights = <FcMSE<BitWeightArrayType, 7> as Model<InputType>>::rand(&mut rng);
             for class in 0..7 {
-                let mut true_losses = weights.losses_slow(&inputs, class);
+                let mut true_losses = weights.loss_deltas_slow(&inputs, class);
                 true_losses.sort();
-                let mut losses = weights.losses(&inputs, class);
+                let mut losses = weights.loss_deltas(&inputs, class);
                 losses.sort();
                 assert_eq!(true_losses, losses);
             }
@@ -199,12 +206,13 @@ mod tests {
             let inputs: InputType = rng.gen();
             let weights = <FcMSE<TritWeightArrayType, 7> as Model<InputType>>::rand(&mut rng);
             for class in 0..7 {
-                let mut true_losses = weights.losses_slow(&inputs, class);
+                let mut true_losses = weights.loss_deltas_slow(&inputs, class);
                 true_losses.sort();
-                let mut losses = weights.losses(&inputs, class);
+                let mut losses = weights.loss_deltas(&inputs, class);
                 losses.sort();
                 assert_eq!(true_losses, losses);
             }
         })
     }
+    //*/
 }

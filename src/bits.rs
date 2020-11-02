@@ -162,27 +162,32 @@ where
     ) -> bool {
         self.act(&input.set_weight(index, value))
     }
-    /// losses if we were to set each of the elements to each different value. Is permited to prune null acts.
-    fn losses<F: Fn(u32) -> u64>(
+    /// loss delta if we were to set each of the elements to each different value. Is permited to prune null deltas.
+    fn loss_deltas<F: Fn(u32) -> i64>(
         &self,
         input: &<bool as PackedElement<Self::Shape>>::Array,
-        loss_fn: F,
-    ) -> Vec<(<Self::Shape as Shape>::Index, Self::Weight, u64)>;
-    /// Does the same thing as losses but is a lot slower.
-    fn losses_slow<F: Fn(u32) -> u64>(
+        loss_delta_fn: F,
+    ) -> Vec<(<Self::Shape as Shape>::Index, Self::Weight, i64)>;
+    /// Does the same thing as loss_deltas but is a lot slower.
+    fn loss_deltas_slow<F: Fn(u32) -> i64>(
         &self,
         input: &<bool as PackedElement<Self::Shape>>::Array,
-        loss_fn: F,
-    ) -> Vec<(<Self::Shape as Shape>::Index, Self::Weight, u64)> {
-        let null_loss = loss_fn(self.bma(input));
+        loss_delta_fn: F,
+    ) -> Vec<(<Self::Shape as Shape>::Index, Self::Weight, i64)> {
         <Self::Weight as Weight>::states()
             .map(|value| {
                 <Self::Shape as Shape>::indices()
-                    .map(|index| (index, value, loss_fn(self.mutate(index, value).bma(&input))))
-                    .filter(|(_, _, l)| *l != null_loss)
+                    .map(|index| {
+                        (
+                            index,
+                            value,
+                            loss_delta_fn(self.mutate(index, value).bma(&input)),
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .flatten()
+            .filter(|(_, _, l)| *l != 0)
             .collect()
     }
     /// Acts if we were to set each element to value
@@ -249,22 +254,23 @@ where
             cur_act > Self::THRESHOLD
         }
     }
-    fn losses<F: Fn(u32) -> u64>(
+    fn loss_deltas<F: Fn(u32) -> i64>(
         &self,
         input: &B,
-        loss_fn: F,
-    ) -> Vec<(<B::Shape as Shape>::Index, bool, u64)> {
+        loss_delta_fn: F,
+    ) -> Vec<(<B::Shape as Shape>::Index, bool, i64)> {
         let cur_act = self.bma(input);
-        let losses = [
-            loss_fn(cur_act.saturating_sub(1)),
-            loss_fn(cur_act.saturating_add(1)),
+        let deltas = [
+            loss_delta_fn(cur_act.saturating_sub(1)),
+            loss_delta_fn(cur_act.saturating_add(1)),
         ];
         <B::Shape as Shape>::indices()
             .map(|i| {
                 let weight = self.get_weight(i);
                 let input = input.get_weight(i);
-                (i, !weight, losses[!(weight ^ input) as usize])
+                (i, !weight, deltas[!(weight ^ input) as usize])
             })
+            .filter(|&(_, _, l)| l != 0)
             .collect()
     }
     fn acts(&self, input: &B, value: bool) -> B {
@@ -360,51 +366,50 @@ where
             unreachable!();
         }
     }
-    fn losses<F: Fn(u32) -> u64>(
+    fn loss_deltas<F: Fn(u32) -> i64>(
         &self,
         input: &<bool as PackedElement<T::Shape>>::Array,
-        loss_fn: F,
-    ) -> Vec<(<T::Shape as Shape>::Index, Option<bool>, u64)> {
+        loss_delta_fn: F,
+    ) -> Vec<(<T::Shape as Shape>::Index, Option<bool>, i64)> {
         let cur_act = self.bma(input);
-        let losses = [
+        let deltas = [
             [
-                loss_fn(cur_act.saturating_sub(1)),
-                loss_fn(cur_act.saturating_add(1)),
+                loss_delta_fn(cur_act.saturating_sub(1)),
+                loss_delta_fn(cur_act.saturating_add(1)),
             ],
             [
-                loss_fn(cur_act.saturating_sub(2)),
-                loss_fn(cur_act.saturating_add(2)),
+                loss_delta_fn(cur_act.saturating_sub(2)),
+                loss_delta_fn(cur_act.saturating_add(2)),
             ],
         ];
-        let null_loss = loss_fn(cur_act);
 
         <T::Shape as Shape>::indices()
             .map(|i| {
                 let input = input.get_weight(i);
                 if let Some(sign) = self.0.get_weight(i) {
                     if sign {
-                        iter::once((i, Some(false), losses[1][input as usize])).chain(iter::once((
+                        iter::once((i, Some(false), deltas[1][input as usize])).chain(iter::once((
                             i,
                             None,
-                            losses[0][input as usize],
+                            deltas[0][input as usize],
                         )))
                     } else {
-                        iter::once((i, None, losses[0][!input as usize])).chain(iter::once((
+                        iter::once((i, None, deltas[0][!input as usize])).chain(iter::once((
                             i,
                             Some(true),
-                            losses[1][!input as usize],
+                            deltas[1][!input as usize],
                         )))
                     }
                 } else {
-                    iter::once((i, Some(false), losses[0][input as usize])).chain(iter::once((
+                    iter::once((i, Some(false), deltas[0][input as usize])).chain(iter::once((
                         i,
                         Some(true),
-                        losses[0][!input as usize],
+                        deltas[0][!input as usize],
                     )))
                 }
             })
             .flatten()
-            .filter(|(_, _, l)| *l != null_loss)
+            .filter(|&(_, _, l)| l != 0)
             .collect()
     }
     fn acts(
@@ -1415,10 +1420,10 @@ mod tests {
         (0..1_000).for_each(|_| {
             let inputs: InputType = rng.gen();
             let weights: BitWeightArrayType = rng.gen();
-
-            let mut losses = weights.losses(&inputs, |x| x as u64);
+            let null_act = weights.bma(&inputs);
+            let mut losses = weights.loss_deltas(&inputs, |x| x as i64 - null_act as i64);
             losses.sort();
-            let mut true_losses = weights.losses_slow(&inputs, |x| x as u64);
+            let mut true_losses = weights.loss_deltas_slow(&inputs, |x| x as i64 - null_act as i64);
             true_losses.sort();
             assert_eq!(losses, true_losses);
         })
@@ -1460,10 +1465,11 @@ mod tests {
         (0..1_000).for_each(|_| {
             let inputs: InputType = rng.gen();
             let weights = <(TritWeightArrayType, u32)>::rand(&mut rng);
+            let null_act = weights.bma(&inputs);
 
-            let mut losses = weights.losses(&inputs, |x| x as u64);
+            let mut losses = weights.loss_deltas(&inputs, |x| x as i64 - null_act as i64);
             losses.sort();
-            let mut true_losses = weights.losses_slow(&inputs, |x| x as u64);
+            let mut true_losses = weights.loss_deltas_slow(&inputs, |x| x as i64 - null_act as i64);
             true_losses.sort();
             assert_eq!(losses, true_losses);
         })
