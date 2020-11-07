@@ -1,13 +1,12 @@
 // the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
-use crate::shape::{Element, IndexMap, LongDefault, Shape, Wrap};
+use crate::shape::{Element, LongDefault, Shape, Wrap};
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter;
-use std::marker::PhantomData;
 use std::num::Wrapping;
 use std::ops;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
@@ -76,34 +75,55 @@ pub trait Weight
 where
     Self: Sized + Copy,
 {
+    const RANGE: u32;
     const N: usize;
     fn states() -> iter::Cloned<slice::Iter<'static, Self>>;
+    fn bma(&self, input: bool) -> u32;
 }
 
 impl Weight for bool {
+    const RANGE: u32 = 1;
     const N: usize = 2;
     fn states() -> iter::Cloned<slice::Iter<'static, bool>> {
         [true, false].iter().cloned()
     }
+    fn bma(&self, input: bool) -> u32 {
+        (self ^ input) as u32
+    }
 }
 
 impl Weight for Option<bool> {
+    const RANGE: u32 = 2;
     const N: usize = 3;
     fn states() -> iter::Cloned<slice::Iter<'static, Option<bool>>> {
         [Some(true), None, Some(false)].iter().cloned()
     }
+    fn bma(&self, input: bool) -> u32 {
+        if let Some(sign) = self {
+            (sign ^ input) as u32 * 2
+        } else {
+            1
+        }
+    }
 }
 
 impl Weight for (bool, bool) {
+    const RANGE: u32 = 3;
     const N: usize = 4;
     fn states() -> iter::Cloned<slice::Iter<'static, (bool, bool)>> {
         [(true, true), (true, false), (false, false), (false, true)]
             .iter()
             .cloned()
     }
+    fn bma(&self, input: bool) -> u32 {
+        let input: i8 = if input { -1 } else { 1 };
+        let weight: i8 = (if self.0 { -1 } else { 1 }) * (self.1 as i8 + 1);
+        ((weight * input) + 3) as u32
+    }
 }
 
 impl Weight for Option<(bool, bool)> {
+    const RANGE: u32 = 3;
     const N: usize = 5;
     fn states() -> iter::Cloned<slice::Iter<'static, Option<(bool, bool)>>> {
         [
@@ -116,51 +136,52 @@ impl Weight for Option<(bool, bool)> {
         .iter()
         .cloned()
     }
+    fn bma(&self, input: bool) -> u32 {
+        if let Some(weight) = self {
+            let input: i8 = if input { -1 } else { 1 };
+            let weight: i8 = (if weight.0 { -1 } else { 1 }) * (weight.1 as i8 + 1);
+            ((weight * input) + 3) as u32
+        } else {
+            3
+        }
+    }
 }
 
 pub trait WeightArray
 where
     Self: Copy,
     bool: PackedElement<Self::Shape>,
-    Self::Weight: 'static,
     Self::Shape: Shape + PackedIndexMap<bool>,
-    Self::Weight: Weight,
+    Self::Weight: 'static + Weight,
     <bool as PackedElement<Self::Shape>>::Array:
         PackedArray<Weight = bool, Shape = Self::Shape> + Copy,
 {
     type Shape;
     type Weight;
     const MAX: u32;
-    const RANGE: u32;
     const THRESHOLD: u32;
     fn rand<R: Rng>(rng: &mut R) -> Self;
+    fn get_weight(&self, index: <Self::Shape as Shape>::Index) -> Self::Weight;
     /// multiply accumulate
     fn bma(&self, input: &<bool as PackedElement<Self::Shape>>::Array) -> u32;
+    fn bma_slow(&self, input: &<bool as PackedElement<Self::Shape>>::Array) -> u32 {
+        <Self::Shape as Shape>::indices()
+            .map(|i| self.get_weight(i).bma(input.get_weight(i)))
+            .sum()
+    }
     /// thresholded activation
     fn act(&self, input: &<bool as PackedElement<Self::Shape>>::Array) -> bool {
         self.bma(input) > Self::THRESHOLD
+    }
+    fn act_is_alive(&self, input: &<bool as PackedElement<Self::Shape>>::Array) -> bool {
+        let act = self.bma(input);
+        ((act + Self::Weight::RANGE) > Self::THRESHOLD)
+            | ((Self::THRESHOLD + Self::Weight::RANGE) < act)
     }
     fn mutate_in_place(&mut self, index: <Self::Shape as Shape>::Index, value: Self::Weight);
     fn mutate(mut self, index: <Self::Shape as Shape>::Index, value: Self::Weight) -> Self {
         self.mutate_in_place(index, value);
         self
-    }
-    /// if we set a bit of the input to a new value what will be the new act?
-    fn input_mut_act(
-        &self,
-        input: &<bool as PackedElement<Self::Shape>>::Array,
-        cur_act: u32,
-        index: <Self::Shape as Shape>::Index,
-        value: bool,
-    ) -> bool;
-    fn input_mut_act_slow(
-        &self,
-        input: &<bool as PackedElement<Self::Shape>>::Array,
-        cur_act: u32,
-        index: <Self::Shape as Shape>::Index,
-        value: bool,
-    ) -> bool {
-        self.act(&input.set_weight(index, value))
     }
     /// loss delta if we were to set each of the elements to each different value. Is permited to prune null deltas.
     fn loss_deltas<F: Fn(u32) -> i64>(
@@ -206,6 +227,20 @@ where
             self.mutate(index, value).act(input)
         })
     }
+    /// Act if each input is flipped.
+    fn input_acts(
+        &self,
+        input: &<bool as PackedElement<Self::Shape>>::Array,
+    ) -> <bool as PackedElement<Self::Shape>>::Array;
+    /// input_acts_slow does the same thing as input_acts, but it is a lot slower.
+    fn input_acts_slow(
+        &self,
+        input: &<bool as PackedElement<Self::Shape>>::Array,
+    ) -> <bool as PackedElement<Self::Shape>>::Array {
+        <Self::Shape as PackedIndexMap<bool>>::index_map(|index| {
+            self.act(&input.set_weight(index, !input.get_weight(index)))
+        })
+    }
 }
 
 impl<B> WeightArray for B
@@ -222,37 +257,19 @@ where
 {
     type Shape = B::Shape;
     type Weight = bool;
-    const MAX: u32 = <B::Shape as Shape>::N as u32;
-    const RANGE: u32 = 2;
+    const MAX: u32 = B::Shape::N as u32;
     const THRESHOLD: u32 = B::Shape::N as u32 / 2;
     fn rand<R: Rng>(rng: &mut R) -> Self {
         rng.gen()
+    }
+    fn get_weight(&self, index: <B::Shape as Shape>::Index) -> bool {
+        <B as PackedArray>::get_weight(self, index)
     }
     fn bma(&self, input: &B) -> u32 {
         self.distance(input)
     }
     fn mutate_in_place(&mut self, index: <B::Shape as Shape>::Index, value: bool) {
         self.set_weight_in_place(index, value)
-    }
-    fn input_mut_act(
-        &self,
-        input: &<bool as PackedElement<B::Shape>>::Array,
-        cur_act: u32,
-        index: <B::Shape as Shape>::Index,
-        value: bool,
-    ) -> bool {
-        let input = input.get_weight(index);
-        let weight = self.get_weight(index);
-
-        if cur_act == Self::THRESHOLD {
-            // we need to go up by one to flip
-            !(weight ^ input) & (value ^ weight)
-        } else if cur_act == (Self::THRESHOLD + 1) {
-            // we need to go down by one to flip
-            !(weight ^ input) | (value ^ weight)
-        } else {
-            cur_act > Self::THRESHOLD
-        }
     }
     fn loss_deltas<F: Fn(u32) -> i64>(
         &self,
@@ -261,14 +278,14 @@ where
     ) -> Vec<(<B::Shape as Shape>::Index, bool, i64)> {
         let cur_act = self.bma(input);
         let deltas = [
-            loss_delta_fn(cur_act.saturating_sub(1)),
             loss_delta_fn(cur_act.saturating_add(1)),
+            loss_delta_fn(cur_act.saturating_sub(1)),
         ];
         <B::Shape as Shape>::indices()
             .map(|i| {
                 let weight = self.get_weight(i);
                 let input = input.get_weight(i);
-                (i, !weight, deltas[!(weight ^ input) as usize])
+                (i, !weight, deltas[(weight ^ input) as usize])
             })
             .filter(|&(_, _, l)| l != 0)
             .collect()
@@ -301,6 +318,17 @@ where
             B::blit(cur_act > Self::THRESHOLD)
         }
     }
+    fn input_acts(
+        &self,
+        input: &<bool as PackedElement<Self::Shape>>::Array,
+    ) -> <bool as PackedElement<Self::Shape>>::Array {
+        let cur_act = self.bma(input);
+        if (cur_act == Self::THRESHOLD) | (cur_act == (Self::THRESHOLD + 1)) {
+            self.map(input, |weight, input| weight.sign() ^ !input)
+        } else {
+            B::blit(cur_act > Self::THRESHOLD)
+        }
+    }
 }
 
 impl<T> WeightArray for (T, u32)
@@ -317,11 +345,13 @@ where
     type Shape = T::Shape;
     type Weight = Option<bool>;
     const MAX: u32 = <T::Shape as Shape>::N as u32 * 2;
-    const RANGE: u32 = 2;
     const THRESHOLD: u32 = T::Shape::N as u32;
     fn rand<R: Rng>(rng: &mut R) -> Self {
         let weights: T = rng.gen();
         (weights, weights.mask_zeros())
+    }
+    fn get_weight(&self, index: <T::Shape as Shape>::Index) -> Option<bool> {
+        <T as PackedArray>::get_weight(&self.0, index)
     }
     fn bma(&self, input: &<bool as PackedElement<T::Shape>>::Array) -> u32 {
         self.0.masked_distance(input) * 2 + self.1
@@ -329,42 +359,6 @@ where
     fn mutate_in_place(&mut self, index: <T::Shape as Shape>::Index, value: Option<bool>) {
         self.0.set_weight_in_place(index, value);
         self.1 = self.0.mask_zeros();
-    }
-    fn input_mut_act(
-        &self,
-        input: &<bool as PackedElement<T::Shape>>::Array,
-        cur_act: u32,
-        index: <T::Shape as Shape>::Index,
-        value: bool,
-    ) -> bool {
-        let slow = self.input_mut_act_slow(input, cur_act, index, value);
-
-        let input = input.get_weight(index);
-        let weight = self.0.get_weight(index);
-        let weight_mask = weight.is_some();
-        let weight_sign = weight.unwrap_or(false);
-
-        if (cur_act + 2) <= Self::THRESHOLD {
-            false
-        } else if cur_act > (Self::THRESHOLD + 2) {
-            true
-        } else if value == input {
-            cur_act > Self::THRESHOLD
-        } else if (cur_act + 1) == Self::THRESHOLD {
-            // go up 2 to activate
-            (value ^ input) & !(weight_sign ^ input) & weight_mask
-        } else if cur_act == (Self::THRESHOLD + 2) {
-            // go down 2 to deactivate
-            !((value ^ input) & ((weight_sign ^ input) & weight_mask))
-        } else if cur_act == Self::THRESHOLD {
-            // go up 1 to activate
-            slow
-        } else if cur_act == (Self::THRESHOLD + 1) {
-            // go down 1 to deactivate
-            slow
-        } else {
-            unreachable!();
-        }
     }
     fn loss_deltas<F: Fn(u32) -> i64>(
         &self,
@@ -487,6 +481,26 @@ where
                 self.0
                     .map(&input, |trit, input| !((input ^ trit.sign()) & trit.mask()))
             }
+        } else {
+            unreachable!();
+        }
+    }
+    fn input_acts(
+        &self,
+        input: &<bool as PackedElement<Self::Shape>>::Array,
+    ) -> <bool as PackedElement<Self::Shape>>::Array {
+        let cur_act = self.bma(input);
+
+        if (cur_act + 2) <= Self::THRESHOLD {
+            <<bool as PackedElement<T::Shape>>::Array as PackedArray>::blit(false)
+        } else if cur_act > (Self::THRESHOLD + 2) {
+            <<bool as PackedElement<T::Shape>>::Array as PackedArray>::blit(true)
+        } else if ((cur_act + 1) == Self::THRESHOLD) | (cur_act == Self::THRESHOLD) {
+            self.0
+                .map(&input, |trit, input| (!input ^ trit.sign()) & trit.mask())
+        } else if (cur_act == (Self::THRESHOLD + 2)) | (cur_act == (Self::THRESHOLD + 1)) {
+            self.0
+                .map(&input, |trit, input| !((input ^ trit.sign()) & trit.mask()))
         } else {
             unreachable!();
         }
@@ -772,7 +786,6 @@ where
 
 pub trait BitWord {
     type Word;
-    #[inline(always)]
     fn sign(self) -> Self::Word;
 }
 
@@ -1377,12 +1390,24 @@ mod tests {
     extern crate test;
     use crate::shape::Shape;
 
-    type InputShape = [[(); 32]; 3];
+    type InputShape = [[(); 64]; 1];
     type InputType = <bool as PackedElement<InputShape>>::Array;
     type BitWeightArrayType = <bool as PackedElement<InputShape>>::Array;
     type TritWeightArrayType = <Option<bool> as PackedElement<InputShape>>::Array;
 
     /*
+    #[test]
+    fn rand_bit_bma() {
+        let mut rng = Hc128Rng::seed_from_u64(0);
+        (0..10_000).for_each(|_| {
+            let inputs: InputType = rng.gen();
+            let weights: BitWeightArrayType = rng.gen();
+
+            let sum = weights.bma(&inputs);
+            let true_sum = weights.bma_slow(&inputs);
+            assert_eq!(sum, true_sum);
+        })
+    }
     #[test]
     fn rand_bit_acts() {
         let mut rng = Hc128Rng::seed_from_u64(0);
@@ -1398,20 +1423,15 @@ mod tests {
         })
     }
     #[test]
-    fn rand_bit_input_mut_act() {
+    fn rand_bit_input_acts() {
         let mut rng = Hc128Rng::seed_from_u64(0);
         (0..10_000).for_each(|_| {
             let inputs: InputType = rng.gen();
             let weights: BitWeightArrayType = rng.gen();
 
-            let cur_act = weights.bma(&inputs);
-            for index in InputShape::indices() {
-                for val in <bool>::states() {
-                    let act = weights.input_mut_act(&inputs, cur_act, index, val);
-                    let true_act = weights.input_mut_act_slow(&inputs, cur_act, index, val);
-                    assert_eq!(act, true_act);
-                }
-            }
+            let acts = weights.input_acts(&inputs);
+            let true_acts = weights.input_acts_slow(&inputs);
+            assert_eq!(acts, true_acts);
         })
     }
     #[test]
@@ -1429,6 +1449,18 @@ mod tests {
         })
     }
     #[test]
+    fn rand_trit_bma() {
+        let mut rng = Hc128Rng::seed_from_u64(0);
+        (0..10_000).for_each(|_| {
+            let inputs: InputType = rng.gen();
+            let weights = <(TritWeightArrayType, u32)>::rand(&mut rng);
+
+            let sum = weights.bma(&inputs);
+            let true_sum = weights.bma_slow(&inputs);
+            assert_eq!(sum, true_sum);
+        })
+    }
+    #[test]
     fn rand_trit_acts() {
         let mut rng = Hc128Rng::seed_from_u64(0);
         (0..10_000).for_each(|_| {
@@ -1443,20 +1475,15 @@ mod tests {
         })
     }
     #[test]
-    fn rand_trit_input_mut_act() {
+    fn rand_trit_input_acts() {
         let mut rng = Hc128Rng::seed_from_u64(0);
         (0..10_000).for_each(|_| {
             let inputs: InputType = rng.gen();
             let weights = <(TritWeightArrayType, u32)>::rand(&mut rng);
 
-            let cur_act = weights.bma(&inputs);
-            for index in InputShape::indices() {
-                for val in <bool>::states() {
-                    let act = weights.input_mut_act(&inputs, cur_act, index, val);
-                    let true_act = weights.input_mut_act_slow(&inputs, cur_act, index, val);
-                    assert_eq!(act, true_act);
-                }
-            }
+            let acts = weights.input_acts(&inputs);
+            let true_acts = weights.input_acts_slow(&inputs);
+            assert_eq!(acts, true_acts);
         })
     }
     #[test]

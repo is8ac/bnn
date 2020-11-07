@@ -166,6 +166,38 @@ where
     }
 }
 
+pub trait MutMap<I: Element<Self>, O: Element<Self>>
+where
+    Self: Shape + Sized,
+{
+    fn map<F: FnMut(&I) -> O>(
+        input: &<I as Element<Self>>::Array,
+        map_fn: &mut F,
+    ) -> <O as Element<Self>>::Array;
+}
+
+impl<I, O> MutMap<I, O> for () {
+    fn map<F: FnMut(&I) -> O>(input: &I, map_fn: &mut F) -> O {
+        map_fn(input)
+    }
+}
+
+impl<S: Shape + MutMap<I, O>, I: Element<S>, O: Element<S>, const L: usize> MutMap<I, O> for [S; L]
+where
+    <O as Element<Self>>::Array: LongDefault,
+{
+    fn map<F: FnMut(&I) -> O>(
+        input: &[<I as Element<S>>::Array; L],
+        map_fn: &mut F,
+    ) -> <O as Element<Self>>::Array {
+        let mut target = <<O as Element<Self>>::Array>::long_default();
+        for i in 0..L {
+            target[i] = <S as MutMap<I, O>>::map::<F>(&input[i], map_fn);
+        }
+        target
+    }
+}
+
 impl<
         O: Element<S>,
         W: Shape,
