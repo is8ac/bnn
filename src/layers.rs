@@ -7,7 +7,7 @@ pub trait Cache<I> {
     fn loss_delta(&self, input: I) -> i64;
 }
 
-#[derive(Copy, Clone, Debug, Ord, Eq, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Ord, Eq, PartialEq, PartialOrd, Hash)]
 pub enum LayerIndex<H: Copy, T: Copy> {
     Head(H),
     Tail(T),
@@ -505,200 +505,78 @@ where
 #[cfg(test)]
 mod tests {
     use super::{Cache, FcMSE, Model, FC};
-    use crate::bits::{PackedArray, PackedElement, Weight, WeightArray};
+    use crate::bits::{
+        b128, b32, b8, t128, t32, t8, PackedArray, PackedElement, Weight, WeightArray,
+    };
     use rand::Rng;
     use rand::SeedableRng;
     use rand_hc::Hc128Rng;
     extern crate test;
     use crate::shape::Shape;
 
-    type InputShape = [[(); 32]; 3];
-    type InputType = <bool as PackedElement<InputShape>>::Array;
-    type BitWeightArrayType = <bool as PackedElement<InputShape>>::Array;
-    type TritWeightArrayType = (<Option<bool> as PackedElement<InputShape>>::Array, u32);
-    type HiddenShape = [[(); 16]; 2];
-
-    ///*
-    #[test]
-    fn rand_fcmse_bit_losses() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..1000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <FcMSE<BitWeightArrayType, 7> as Model<InputType, 7>>::rand(&mut rng);
-            for class in 0..7 {
-                let mut true_losses = weights.loss_deltas_slow(&inputs, class);
-                true_losses.sort();
-                let mut losses = weights.loss_deltas(&inputs, class);
-                losses.sort();
-                assert_eq!(true_losses, losses);
-            }
-        })
-    }
-    #[test]
-    fn rand_fcmse_trit_losses() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..1000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <FcMSE<TritWeightArrayType, 7> as Model<InputType, 7>>::rand(&mut rng);
-            for class in 0..7 {
-                let mut true_losses = weights.loss_deltas_slow(&inputs, class);
-                true_losses.sort();
-                let mut losses = weights.loss_deltas(&inputs, class);
-                losses.sort();
-                assert_eq!(true_losses, losses);
-            }
-        })
-    }
-    #[test]
-    fn rand_fcmse_bit_input_losses() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..1000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <FcMSE<BitWeightArrayType, 7> as Model<InputType, 7>>::rand(&mut rng);
-
-            for class in 0..7 {
-                let null_loss = weights.loss(&inputs, class);
-                let cache = weights.cache(&inputs, class);
-                for i in <InputShape as Shape>::indices() {
-                    let chan_cache = weights.subtract_input(
-                        &cache,
-                        i,
-                        <InputType as PackedArray>::get_weight(&inputs, i),
-                    );
-                    for &sign in &[false, true] {
-                        let loss_delta = chan_cache.loss_delta(sign);
-                        let true_loss = weights.loss(&inputs.set_weight(i, sign), class);
-                        assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
+    macro_rules! test_loss_deltas {
+        ($name:ident, $input:ty, $weights:ty, $n_classes:expr, $n_iters:expr) => {
+            #[test]
+            fn $name() {
+                let mut rng = Hc128Rng::seed_from_u64(0);
+                (0..$n_iters).for_each(|_| {
+                    let inputs: $input = rng.gen();
+                    let weights = <$weights as Model<$input, $n_classes>>::rand(&mut rng);
+                    for class in 0..$n_classes {
+                        let mut true_losses = weights.loss_deltas_slow(&inputs, class);
+                        true_losses.sort();
+                        let mut losses = weights.loss_deltas(&inputs, class);
+                        losses.sort();
+                        assert_eq!(true_losses, losses);
                     }
-                }
+                })
             }
-        })
+        };
     }
-    #[test]
-    fn rand_fcmse_trit_input_losses() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..1000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <FcMSE<TritWeightArrayType, 7> as Model<InputType, 7>>::rand(&mut rng);
 
-            for class in 0..7 {
-                let null_loss = weights.loss(&inputs, class);
-                let cache = weights.cache(&inputs, class);
-                for i in <InputShape as Shape>::indices() {
-                    let chan_cache = weights.subtract_input(
-                        &cache,
-                        i,
-                        <InputType as PackedArray>::get_weight(&inputs, i),
-                    );
-                    for &sign in &[false, true] {
-                        let loss_delta = chan_cache.loss_delta(sign);
-                        let true_loss = weights.loss(&inputs.set_weight(i, sign), class);
-                        assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
+    macro_rules! test_input_loss_deltas {
+        ($name:ident, $input_shape:ty, $weights:ty, $n_classes:expr, $n_iters:expr) => {
+            #[test]
+            fn $name() {
+                let mut rng = Hc128Rng::seed_from_u64(0);
+                (0..$n_iters).for_each(|_| {
+                    let inputs: <bool as PackedElement<$input_shape>>::Array = rng.gen();
+                    let weights = <$weights as Model<<bool as PackedElement<$input_shape>>::Array, $n_classes>>::rand(&mut rng);
+
+                    for class in 0..$n_classes {
+                        let null_loss = weights.loss(&inputs, class);
+                        let cache = weights.cache(&inputs, class);
+                        for i in <$input_shape as Shape>::indices() {
+                            let chan_cache = weights.subtract_input(&cache, i, <<bool as PackedElement<$input_shape>>::Array as PackedArray>::get_weight(&inputs, i));
+                            for &sign in &[false, true] {
+                                let loss_delta = chan_cache.loss_delta(sign);
+                                let true_loss = weights.loss(&inputs.set_weight(i, sign), class);
+                                assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
+                            }
+                        }
                     }
-                }
+                })
             }
-        })
+        };
     }
 
-    #[test]
-    fn rand_fc_fcmse_bit_losses() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..1000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <FC<
-                BitWeightArrayType,
-                HiddenShape,
-                FcMSE<<bool as PackedElement<HiddenShape>>::Array, 7>,
-                7,
-            > as Model<InputType, 7>>::rand(&mut rng);
-            for class in 0..7 {
-                let mut true_losses = weights.loss_deltas_slow(&inputs, class);
-                true_losses.sort();
-                let mut losses = weights.loss_deltas(&inputs, class);
-                losses.sort();
-                assert_eq!(true_losses, losses);
-            }
-        })
-    }
-    #[test]
-    fn rand_fc_fcmse_trit_losses() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..1000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <FC<
-                TritWeightArrayType,
-                HiddenShape,
-                FcMSE<(<Option<bool> as PackedElement<HiddenShape>>::Array, u32), 7>,
-                7,
-            > as Model<InputType, 7>>::rand(&mut rng);
-            for class in 0..7 {
-                let mut true_losses = weights.loss_deltas_slow(&inputs, class);
-                true_losses.sort();
-                let mut losses = weights.loss_deltas(&inputs, class);
-                losses.sort();
-                assert_eq!(true_losses, losses);
-            }
-        })
-    }
-    #[test]
-    fn rand_fc_fcmse_bit_input_losses() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..1000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <FC<
-                BitWeightArrayType,
-                HiddenShape,
-                FcMSE<<bool as PackedElement<HiddenShape>>::Array, 7>,
-                7,
-            > as Model<InputType, 7>>::rand(&mut rng);
+    /*
+    test_loss_deltas!(rand_fcmse_bit_losses_small, b8, FcMSE<b8, 7>, 7, 10_000);
+    test_loss_deltas!(rand_fcmse_bit_losses_large, [b128; 3], FcMSE<[b128; 3], 10>, 10, 100);
 
-            for class in 0..7 {
-                let null_loss = weights.loss(&inputs, class);
-                let cache = weights.cache(&inputs, class);
-                for i in <InputShape as Shape>::indices() {
-                    let chan_cache = weights.subtract_input(
-                        &cache,
-                        i,
-                        <InputType as PackedArray>::get_weight(&inputs, i),
-                    );
-                    for &sign in &[false, true] {
-                        let loss_delta = chan_cache.loss_delta(sign);
-                        let true_loss = weights.loss(&inputs.set_weight(i, sign), class);
-                        assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
-                    }
-                }
-            }
-        })
-    }
-    #[test]
-    fn rand_fc_fcmse_trit_input_losses() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..1000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <FC<
-                TritWeightArrayType,
-                HiddenShape,
-                FcMSE<(<Option<bool> as PackedElement<HiddenShape>>::Array, u32), 7>,
-                7,
-            > as Model<InputType, 7>>::rand(&mut rng);
+    test_loss_deltas!(rand_fcmse_trit_losses_small, b8, FcMSE<(t8, u32), 7>, 7, 10_000);
+    test_loss_deltas!(rand_fcmse_trit_losses_large, [b128; 3], FcMSE<([t128; 3], u32), 10>, 10, 100);
 
-            for class in 0..7 {
-                let null_loss = weights.loss(&inputs, class);
-                let cache = weights.cache(&inputs, class);
-                for i in <InputShape as Shape>::indices() {
-                    let chan_cache = weights.subtract_input(
-                        &cache,
-                        i,
-                        <InputType as PackedArray>::get_weight(&inputs, i),
-                    );
-                    for &sign in &[false, true] {
-                        let loss_delta = chan_cache.loss_delta(sign);
-                        let true_loss = weights.loss(&inputs.set_weight(i, sign), class);
-                        assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
-                    }
-                }
-            }
-        })
-    }
-    //*/
+    test_loss_deltas!(rand_fc_fcmse_bit_losses_large, [b8; 3], FC<[b8; 3], [[(); 32]; 2], FcMSE<[b32; 2], 10>, 10>, 10, 100);
+    test_loss_deltas!(rand_fc_fcmse_trit_losses_large, [b8; 3], FC<([t8; 3], u32), [[(); 32]; 2], FcMSE<([t32; 2], u32), 10>, 10>, 10, 100);
+
+    test_input_loss_deltas!(rand_fcmse_bit_input_losses, [(); 8], FcMSE<b8, 7>, 7, 10_000);
+    test_input_loss_deltas!(rand_fcmse_trit_input_losses, [(); 8], FcMSE<(t8, u32), 7>, 7, 10_000);
+
+    test_input_loss_deltas!(rand_fcmse_bit_input_losses_large, [[(); 32]; 3], FcMSE<[b32; 3], 10>, 10, 1_000);
+    test_input_loss_deltas!(rand_fcmse_trit_input_losses_large, [[(); 32]; 3], FcMSE<([t32; 3], u32), 10>, 10, 1_000);
+
+    test_input_loss_deltas!(rand_fc_fcmse_bit_input_losses_large, [[(); 8]; 3], FC<[b8; 3], [[(); 32]; 2], FcMSE<[b32; 2], 10>, 10>, 10, 100);
+    test_input_loss_deltas!(rand_fc_fcmse_trit_input_losses_large, [[(); 8]; 3], FC<([t8; 3], u32), [[(); 32]; 2], FcMSE<([t32; 2], u32), 10>, 10>, 10, 100);
+    */
 }

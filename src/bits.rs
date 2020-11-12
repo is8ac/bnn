@@ -1383,123 +1383,145 @@ impl fmt::Debug for b1 {
 
 #[cfg(test)]
 mod tests {
-    use super::{MaskedDistance, PackedElement, Weight, WeightArray};
+    use super::{
+        b128, b16, b32, b8, t128, t16, t32, t8, MaskedDistance, PackedElement, Weight, WeightArray,
+    };
     use rand::Rng;
     use rand::SeedableRng;
     use rand_hc::Hc128Rng;
     extern crate test;
     use crate::shape::Shape;
 
-    type InputShape = [[(); 64]; 1];
-    type InputType = <bool as PackedElement<InputShape>>::Array;
-    type BitWeightArrayType = <bool as PackedElement<InputShape>>::Array;
-    type TritWeightArrayType = <Option<bool> as PackedElement<InputShape>>::Array;
+    macro_rules! test_bma {
+        ($name:ident, $input:ty, $weights:ty, $n_iters:expr) => {
+            #[test]
+            fn $name() {
+                let mut rng = Hc128Rng::seed_from_u64(0);
+                (0..$n_iters).for_each(|_| {
+                    let inputs: $input = rng.gen();
+                    let weights = <$weights>::rand(&mut rng);
 
-    /*
-    #[test]
-    fn rand_bit_bma() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..10_000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights: BitWeightArrayType = rng.gen();
-
-            let sum = weights.bma(&inputs);
-            let true_sum = weights.bma_slow(&inputs);
-            assert_eq!(sum, true_sum);
-        })
-    }
-    #[test]
-    fn rand_bit_acts() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..10_000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights: BitWeightArrayType = rng.gen();
-
-            for val in <bool>::states() {
-                let acts = weights.acts(&inputs, val);
-                let true_acts = weights.acts_slow(&inputs, val);
-                assert_eq!(acts, true_acts);
+                    let sum = weights.bma(&inputs);
+                    let true_sum = weights.bma_slow(&inputs);
+                    assert_eq!(sum, true_sum);
+                })
             }
-        })
+        };
     }
-    #[test]
-    fn rand_bit_input_acts() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..10_000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights: BitWeightArrayType = rng.gen();
 
-            let acts = weights.input_acts(&inputs);
-            let true_acts = weights.input_acts_slow(&inputs);
-            assert_eq!(acts, true_acts);
-        })
-    }
-    #[test]
-    fn rand_bit_losses() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..1_000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights: BitWeightArrayType = rng.gen();
-            let null_act = weights.bma(&inputs);
-            let mut losses = weights.loss_deltas(&inputs, |x| x as i64 - null_act as i64);
-            losses.sort();
-            let mut true_losses = weights.loss_deltas_slow(&inputs, |x| x as i64 - null_act as i64);
-            true_losses.sort();
-            assert_eq!(losses, true_losses);
-        })
-    }
-    #[test]
-    fn rand_trit_bma() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..10_000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <(TritWeightArrayType, u32)>::rand(&mut rng);
+    macro_rules! test_acts {
+        ($name:ident, $input:ty, $weights:ty, $weight:ty, $n_iters:expr) => {
+            #[test]
+            fn $name() {
+                let mut rng = Hc128Rng::seed_from_u64(0);
+                (0..$n_iters).for_each(|_| {
+                    let inputs: $input = rng.gen();
+                    let weights = <$weights>::rand(&mut rng);
 
-            let sum = weights.bma(&inputs);
-            let true_sum = weights.bma_slow(&inputs);
-            assert_eq!(sum, true_sum);
-        })
-    }
-    #[test]
-    fn rand_trit_acts() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..10_000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <(TritWeightArrayType, u32)>::rand(&mut rng);
-
-            for val in <Option<bool>>::states() {
-                let acts = weights.acts(&inputs, val);
-                let true_acts = weights.acts_slow(&inputs, val);
-                assert_eq!(acts, true_acts);
+                    for val in <$weight>::states() {
+                        let acts = weights.acts(&inputs, val);
+                        let true_acts = weights.acts_slow(&inputs, val);
+                        assert_eq!(acts, true_acts);
+                    }
+                })
             }
-        })
+        };
     }
-    #[test]
-    fn rand_trit_input_acts() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..10_000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <(TritWeightArrayType, u32)>::rand(&mut rng);
 
-            let acts = weights.input_acts(&inputs);
-            let true_acts = weights.input_acts_slow(&inputs);
-            assert_eq!(acts, true_acts);
-        })
-    }
-    #[test]
-    fn rand_trit_losses() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        (0..1_000).for_each(|_| {
-            let inputs: InputType = rng.gen();
-            let weights = <(TritWeightArrayType, u32)>::rand(&mut rng);
-            let null_act = weights.bma(&inputs);
+    macro_rules! test_input_acts {
+        ($name:ident, $input:ty, $weights:ty, $n_iters:expr) => {
+            #[test]
+            fn $name() {
+                let mut rng = Hc128Rng::seed_from_u64(0);
+                (0..$n_iters).for_each(|_| {
+                    let inputs: $input = rng.gen();
+                    let weights = <$weights>::rand(&mut rng);
 
-            let mut losses = weights.loss_deltas(&inputs, |x| x as i64 - null_act as i64);
-            losses.sort();
-            let mut true_losses = weights.loss_deltas_slow(&inputs, |x| x as i64 - null_act as i64);
-            true_losses.sort();
-            assert_eq!(losses, true_losses);
-        })
+                    let acts = weights.input_acts(&inputs);
+                    let true_acts = weights.input_acts_slow(&inputs);
+                    assert_eq!(acts, true_acts);
+                })
+            }
+        };
     }
-    */
+
+    macro_rules! test_loss_deltas {
+        ($name:ident, $input:ty, $weights:ty, $n_iters:expr) => {
+            #[test]
+            fn $name() {
+                let mut rng = Hc128Rng::seed_from_u64(0);
+                (0..$n_iters).for_each(|_| {
+                    let inputs: $input = rng.gen();
+                    let weights = <$weights>::rand(&mut rng);
+
+                    let null_act = weights.bma(&inputs);
+                    let mut losses = weights.loss_deltas(&inputs, |x| x as i64 - null_act as i64);
+                    losses.sort();
+                    let mut true_losses =
+                        weights.loss_deltas_slow(&inputs, |x| x as i64 - null_act as i64);
+                    true_losses.sort();
+                    assert_eq!(losses, true_losses);
+                })
+            }
+        };
+    }
+
+    macro_rules! test_group {
+        ($name:ident, $input:ty, $weights:ty, $weight:ty, $n_iters:expr) => {
+            #[cfg(test)]
+            mod $name {
+                use crate::bits::{
+                    b128, b16, b32, b64, b8, t128, t16, t32, t64, t8, MaskedDistance,
+                    PackedElement, Weight, WeightArray,
+                };
+                use rand::Rng;
+                use rand::SeedableRng;
+                use rand_hc::Hc128Rng;
+                extern crate test;
+
+                test_bma!(bma, $input, $weights, $n_iters);
+                test_acts!(acts, $input, $weights, $weight, $n_iters);
+                test_input_acts!(input_acts, $input, $weights, $n_iters);
+                test_loss_deltas!(loss_deltas, $input, $weights, $n_iters);
+            }
+        };
+    }
+
+    test_group!(test_b8, b8, b8, bool, 10_000);
+    test_group!(test_b16, b16, b16, bool, 10_000);
+    test_group!(test_b32, b32, b32, bool, 10_000);
+    test_group!(test_b64, b64, b64, bool, 1_000);
+    test_group!(test_b128, b128, b128, bool, 1_000);
+
+    test_group!(test_b8x1, [b8; 1], [b8; 1], bool, 10_000);
+    test_group!(test_b8x2, [b8; 2], [b8; 2], bool, 10_000);
+    test_group!(test_b8x3, [b8; 3], [b8; 3], bool, 10_000);
+    test_group!(test_b8x4, [b8; 4], [b8; 4], bool, 10_000);
+
+    test_group!(
+        test_b8x1x2x3,
+        [[[b8; 1]; 2]; 3],
+        [[[b8; 1]; 2]; 3],
+        bool,
+        10_000
+    );
+
+    test_group!(test_t8, b8, (t8, u32), Option<bool>, 10_000);
+    test_group!(test_t16, b16, (t16, u32), Option<bool>, 10_000);
+    test_group!(test_t32, b32, (t32, u32), Option<bool>, 10_000);
+    test_group!(test_t64, b64, (t64, u32), Option<bool>, 1_000);
+    test_group!(test_t128, b128, (t128, u32), Option<bool>, 1_000);
+
+    test_group!(test_t8x1, [b8; 1], ([t8; 1], u32), Option<bool>, 10_000);
+    test_group!(test_t8x2, [b8; 2], ([t8; 2], u32), Option<bool>, 10_000);
+    test_group!(test_t8x3, [b8; 3], ([t8; 3], u32), Option<bool>, 10_000);
+    test_group!(test_t8x4, [b8; 4], ([t8; 4], u32), Option<bool>, 10_000);
+
+    test_group!(
+        test_t8x1x2x3,
+        [[[b8; 1]; 2]; 3],
+        ([[[t8; 1]; 2]; 3], u32),
+        Option<bool>,
+        10_000
+    );
 }
