@@ -21,7 +21,7 @@ where
         example_truncation: usize,
         n_updates: usize,
         minibatch_size: usize,
-    ) -> Self;
+    ) -> (Self, usize);
 }
 
 impl<T: Model<I, C> + Sync, I: Sync, const C: usize> Descend<I, C> for T
@@ -96,16 +96,16 @@ where
         example_truncation: usize,
         n_updates: usize,
         minibatch_size: usize,
-    ) -> Self {
+    ) -> (T, usize) {
         examples
             .chunks_exact(minibatch_size)
-            .fold(self, |weights, examples| {
+            .fold((self, 0usize), |(weights, n), examples| {
                 let mut updates = weights.updates(&examples, example_truncation, n_updates);
-                //dbg!(&updates);
+                let n_updates = updates.len();
                 let weights = updates
                     .drain(0..)
                     .fold(weights, |weights, (i, w)| weights.mutate(i, w));
-                weights
+                (weights, n + (n_updates > 0) as usize)
             })
     }
 }
