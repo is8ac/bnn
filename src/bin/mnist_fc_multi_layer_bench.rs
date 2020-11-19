@@ -53,33 +53,6 @@ type H3Model = FC<
     N_CLASSES,
 >;
 
-fn recursively_train<M: Model<InputType, N_CLASSES> + Descend<InputType, N_CLASSES> + Sync>(
-    model: M,
-    examples: &Vec<(InputType, usize)>,
-    example_truncation: usize,
-    n_updates: usize,
-    minibatch_size: usize,
-    min: usize,
-    scale: (usize, usize),
-) -> (M, usize, usize) {
-    let (model, n_epochs, s) = if minibatch_size >= min {
-        recursively_train::<M>(
-            model,
-            examples,
-            example_truncation,
-            n_updates,
-            (minibatch_size * scale.0) / scale.1,
-            min,
-            scale,
-        )
-    } else {
-        (model, 0, 0)
-    };
-
-    let (model, n) = model.train(&examples, example_truncation, n_updates, minibatch_size);
-    (model, n_epochs + 1, s + n)
-}
-
 fn bench_model<M: Model<InputType, N_CLASSES> + Descend<InputType, N_CLASSES> + Sync>(
     examples: &Vec<(InputType, usize)>,
     test_examples: &Vec<(InputType, usize)>,
@@ -93,9 +66,9 @@ fn bench_model<M: Model<InputType, N_CLASSES> + Descend<InputType, N_CLASSES> + 
     let model = <M as Model<InputType, N_CLASSES>>::rand(&mut rng);
 
     let start = Instant::now();
-    let (model, n_epochs, n_samples) = recursively_train::<M>(
-        model,
+    let (model, n_epochs, n_samples) = model.recursively_train(
         examples,
+        0,
         example_truncation,
         n_updates,
         examples.len(),
@@ -141,7 +114,7 @@ fn bench_arch<M: Model<InputType, N_CLASSES> + Descend<InputType, N_CLASSES> + S
     }
     println!("\n#### n updates");
     print_header();
-    for &updates in &[1, 3, 7, 10, 20] {
+    for &updates in &[1, 2, 3, 4, 7, 10, 20] {
         bench_model::<M>(&examples, &test_examples, trunc, updates, min, scale);
     }
     println!("\n#### scale");
@@ -201,70 +174,111 @@ fn main() {
         .map(|(image, class)| (*image, *class))
         .collect();
 
+    let trunc = 1000;
+    let updates = 3;
+    let min = 200;
+    let scale = (2, 3);
+
+    /*
     println!("### zero hidden bit");
-    bench_arch::<FcMSE<InputShape, bool, N_CLASSES>>(
-        &examples,
-        &test_examples,
-        1000,
-        7,
-        200,
-        (2, 3),
-    );
+    bench_arch::<FcMSE<InputShape, bool, N_CLASSES>>(&examples, &test_examples, trunc, updates, min, scale);
     println!("### zero hidden trit");
-    bench_arch::<FcMSE<InputShape, Option<bool>, N_CLASSES>>(
-        &examples,
-        &test_examples,
-        1000,
-        7,
-        200,
-        (2, 3),
-    );
+    bench_arch::<FcMSE<InputShape, Option<bool>, N_CLASSES>>(&examples, &test_examples, trunc, updates, min, scale);
 
     println!("\n### bit 1 x 32");
-    bench_arch::<h1_model!(bool, [[(); 32]; 1])>(&examples, &test_examples, 1000, 7, 200, (2, 3));
+    bench_arch::<h1_model!(bool, [[(); 32]; 1])>(&examples, &test_examples, trunc, updates, min, scale);
     println!("\n### trit 1 x 32");
-    bench_arch::<h1_model!(Option<bool>, [[(); 32]; 1])>(
-        &examples,
-        &test_examples,
-        1000,
-        7,
-        200,
-        (2, 3),
-    );
+    bench_arch::<h1_model!(Option<bool>, [[(); 32]; 1])>(&examples, &test_examples, trunc, updates, min, scale);
 
     println!("\n### bit 1 x 64");
-    bench_arch::<h1_model!(bool, [[(); 32]; 2])>(&examples, &test_examples, 1000, 7, 200, (2, 3));
+    bench_arch::<h1_model!(bool, [[(); 32]; 2])>(&examples, &test_examples, trunc, updates, min, scale);
     println!("\n### trit 1 x 64");
-    bench_arch::<h1_model!(Option<bool>, [[(); 32]; 2])>(
-        &examples,
-        &test_examples,
-        1000,
-        7,
-        200,
-        (2, 3),
-    );
+    bench_arch::<h1_model!(Option<bool>, [[(); 32]; 2])>(&examples, &test_examples, trunc, updates, min, scale);
 
     println!("\n### bit 1 x 128");
-    bench_arch::<h1_model!(bool, [[(); 32]; 4])>(&examples, &test_examples, 1000, 7, 200, (2, 3));
+    bench_arch::<h1_model!(bool, [[(); 32]; 4])>(&examples, &test_examples, trunc, updates, min, scale);
     println!("\n### trit 1 x 128");
-    bench_arch::<h1_model!(Option<bool>, [[(); 32]; 4])>(
-        &examples,
-        &test_examples,
-        1000,
-        7,
-        200,
-        (2, 3),
-    );
+    bench_arch::<h1_model!(Option<bool>, [[(); 32]; 4])>(&examples, &test_examples, trunc, updates, min, scale);
 
     println!("\n### bit 1 x 256");
-    bench_arch::<h1_model!(bool, [[(); 32]; 8])>(&examples, &test_examples, 1000, 7, 200, (2, 3));
+    bench_arch::<h1_model!(bool, [[(); 32]; 8])>(&examples, &test_examples, trunc, updates, min, scale);
     println!("\n### trit 1 x 256");
-    bench_arch::<h1_model!(Option<bool>, [[(); 32]; 8])>(
+    bench_arch::<h1_model!(Option<bool>, [[(); 32]; 8])>(&examples, &test_examples, trunc, updates, min, scale);
+    */
+    println!("### 2h",);
+    println!("\n### bit 2 x 32");
+    bench_arch::<h2_model!(bool, [[(); 32]; 1])>(
         &examples,
         &test_examples,
-        1000,
-        7,
-        200,
-        (2, 3),
+        trunc,
+        updates,
+        min,
+        scale,
+    );
+    println!("\n### trit 2 x 32");
+    bench_arch::<h2_model!(Option<bool>, [[(); 32]; 1])>(
+        &examples,
+        &test_examples,
+        trunc,
+        updates,
+        min,
+        scale,
+    );
+
+    println!("\n### bit 2 x 64");
+    bench_arch::<h2_model!(bool, [[(); 32]; 2])>(
+        &examples,
+        &test_examples,
+        trunc,
+        updates,
+        min,
+        scale,
+    );
+    println!("\n### trit 2 x 64");
+    bench_arch::<h2_model!(Option<bool>, [[(); 32]; 2])>(
+        &examples,
+        &test_examples,
+        trunc,
+        updates,
+        min,
+        scale,
+    );
+
+    println!("\n### bit 2 x 128");
+    bench_arch::<h2_model!(bool, [[(); 32]; 4])>(
+        &examples,
+        &test_examples,
+        trunc,
+        updates,
+        min,
+        scale,
+    );
+    println!("\n### trit 2 x 128");
+    bench_arch::<h2_model!(Option<bool>, [[(); 32]; 4])>(
+        &examples,
+        &test_examples,
+        trunc,
+        updates,
+        min,
+        scale,
+    );
+
+    println!("\n### bit 2 x 256");
+    bench_arch::<h2_model!(bool, [[(); 32]; 8])>(
+        &examples,
+        &test_examples,
+        trunc,
+        updates,
+        min,
+        scale,
+    );
+    println!("\n### trit 2 x 256");
+    bench_arch::<h2_model!(Option<bool>, [[(); 32]; 8])>(
+        &examples,
+        &test_examples,
+        trunc,
+        updates,
+        min,
+        scale,
     );
 }

@@ -56,9 +56,19 @@ where
     /// loss of the model
     fn loss(&self, input: &I, class: usize) -> u64;
     /// loss deltas for all mutations of all weights.
-    fn loss_deltas(&self, input: &I, class: usize) -> Vec<(Self::Index, Self::Weight, i64)>;
+    fn loss_deltas(
+        &self,
+        input: &I,
+        threshold: u64,
+        class: usize,
+    ) -> Vec<(Self::Index, Self::Weight, i64)>;
     /// same as losses but a lot slower.
-    fn loss_deltas_slow(&self, input: &I, class: usize) -> Vec<(Self::Index, Self::Weight, i64)> {
+    fn loss_deltas_slow(
+        &self,
+        input: &I,
+        threshold: u64,
+        class: usize,
+    ) -> Vec<(Self::Index, Self::Weight, i64)> {
         let null_loss = self.loss(input, class) as i64;
         <Self::Weight as Weight>::states()
             .map(|w| {
@@ -70,7 +80,7 @@ where
                             self.mutate(i, w).loss(input, class) as i64 - null_loss,
                         )
                     })
-                    .filter(|(_, _, l)| *l != 0)
+                    .filter(|(_, _, l)| l.abs() as u64 > threshold)
                     .collect::<Vec<_>>()
             })
             .flatten()
@@ -230,6 +240,7 @@ where
     fn loss_deltas(
         &self,
         input: &<bool as PackedElement<S>>::Array,
+        threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, W, i64)> {
         self.fc
@@ -240,7 +251,7 @@ where
                 let act = <()>::bma(&w, input);
                 let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
                 let class_null_loss = (dist as u64).pow(2) as i64;
-                <()>::loss_deltas(&w, input, |act| {
+                <()>::loss_deltas(&w, input, threshold, |act| {
                     ((act.saturating_sub(target_act) | target_act.saturating_sub(act)) as u64)
                         .pow(2) as i64
                         - class_null_loss
@@ -497,6 +508,7 @@ where
     fn loss_deltas(
         &self,
         inputs: &<bool as PackedElement<I>>::Array,
+        threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, W, i64)> {
         let hidden = self.acts(inputs);
@@ -511,7 +523,7 @@ where
                 let chan_cache = self.tail.subtract_input(&cache, o, input);
                 let deltas = [chan_cache.loss_delta(false), chan_cache.loss_delta(true)];
 
-                <()>::loss_deltas(&weight_array, &inputs, |act| {
+                <()>::loss_deltas(&weight_array, &inputs, threshold, |act| {
                     deltas[(act > <() as WeightArray<I, W>>::THRESHOLD) as usize]
                 })
                 .iter()
@@ -521,13 +533,39 @@ where
             .flatten()
             .chain(
                 self.tail
-                    .loss_deltas(&hidden, class)
+                    .loss_deltas(&hidden, threshold, class)
                     .iter()
                     .map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)),
             )
             .collect()
     }
 }
+
+/*
+#[derive(Copy, Clone)]
+pub struct Conv2D<
+    ImageShape,
+    PatchShape,
+    InputPixelShape,
+    OutputPixelShape,
+    W,
+    H: Model<<<bool as PackedElement<InputPixelShape>>::Array as Element<ImageShape>>::Array, C>,
+    const C: usize,
+> {
+    fc: <<W as ConstructWeightArray<<InputPixelShape as Element<PatchShape>>::Array>>::WeightArray as Element<OutputPixelShape>>::Array,
+    tail: H,
+}
+
+pub struct GlobalAvgPool {
+
+}
+
+impl GlobalAvgPool {
+    fn pool(input: &<P as Pixel<ImageShape>>::Array) -> P {
+
+    }
+}
+*/
 
 #[cfg(test)]
 mod tests {
@@ -550,11 +588,14 @@ mod tests {
                     let inputs: $input = rng.gen();
                     let weights = <$weights as Model<$input, $n_classes>>::rand(&mut rng);
                     for class in 0..$n_classes {
-                        let mut true_losses = weights.loss_deltas_slow(&inputs, class);
-                        true_losses.sort();
-                        let mut losses = weights.loss_deltas(&inputs, class);
-                        losses.sort();
-                        assert_eq!(true_losses, losses);
+                        for &threshold in &[0, 10, 100, 1000] {
+                            let mut true_loss_deltas =
+                                weights.loss_deltas_slow(&inputs, threshold, class);
+                            true_loss_deltas.sort();
+                            let mut loss_deltas = weights.loss_deltas(&inputs, threshold, class);
+                            loss_deltas.sort();
+                            assert_eq!(true_loss_deltas, loss_deltas);
+                        }
                     }
                 })
             }

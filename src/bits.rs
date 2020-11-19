@@ -258,12 +258,14 @@ where
     fn loss_deltas<F: Fn(u32) -> i64>(
         weights: &<W as ConstructWeightArray<S>>::WeightArray,
         input: &<bool as PackedElement<S>>::Array,
+        threshold: u64,
         loss_delta_fn: F,
     ) -> Vec<(<S as Shape>::Index, W, i64)>;
     /// Does the same thing as loss_deltas but is a lot slower.
     fn loss_deltas_slow<F: Fn(u32) -> i64>(
         weights: &<W as ConstructWeightArray<S>>::WeightArray,
         input: &<bool as PackedElement<S>>::Array,
+        threshold: u64,
         loss_delta_fn: F,
     ) -> Vec<(<S as Shape>::Index, W, i64)> {
         <W as Weight>::states()
@@ -279,7 +281,7 @@ where
                     .collect::<Vec<_>>()
             })
             .flatten()
-            .filter(|(_, _, l)| *l != 0)
+            .filter(|(_, _, l)| l.abs() as u64 > threshold)
             .collect()
     }
     /// Acts if we were to set each element to value
@@ -353,6 +355,7 @@ where
     fn loss_deltas<F: Fn(u32) -> i64>(
         weights: &<bool as PackedElement<S>>::Array,
         input: &<bool as PackedElement<S>>::Array,
+        threshold: u64,
         loss_delta_fn: F,
     ) -> Vec<(<S as Shape>::Index, bool, i64)> {
         let cur_act = Self::bma(weights, input);
@@ -360,14 +363,18 @@ where
             loss_delta_fn(cur_act.saturating_add(1)),
             loss_delta_fn(cur_act.saturating_sub(1)),
         ];
-        <S as Shape>::indices()
-            .map(|i| {
-                let weight = Self::get_weight(weights, i);
-                let input = input.get_weight(i);
-                (i, !weight, deltas[(weight ^ input) as usize])
-            })
-            .filter(|&(_, _, l)| l != 0)
-            .collect()
+        if deltas.iter().find(|d| d.abs() as u64 > threshold).is_some() {
+            <S as Shape>::indices()
+                .map(|i| {
+                    let weight = Self::get_weight(weights, i);
+                    let input = input.get_weight(i);
+                    (i, !weight, deltas[(weight ^ input) as usize])
+                })
+                .filter(|(_, _, l)| l.abs() as u64 > threshold)
+                .collect()
+        } else {
+            vec![]
+        }
     }
     fn acts(
         weights: &<bool as PackedElement<S>>::Array,
@@ -458,6 +465,7 @@ where
     fn loss_deltas<F: Fn(u32) -> i64>(
         weights: &(<Option<bool> as PackedElement<S>>::Array, u32),
         input: &<bool as PackedElement<S>>::Array,
+        threshold: u64,
         loss_delta_fn: F,
     ) -> Vec<(<S as Shape>::Index, Option<bool>, i64)> {
         let cur_act = Self::bma(weights, input);
@@ -471,35 +479,40 @@ where
                 loss_delta_fn(cur_act.saturating_add(2)),
             ],
         ];
-
-        <S as Shape>::indices()
-            .map(|i| {
-                let input = input.get_weight(i);
-                if let Some(sign) = weights.0.get_weight(i) {
-                    if sign {
-                        iter::once((i, Some(false), deltas[1][input as usize])).chain(iter::once((
-                            i,
-                            None,
-                            deltas[0][input as usize],
-                        )))
+        if deltas
+            .iter()
+            .flatten()
+            .find(|d| d.abs() as u64 > threshold)
+            .is_some()
+        {
+            <S as Shape>::indices()
+                .map(|i| {
+                    let input = input.get_weight(i);
+                    if let Some(sign) = weights.0.get_weight(i) {
+                        if sign {
+                            iter::once((i, Some(false), deltas[1][input as usize]))
+                                .chain(iter::once((i, None, deltas[0][input as usize])))
+                        } else {
+                            iter::once((i, None, deltas[0][!input as usize])).chain(iter::once((
+                                i,
+                                Some(true),
+                                deltas[1][!input as usize],
+                            )))
+                        }
                     } else {
-                        iter::once((i, None, deltas[0][!input as usize])).chain(iter::once((
+                        iter::once((i, Some(false), deltas[0][input as usize])).chain(iter::once((
                             i,
                             Some(true),
-                            deltas[1][!input as usize],
+                            deltas[0][!input as usize],
                         )))
                     }
-                } else {
-                    iter::once((i, Some(false), deltas[0][input as usize])).chain(iter::once((
-                        i,
-                        Some(true),
-                        deltas[0][!input as usize],
-                    )))
-                }
-            })
-            .flatten()
-            .filter(|&(_, _, l)| l != 0)
-            .collect()
+                })
+                .flatten()
+                .filter(|(_, _, l)| l.abs() as u64 > threshold)
+                .collect()
+        } else {
+            vec![]
+        }
     }
     fn acts(
         weights: &(<Option<bool> as PackedElement<S>>::Array, u32),
@@ -1474,17 +1487,24 @@ mod tests {
                     let weights = <() as WeightArray<$s, $w>>::rand(&mut rng);
 
                     let null_act = <() as WeightArray<$s, $w>>::bma(&weights, &inputs);
-                    let mut losses =
-                        <() as WeightArray<$s, $w>>::loss_deltas(&weights, &inputs, |x| {
-                            x as i64 - null_act as i64
-                        });
-                    losses.sort();
-                    let mut true_losses =
-                        <() as WeightArray<$s, $w>>::loss_deltas_slow(&weights, &inputs, |x| {
-                            x as i64 - null_act as i64
-                        });
-                    true_losses.sort();
-                    assert_eq!(losses, true_losses);
+                    for &threshold in &[0, 10, 100, 1000] {
+                        dbg!(threshold);
+                        let mut loss_deltas = <() as WeightArray<$s, $w>>::loss_deltas(
+                            &weights,
+                            &inputs,
+                            threshold,
+                            |x| x as i64 - null_act as i64,
+                        );
+                        loss_deltas.sort();
+                        let mut true_loss_deltas = <() as WeightArray<$s, $w>>::loss_deltas_slow(
+                            &weights,
+                            &inputs,
+                            threshold,
+                            |x| x as i64 - null_act as i64,
+                        );
+                        true_loss_deltas.sort();
+                        assert_eq!(loss_deltas, true_loss_deltas);
+                    }
                 })
             }
         };
