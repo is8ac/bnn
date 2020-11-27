@@ -103,13 +103,3 @@ impl<T: ElementwiseAdd, const L: usize> ElementwiseAdd for [T; L] {
         }
     }
 }
-
-/// There are two levels of indirection.
-/// The first to change the shape by extracting many patches from it,
-/// the second to change the type.
-/// We take a 'Self', extract a 'Patch` from it, normalise it to `T`,
-/// and use T to increment the counters.
-/// If Patch is (), we use Self directly.
-pub trait IncrementCounters<Patch, Preprocessor, Counters> {
-    fn increment_counters(&self, class: usize, counters: &mut Counters);
-}

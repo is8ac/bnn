@@ -1,10 +1,10 @@
 #[macro_use]
 extern crate criterion;
 use bnn::bits::{
-    b128, b16, b32, b64, b8, t128, t16, t32, t64, t8, MaskedDistance, PackedElement, Weight,
-    WeightArray,
+    b128, b16, b32, b64, b8, t128, t16, t32, t64, t8, IncrementCounters, MaskedDistance,
+    PackedElement, Weight, WeightArray,
 };
-use bnn::shape::Shape;
+use bnn::shape::{Element, LongDefault, Shape};
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use rand::Rng;
 use rand::SeedableRng;
@@ -240,11 +240,66 @@ fn trit_bma(c: &mut Criterion) {
     group.finish()
 }
 
+macro_rules! bench_increment_counters {
+    ($group:expr, $name:expr, $i:expr, $s:ty) => {
+        let mut rng = Hc128Rng::seed_from_u64(0);
+        $group.bench_with_input(BenchmarkId::new($name, $i), &$i, |b, _| {
+            b.iter_batched(
+                || {
+                    let inputs: Vec<<bool as PackedElement<$s>>::Array> =
+                        (0..1000).map(|_| rng.gen()).collect();
+                    let counters = <u32 as Element<$s>>::Array::long_default();
+                    (inputs, counters)
+                },
+                |(inputs, counters)| {
+                    inputs.iter().fold(counters, |counters, bits| {
+                        <$s as IncrementCounters>::increment(bits, counters)
+                    })
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    };
+}
+
+fn increment_counters_word(c: &mut Criterion) {
+    let mut group = c.benchmark_group("increment_counters_word");
+
+    bench_increment_counters!(group, "w", 8, [(); 8]);
+    bench_increment_counters!(group, "w", 16, [(); 16]);
+    bench_increment_counters!(group, "w", 32, [(); 32]);
+    bench_increment_counters!(group, "w", 64, [(); 64]);
+    bench_increment_counters!(group, "w", 128, [(); 128]);
+
+    bench_increment_counters!(group, "w_3x3", 8, [[[(); 8]; 3]; 3]);
+    bench_increment_counters!(group, "w_3x3", 16, [[[(); 16]; 3]; 3]);
+    bench_increment_counters!(group, "w_3x3", 32, [[[(); 32]; 3]; 3]);
+    bench_increment_counters!(group, "w_3x3", 64, [[[(); 64]; 3]; 3]);
+    bench_increment_counters!(group, "w_3x3", 128, [[[(); 128]; 3]; 3]);
+
+    group.finish()
+}
+
+fn increment_counters_len(c: &mut Criterion) {
+    let mut group = c.benchmark_group("increment_counters_len");
+
+    bench_increment_counters!(group, "u8", 1, [[(); 8]; 1]);
+    bench_increment_counters!(group, "u8", 2, [[(); 8]; 2]);
+    bench_increment_counters!(group, "u8", 3, [[(); 8]; 3]);
+    bench_increment_counters!(group, "u8", 4, [[(); 8]; 4]);
+    bench_increment_counters!(group, "u8", 8, [[(); 8]; 8]);
+    bench_increment_counters!(group, "u8", 16, [[(); 8]; 16]);
+    bench_increment_counters!(group, "u8", 32, [[(); 8]; 32]);
+
+    group.finish()
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default();
     //config = Criterion::default().measurement_time(Duration::from_secs(5));
-    targets = bit_bma, trit_bma, bit_acts, trit_acts, bit_input_acts, trit_input_acts
+    //targets = bit_bma, trit_bma, bit_acts, trit_acts, bit_input_acts, trit_input_acts
+    targets = increment_counters_len, increment_counters_word
 }
 
 criterion_main!(benches);

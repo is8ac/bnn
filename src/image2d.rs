@@ -1,4 +1,3 @@
-use crate::count::IncrementCounters;
 use crate::shape::{Element, Merge, Shape, ZipMap};
 use rand::Rng;
 use std::fmt;

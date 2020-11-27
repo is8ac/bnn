@@ -1,13 +1,14 @@
 use crate::bits::{
-    ConstructWeightArray, PackedArray, PackedElement, PackedIndexMap, PackedMap, Weight,
-    WeightArray,
+    ConstructWeightArray, IncrementCounters, PackedArray, PackedElement, PackedIndexMap, PackedMap,
+    Weight, WeightArray,
 };
+use crate::image2d::{ImageShape, Pixel, PixelFold};
 use crate::shape::{Element, IndexGet, LongDefault, Map, MutMap, Shape, ZipMap};
 use rand::Rng;
 use std::marker::PhantomData;
 
 pub trait Cache<I> {
-    fn loss_delta(&self, input: I) -> i64;
+    fn loss_delta(&self, input: &I) -> i64;
 }
 
 #[derive(Copy, Clone, Debug, Ord, Eq, PartialEq, PartialOrd, Hash)]
@@ -120,18 +121,16 @@ impl<I: Shape, const C: usize> Iterator for FcMSEindexIter<I, C> {
 
 pub struct FcMSEcache<const C: usize> {
     cache: [(u32, u32); C],
-    true_class: usize,
     null_loss: i64,
 }
 
 pub struct FcMSEchanCache<W, const C: usize> {
     cache: [(W, u32, u32); C],
-    true_class: usize,
     null_loss: i64,
 }
 
 impl<W: Weight, const C: usize> Cache<bool> for FcMSEchanCache<W, C> {
-    fn loss_delta(&self, input: bool) -> i64 {
+    fn loss_delta(&self, &input: &bool) -> i64 {
         self.cache
             .iter()
             .enumerate()
@@ -200,7 +199,6 @@ where
         }
         FcMSEcache {
             cache: target,
-            true_class: class,
             null_loss: self.loss(input, class) as i64,
         }
     }
@@ -221,7 +219,6 @@ where
         }
         FcMSEchanCache {
             cache: target,
-            true_class: cache.true_class,
             null_loss: cache.null_loss,
         }
     }
@@ -396,7 +393,7 @@ where
     (W, u32): Element<O>,
     (): WeightArray<I, W>,
 {
-    fn loss_delta(&self, input: bool) -> i64 {
+    fn loss_delta(&self, &input: &bool) -> i64 {
         let hidden = <O as PackedMap<(W, u32), bool>>::map(&self.sums, |(w, sum)| {
             (sum + w.bma(input)) > <() as WeightArray<I, W>>::THRESHOLD
         });
@@ -521,7 +518,7 @@ where
                 let weight_array = self.fc.index_get(o);
 
                 let chan_cache = self.tail.subtract_input(&cache, o, input);
-                let deltas = [chan_cache.loss_delta(false), chan_cache.loss_delta(true)];
+                let deltas = [chan_cache.loss_delta(&false), chan_cache.loss_delta(&true)];
 
                 <()>::loss_deltas(&weight_array, &inputs, threshold, |act| {
                     deltas[(act > <() as WeightArray<I, W>>::THRESHOLD) as usize]
@@ -541,43 +538,269 @@ where
     }
 }
 
-/*
 #[derive(Copy, Clone)]
-pub struct Conv2D<
-    ImageShape,
-    PatchShape,
-    InputPixelShape,
-    OutputPixelShape,
+pub struct Conv2D<ImageShape, InputPixelShape, OutputPixelShape, W, H, const PX: usize, const PY: usize, const C: usize>
+where
+    OutputPixelShape: Shape,
+    InputPixelShape: Shape,
+    H: Model<<<bool as PackedElement<OutputPixelShape>>::Array as Pixel<ImageShape>>::Image, C>,
+    bool: PackedElement<OutputPixelShape>,
+    <bool as PackedElement<OutputPixelShape>>::Array: Pixel<ImageShape>,
+    W: PackedElement<InputPixelShape>,
+    [[<W as PackedElement<InputPixelShape>>::Array; PY]; PY]: Element<OutputPixelShape>,
+    <[[<W as PackedElement<InputPixelShape>>::Array; PY]; PY] as Element<OutputPixelShape>>::Array: Copy + Clone,
+{
+    fc: <[[<W as PackedElement<InputPixelShape>>::Array; PY]; PY] as Element<OutputPixelShape>>::Array,
+    tail: H,
+    image_shape: PhantomData<ImageShape>,
+}
+
+pub struct GlobalAvgPoolCache<TailCache, P: Shape, const C: usize>
+where
+    bool: PackedElement<P>,
+{
+    tail_cache: TailCache,
+    threshold: u32,
+    acts: <bool as PackedElement<P>>::Array,
+}
+
+pub struct GlobalAvgPoolChanCache<
     W,
-    H: Model<<<bool as PackedElement<InputPixelShape>>::Array as Element<ImageShape>>::Array, C>,
+    TailChanCache,
+    I,
+    const PX: usize,
+    const PY: usize,
     const C: usize,
 > {
-    fc: <<W as ConstructWeightArray<<InputPixelShape as Element<PatchShape>>::Array>>::WeightArray as Element<OutputPixelShape>>::Array,
+    threshold: u32,
+    tail_chan_cache: TailChanCache,
+    weight_type: PhantomData<W>,
+    image_shape: PhantomData<I>,
+}
+
+impl<W: Weight, TailChanCache, I: ImageShape, const PX: usize, const PY: usize, const C: usize>
+    Cache<<bool as Pixel<I>>::Image> for GlobalAvgPoolChanCache<W, TailChanCache, I, PX, PY, C>
+where
+    bool: Pixel<I>,
+    TailChanCache: Cache<bool>,
+    I: PixelFold<u32, bool, PX, PY>,
+{
+    fn loss_delta(&self, input: &<bool as Pixel<I>>::Image) -> i64 {
+        let sum = <I as PixelFold<u32, bool, PX, PY>>::pixel_fold(input, 0u32, |sum, &bit| {
+            sum + (bit as u32)
+        });
+        self.tail_chan_cache.loss_delta(&(sum > self.threshold))
+    }
+}
+
+#[derive(Default, Copy, Clone)]
+pub struct GlobalAvgPool<I, P, H, const PX: usize, const PY: usize> {
+    pixel_shape: PhantomData<P>,
+    image_shape: PhantomData<I>,
     tail: H,
 }
 
-pub struct GlobalAvgPool {
-
-}
-
-impl GlobalAvgPool {
-    fn pool(input: &<P as Pixel<ImageShape>>::Array) -> P {
-
+impl<I, P, H, const PX: usize, const PY: usize> GlobalAvgPool<I, P, H, PX, PY>
+where
+    P: Shape + PackedMap<u32, bool> + IncrementCounters,
+    I: PixelFold<(usize, <u32 as Element<P>>::Array), <bool as PackedElement<P>>::Array, PX, PY>,
+    bool: PackedElement<P>,
+    <bool as PackedElement<P>>::Array: Pixel<I> + Default,
+    u32: Element<P>,
+    <u32 as Element<P>>::Array: Default,
+{
+    fn pool(
+        input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
+    ) -> (u32, <bool as PackedElement<P>>::Array) {
+        let (n, counts) = <I as PixelFold<
+            (usize, <u32 as Element<P>>::Array),
+            <bool as PackedElement<P>>::Array,
+            PX,
+            PY,
+        >>::pixel_fold(
+            input,
+            <(usize, <u32 as Element<P>>::Array)>::default(),
+            |acc, pixel| P::counted_increment(pixel, acc),
+        );
+        let threshold = n as u32 / 2;
+        (
+            threshold,
+            <P as PackedMap<u32, bool>>::map(&counts, |&sum| sum > threshold),
+        )
     }
 }
-*/
+
+impl<I, P, H, const PX: usize, const PY: usize, const C: usize>
+    Model<<<bool as PackedElement<P>>::Array as Pixel<I>>::Image, C>
+    for GlobalAvgPool<I, P, H, PX, PY>
+where
+    Self: Copy,
+    P: Shape + PackedMap<u32, bool> + IncrementCounters,
+    I: PixelFold<(usize, <u32 as Element<P>>::Array), <bool as PackedElement<P>>::Array, PX, PY>
+        + PixelFold<u32, bool, PX, PY>,
+    H: Model<<bool as PackedElement<P>>::Array, C, InputIndex = P::Index, InputValue = bool>,
+    u32: Element<P>,
+    <u32 as Element<P>>::Array: Default + std::fmt::Debug,
+    bool: PackedElement<P> + Pixel<I>,
+    <bool as PackedElement<P>>::Array: Pixel<I> + Default + PackedArray<Weight = bool, Shape = P>,
+    <H as Model<<bool as PackedElement<P>>::Array, C>>::ChanCache: Cache<bool>,
+{
+    type Index = H::Index;
+    type Weight = H::Weight;
+    type IndexIter = H::IndexIter;
+    type Cache = GlobalAvgPoolCache<H::Cache, P, C>;
+    type ChanCache = GlobalAvgPoolChanCache<H::Weight, H::ChanCache, I, PX, PY, C>;
+    type InputIndex = P::Index;
+    type InputValue = <bool as Pixel<I>>::Image;
+    fn rand<R: Rng>(rng: &mut R) -> Self {
+        GlobalAvgPool {
+            pixel_shape: PhantomData::default(),
+            image_shape: PhantomData::default(),
+            tail: H::rand(rng),
+        }
+    }
+    fn indices() -> H::IndexIter {
+        H::indices()
+    }
+    fn mutate_in_place(&mut self, index: H::Index, weight: H::Weight) {
+        self.tail.mutate_in_place(index, weight)
+    }
+    fn top_act(&self, input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image) -> usize {
+        let (_, acts) = Self::pool(input);
+        self.tail.top_act(&acts)
+    }
+    fn cache(
+        &self,
+        input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
+        class: usize,
+    ) -> Self::Cache {
+        let (threshold, acts) = Self::pool(input);
+        GlobalAvgPoolCache {
+            tail_cache: self.tail.cache(&acts, class),
+            threshold: threshold,
+            acts: acts,
+        }
+    }
+    fn subtract_input(
+        &self,
+        cache: &Self::Cache,
+        chan_index: Self::InputIndex,
+        _: Self::InputValue,
+    ) -> Self::ChanCache {
+        GlobalAvgPoolChanCache {
+            threshold: cache.threshold,
+            tail_chan_cache: self.tail.subtract_input(
+                &cache.tail_cache,
+                chan_index,
+                cache.acts.get_weight(chan_index),
+            ),
+            weight_type: PhantomData::default(),
+            image_shape: PhantomData::default(),
+        }
+    }
+    fn loss(
+        &self,
+        input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
+        class: usize,
+    ) -> u64 {
+        let (_, acts) = Self::pool(input);
+        self.tail.loss(&acts, class)
+    }
+    fn loss_deltas(
+        &self,
+        input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
+        threshold: u64,
+        class: usize,
+    ) -> Vec<(Self::Index, Self::Weight, i64)> {
+        let (_, acts) = Self::pool(input);
+        self.tail.loss_deltas(&acts, threshold, class)
+    }
+}
 
 #[cfg(test)]
 mod tests {
-    use super::{Cache, FcMSE, Model, FC};
+    use super::{Cache, FcMSE, GlobalAvgPool, Model, FC};
     use crate::bits::{
         b128, b32, b8, t128, t32, t8, PackedArray, PackedElement, Weight, WeightArray,
     };
+    use crate::shape::{Map, ZipMap};
     use rand::Rng;
     use rand::SeedableRng;
     use rand_hc::Hc128Rng;
     extern crate test;
     use crate::shape::Shape;
+
+    macro_rules! test_loss_deltas_conv {
+        ($name:ident, $input_pixel:ty, $input_x:expr, $input_y:expr, $model:ty, $n_classes:expr, $n_iters:expr) => {
+            #[test]
+            fn $name() {
+                let mut rng = Hc128Rng::seed_from_u64(0);
+                (0..$n_iters).for_each(|_| {
+                    let inputs: [[$input_pixel; $input_y]; $input_x] = rng.gen();
+                    let weights = <$model as Model<
+                        [[$input_pixel; $input_y]; $input_x],
+                        $n_classes,
+                    >>::rand(&mut rng);
+                    for class in 0..$n_classes {
+                        for &threshold in &[0, 10, 100, 1000] {
+                            let mut true_loss_deltas =
+                                weights.loss_deltas_slow(&inputs, threshold, class);
+                            true_loss_deltas.sort();
+                            let mut loss_deltas = weights.loss_deltas(&inputs, threshold, class);
+                            loss_deltas.sort();
+                            assert_eq!(true_loss_deltas, loss_deltas);
+                        }
+                    }
+                })
+            }
+        };
+    }
+
+    macro_rules! test_input_loss_deltas_conv {
+        ($name:ident, $input_pixel_shape:ty, $input_x:expr, $input_y:expr, $model:ty, $n_classes:expr, $n_chan_iters:expr, $n_iters:expr) => {
+            #[test]
+            fn $name() {
+                let mut rng = Hc128Rng::seed_from_u64(0);
+                (0..$n_iters).for_each(|_| {
+                    let input: [[<bool as PackedElement<$input_pixel_shape>>::Array; $input_y];
+                        $input_x] = rng.gen();
+                    let weights = <$model as Model<
+                        [[<bool as PackedElement<$input_pixel_shape>>::Array; $input_y]; $input_x],
+                        $n_classes,
+                    >>::rand(&mut rng);
+
+                    for class in 0..$n_classes {
+                        let null_loss = weights.loss(&input, class);
+                        let cache = weights.cache(&input, class);
+                        for i in <$input_pixel_shape as Shape>::indices() {
+                            let null_chan =
+                                <[[(); $input_y]; $input_x] as Map<
+                                    <bool as PackedElement<$input_pixel_shape>>::Array,
+                                    bool,
+                                >>::map(&input, |pixel| pixel.get_weight(i));
+                            let chan_cache = weights.subtract_input(&cache, i, null_chan);
+                            for c in 0..$n_chan_iters {
+                                let new_channel: [[bool; $input_y]; $input_x] = rng.gen();
+                                let loss_delta = chan_cache.loss_delta(&new_channel);
+
+                                let new_input = <[[(); $input_y]; $input_x] as ZipMap<
+                                    <bool as PackedElement<$input_pixel_shape>>::Array,
+                                    bool,
+                                    <bool as PackedElement<$input_pixel_shape>>::Array,
+                                >>::zip_map(
+                                    &input,
+                                    &new_channel,
+                                    |pixel, &bit| pixel.set_weight(i, bit),
+                                );
+                                let true_loss = weights.loss(&new_input, class);
+                                assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
+                            }
+                        }
+                    }
+                })
+            }
+        };
+    }
 
     macro_rules! test_loss_deltas {
         ($name:ident, $input:ty, $weights:ty, $n_classes:expr, $n_iters:expr) => {
@@ -616,9 +839,9 @@ mod tests {
                         let cache = weights.cache(&inputs, class);
                         for i in <$input_shape as Shape>::indices() {
                             let chan_cache = weights.subtract_input(&cache, i, <<bool as PackedElement<$input_shape>>::Array as PackedArray>::get_weight(&inputs, i));
-                            for &sign in &[false, true] {
+                            for sign in &[false, true] {
                                 let loss_delta = chan_cache.loss_delta(sign);
-                                let true_loss = weights.loss(&inputs.set_weight(i, sign), class);
+                                let true_loss = weights.loss(&inputs.set_weight(i, *sign), class);
                                 assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
                             }
                         }
@@ -645,4 +868,11 @@ mod tests {
 
     test_input_loss_deltas!(rand_fc_fcmse_bit_input_losses_large, [[(); 8]; 3], FC<[[(); 8]; 3], bool, [[(); 32]; 2], FcMSE<[[(); 32]; 2], bool, 10>, 10>, 10, 100);
     test_input_loss_deltas!(rand_fc_fcmse_trit_input_losses_large, [[(); 8]; 3], FC<[[(); 8]; 3], Option<bool>, [[(); 32]; 2], FcMSE<[[(); 32]; 2], Option<bool>, 10>, 10>, 10, 100);
+
+    test_loss_deltas_conv!(rand_global_avg_pool_fcmse_bit_small, [b32; 2], 16, 16, GlobalAvgPool<[[(); 16]; 16], [[(); 32]; 2], FcMSE<[[(); 32]; 2], bool, 7>, 3, 3>, 7, 100);
+
+    test_input_loss_deltas_conv!(rand_global_avg_pool_input_losses_bit_small, [(); 32], 6, 6, GlobalAvgPool<[[(); 6]; 6], [(); 32], FcMSE<[(); 32], bool, 7>, 3, 3>, 7, 200, 1000);
+    test_input_loss_deltas_conv!(rand_global_avg_pool_input_losses_trit_small, [(); 32], 6, 6, GlobalAvgPool<[[(); 6]; 6], [(); 32], FcMSE<[(); 32], Option<bool>, 7>, 3, 3>, 7, 200, 1000);
+    test_input_loss_deltas_conv!(rand_global_avg_pool_input_losses_bit_large, [[(); 32]; 2], 16, 16, GlobalAvgPool<[[(); 16]; 16], [[(); 32]; 2], FcMSE<[[(); 32]; 2], bool, 7>, 3, 3>, 7, 20, 100);
+    test_input_loss_deltas_conv!(rand_global_avg_pool_input_losses_bit_small_5x5, [(); 32], 8, 8, GlobalAvgPool<[[(); 8]; 8], [(); 32], FcMSE<[(); 32], bool, 7>, 5, 5>, 7, 20, 100);
 }

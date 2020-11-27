@@ -764,37 +764,43 @@ pub trait PackedWord {
     fn blit(weight: Self::Weight) -> Self;
 }
 
-pub trait ArrayBitAnd {
-    fn bit_and(&self, rhs: &Self) -> Self;
-}
-
-impl<T: ArrayBitAnd, const L: usize> ArrayBitAnd for [T; L]
+pub trait IncrementCounters
 where
-    [T; L]: LongDefault,
+    Self: Shape + Sized,
+    u32: Element<Self>,
+    bool: PackedElement<Self>,
 {
-    fn bit_and(&self, rhs: &Self) -> Self {
-        let mut target = <[T; L]>::long_default();
-        for i in 0..L {
-            target[i] = self[i].bit_and(&rhs[i]);
-        }
-        target
+    fn counted_increment(
+        bits: &<bool as PackedElement<Self>>::Array,
+        counters: (usize, <u32 as Element<Self>>::Array),
+    ) -> (usize, <u32 as Element<Self>>::Array) {
+        (counters.0 + 1, Self::increment(bits, counters.1))
     }
+    fn increment(
+        bits: &<bool as PackedElement<Self>>::Array,
+        mut counters: <u32 as Element<Self>>::Array,
+    ) -> <u32 as Element<Self>>::Array {
+        Self::increment_in_place(bits, &mut counters);
+        counters
+    }
+    fn increment_in_place(
+        bits: &<bool as PackedElement<Self>>::Array,
+        counters: &mut <u32 as Element<Self>>::Array,
+    );
 }
 
-pub trait ArrayBitOr {
-    fn bit_or(&self, rhs: &Self) -> Self;
-}
-
-impl<T: ArrayBitOr, const L: usize> ArrayBitOr for [T; L]
+impl<S: IncrementCounters, const L: usize> IncrementCounters for [S; L]
 where
-    [T; L]: LongDefault,
+    u32: Element<S>,
+    bool: PackedElement<S>,
 {
-    fn bit_or(&self, rhs: &Self) -> Self {
-        let mut target = <[T; L]>::long_default();
+    fn increment_in_place(
+        bits: &<bool as PackedElement<Self>>::Array,
+        counters: &mut <u32 as Element<Self>>::Array,
+    ) {
         for i in 0..L {
-            target[i] = self[i].bit_or(&rhs[i]);
+            S::increment_in_place(&bits[i], &mut counters[i]);
         }
-        target
     }
 }
 
@@ -1023,6 +1029,14 @@ macro_rules! for_uints {
             }
         }
 
+        impl IncrementCounters for [(); $len] {
+            fn increment_in_place(&bits: &$b_type, counters: &mut [u32; $len]) {
+                for i in 0..$len {
+                    counters[i] += bits.get_bit(i) as u32;
+                }
+            }
+        }
+
         /// A word of trits. The 0 element is the sign, the 1 element is the magnitudes.
         #[allow(non_camel_case_types)]
         #[derive(Copy, Clone, Serialize, Deserialize)]
@@ -1181,16 +1195,6 @@ macro_rules! for_uints {
             }
         }
 
-        impl ArrayBitOr for $b_type {
-            fn bit_or(&self, other: &$b_type) -> $b_type {
-                *self | *other
-            }
-        }
-        impl ArrayBitAnd for $b_type {
-            fn bit_and(&self, other: &$b_type) -> $b_type {
-                *self & *other
-            }
-        }
         impl Default for $b_type {
             fn default() -> Self {
                 $b_type(0)
