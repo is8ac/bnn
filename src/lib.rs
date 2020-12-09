@@ -4,9 +4,9 @@
 #![feature(test)]
 
 pub mod bits;
-pub mod count;
-pub mod datasets;
-pub mod descend;
-pub mod image2d;
-pub mod layers;
+//pub mod count;
+//pub mod datasets;
+//pub mod descend;
+//pub mod image2d;
+//pub mod layers;
 pub mod shape;

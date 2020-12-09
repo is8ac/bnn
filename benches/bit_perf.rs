@@ -2,7 +2,7 @@
 extern crate criterion;
 use bnn::bits::{
     b128, b16, b32, b64, b8, t128, t16, t32, t64, t8, IncrementCounters, MaskedDistance,
-    PackedElement, Weight, WeightArray,
+    PackedElement, Weight, WeightArray, BMA,
 };
 use bnn::shape::{Element, LongDefault, Shape};
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
@@ -294,12 +294,80 @@ fn increment_counters_len(c: &mut Criterion) {
     group.finish()
 }
 
+macro_rules! bench_trit_bma_1 {
+    ($group:expr, $name:expr, $i:expr, $s:ty) => {
+        let mut rng = Hc128Rng::seed_from_u64(0);
+        $group.bench_with_input(BenchmarkId::new($name, $i), &$i, |b, _| {
+            b.iter_batched(
+                || {
+                    let inputs: <bool as PackedElement<$s>>::Array = rng.gen();
+                    let weights = <() as WeightArray<$s, Option<bool>>>::rand(&mut rng);
+                    (inputs, weights)
+                },
+                |(inputs, weights)| <() as WeightArray<$s, Option<bool>>>::bma(&weights, &inputs),
+                BatchSize::SmallInput,
+            )
+        });
+    };
+}
+
+macro_rules! bench_trit_bma_2 {
+    ($group:expr, $name:expr, $i:expr, $s:ty) => {
+        let mut rng = Hc128Rng::seed_from_u64(0);
+        $group.bench_with_input(BenchmarkId::new($name, $i), &$i, |b, _| {
+            b.iter_batched(
+                || {
+                    let inputs: <bool as PackedElement<$s>>::Array = rng.gen();
+                    let weights: <Option<bool> as PackedElement<$s>>::Array = rng.gen();
+                    (inputs, weights)
+                },
+                |(inputs, weights)| weights.bma(&inputs),
+                BatchSize::SmallInput,
+            )
+        });
+    };
+}
+
+fn trit_bma_compare(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bit_bma");
+
+    bench_trit_bma_1!(group, "u8", 1, [[(); 8]; 1]);
+    bench_trit_bma_2!(group, "u8", 2, [[(); 8]; 1]);
+
+    bench_trit_bma_1!(group, "u32", 1, [[(); 32]; 1]);
+    bench_trit_bma_2!(group, "u32", 2, [[(); 32]; 1]);
+
+    bench_trit_bma_1!(group, "u32_3x3x4", 1, [[[[(); 32]; 3]; 3]; 4]);
+    bench_trit_bma_2!(group, "u32_3x3x4", 2, [[[[(); 32]; 3]; 3]; 4]);
+
+    bench_trit_bma_1!(group, "u32_8", 1, [[(); 32]; 8]);
+    bench_trit_bma_2!(group, "u32_8", 2, [[(); 32]; 8]);
+
+    bench_trit_bma_1!(group, "u32_32", 1, [[(); 32]; 32]);
+    bench_trit_bma_2!(group, "u32_32", 2, [[(); 32]; 32]);
+
+    bench_trit_bma_1!(group, "u64_3x3", 1, [[[(); 64]; 3]; 3]);
+    bench_trit_bma_2!(group, "u64_3x3", 2, [[[(); 64]; 3]; 3]);
+
+    bench_trit_bma_1!(group, "u64_8", 1, [[(); 64]; 8]);
+    bench_trit_bma_2!(group, "u64_8", 2, [[(); 64]; 8]);
+
+    bench_trit_bma_1!(group, "u64_32", 1, [[(); 64]; 32]);
+    bench_trit_bma_2!(group, "u64_32", 2, [[(); 64]; 32]);
+
+    bench_trit_bma_1!(group, "u64_16", 1, [[(); 64]; 16]);
+    bench_trit_bma_2!(group, "u64_16", 2, [[(); 64]; 16]);
+
+    group.finish()
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default();
     //config = Criterion::default().measurement_time(Duration::from_secs(5));
     //targets = bit_bma, trit_bma, bit_acts, trit_acts, bit_input_acts, trit_input_acts
-    targets = increment_counters_len, increment_counters_word
+    //targets = increment_counters_len, increment_counters_word
+    targets = trit_bma_compare
 }
 
 criterion_main!(benches);

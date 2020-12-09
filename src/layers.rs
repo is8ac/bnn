@@ -1,11 +1,58 @@
 use crate::bits::{
-    ConstructWeightArray, IncrementCounters, PackedArray, PackedElement, PackedIndexMap, PackedMap,
-    Weight, WeightArray,
+    BitScaler, IncrementCounters, PackedArray, PackedElement, PackedIndexMap, PackedMap,
+    WeightArray, BMA,
 };
-use crate::image2d::{ImageShape, Pixel, PixelFold};
+use crate::image2d::{Conv, ImageShape, Pixel, PixelFold, PixelMap};
 use crate::shape::{Element, IndexGet, LongDefault, Map, MutMap, Shape, ZipMap};
+use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use std::marker::PhantomData;
+
+pub struct LayerIter<I: Shape, O: Shape, H, const C: usize>
+where
+    bool: PackedElement<O>,
+{
+    cur_output_index: Option<O::Index>,
+    input_index: I::IndexIter,
+    output_index: O::IndexIter,
+    head_iter: H,
+}
+
+impl<I: Shape, O: Shape, H, const C: usize> LayerIter<I, O, H, C>
+where
+    bool: PackedElement<O>,
+{
+    fn new(head_iter: H) -> Self {
+        let mut out_iter = O::indices();
+        LayerIter {
+            cur_output_index: out_iter.next(),
+            input_index: I::indices(),
+            output_index: out_iter,
+            head_iter: head_iter,
+        }
+    }
+}
+
+impl<I: Shape, O: Shape, H: Iterator, const C: usize> Iterator for LayerIter<I, O, H, C>
+where
+    bool: PackedElement<O>,
+    H::Item: Copy,
+{
+    type Item = LayerIndex<(O::Index, I::Index), H::Item>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(o) = self.cur_output_index {
+            if let Some(i) = self.input_index.next() {
+                Some(LayerIndex::Head((o, i)))
+            } else {
+                self.cur_output_index = self.output_index.next();
+                self.input_index = I::indices();
+                self.next()
+            }
+        } else {
+            self.head_iter.next().map(|i| LayerIndex::Tail(i))
+        }
+    }
+}
 
 pub trait Cache<I> {
     fn loss_delta(&self, input: &I) -> i64;
@@ -20,7 +67,7 @@ pub enum LayerIndex<H: Copy, T: Copy> {
 pub trait Model<I, const C: usize>
 where
     Self: Sized + Copy,
-    Self::Weight: 'static + Weight,
+    Self::Weight: 'static + BitScaler,
     Self::IndexIter: Iterator<Item = Self::Index>,
     Self::Index: Copy,
     Self::ChanCache: Cache<Self::InputValue>,
@@ -32,8 +79,10 @@ where
     type ChanCache;
     type InputIndex;
     type InputValue;
+    type Output;
     /// Rand init
     fn rand<R: Rng>(rng: &mut R) -> Self;
+    fn apply(&self, input: &I) -> Self::Output;
     /// iter of all weight indices
     fn indices() -> Self::IndexIter;
     fn mutate_in_place(&mut self, index: Self::Index, weight: Self::Weight);
@@ -71,7 +120,7 @@ where
         class: usize,
     ) -> Vec<(Self::Index, Self::Weight, i64)> {
         let null_loss = self.loss(input, class) as i64;
-        <Self::Weight as Weight>::states()
+        <Self::Weight as BitScaler>::states()
             .map(|w| {
                 Self::indices()
                     .map(|i| {
@@ -90,20 +139,20 @@ where
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct FcMSE<I, W: ConstructWeightArray<I>, const C: usize>
+pub struct FcMSE<S: Shape, W: PackedElement<S>, const C: usize>
 where
-    [<W as ConstructWeightArray<I>>::WeightArray; C]: Copy + std::fmt::Debug,
+    [<W as PackedElement<S>>::Array; C]: Copy + std::fmt::Debug,
 {
-    pub fc: [<W as ConstructWeightArray<I>>::WeightArray; C],
+    pub fc: [<W as PackedElement<S>>::Array; C],
 }
 
-pub struct FcMSEindexIter<I: Shape, const C: usize> {
+pub struct FcMSEindexIter<S: Shape, const C: usize> {
     class_index: usize,
-    input_iter: I::IndexIter,
+    input_iter: S::IndexIter,
 }
 
-impl<I: Shape, const C: usize> Iterator for FcMSEindexIter<I, C> {
-    type Item = (usize, I::Index);
+impl<S: Shape, const C: usize> Iterator for FcMSEindexIter<S, C> {
+    type Item = (usize, S::Index);
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(i) = self.input_iter.next() {
             Some((self.class_index, i))
@@ -112,7 +161,7 @@ impl<I: Shape, const C: usize> Iterator for FcMSEindexIter<I, C> {
             if self.class_index >= C {
                 None
             } else {
-                self.input_iter = I::indices();
+                self.input_iter = S::indices();
                 self.input_iter.next().map(|i| (self.class_index, i))
             }
         }
@@ -129,7 +178,7 @@ pub struct FcMSEchanCache<W, const C: usize> {
     null_loss: i64,
 }
 
-impl<W: Weight, const C: usize> Cache<bool> for FcMSEchanCache<W, C> {
+impl<W: BitScaler, const C: usize> Cache<bool> for FcMSEchanCache<W, C> {
     fn loss_delta(&self, &input: &bool) -> i64 {
         self.cache
             .iter()
@@ -147,15 +196,18 @@ impl<W: Weight, const C: usize> Cache<bool> for FcMSEchanCache<W, C> {
 impl<S, W, const C: usize> Model<<bool as PackedElement<S>>::Array, C> for FcMSE<S, W, C>
 where
     S: Shape + PackedIndexMap<bool> + Copy,
-    W: 'static + Weight + ConstructWeightArray<S>,
+    W: 'static + BitScaler + PackedElement<S>,
     bool: PackedElement<S>,
     (): WeightArray<S, W>,
-    <W as ConstructWeightArray<S>>::WeightArray: Copy + std::fmt::Debug,
-    [<W as ConstructWeightArray<S>>::WeightArray; C]: LongDefault,
+    <W as PackedElement<S>>::Array:
+        Copy + std::fmt::Debug + BMA + PackedArray<Element = W, Shape = S>,
+    [<W as PackedElement<S>>::Array; C]: LongDefault,
     <S as Shape>::Index: Copy,
-    <bool as PackedElement<S>>::Array: Copy + PackedArray<Weight = bool, Shape = S>,
+    <bool as PackedElement<S>>::Array: Copy + PackedArray<Element = bool, Shape = S>,
     [(W, u32, u32); C]: Default,
     [(u32, u32); C]: Default,
+    [u32; C]: Default,
+    Standard: Distribution<[<W as PackedElement<S>>::Array; C]>,
 {
     type Index = (usize, <S as Shape>::Index);
     type Weight = W;
@@ -164,12 +216,16 @@ where
     type ChanCache = FcMSEchanCache<W, C>;
     type InputValue = bool;
     type InputIndex = <S as Shape>::Index;
+    type Output = [u32; C];
     fn rand<R: Rng>(rng: &mut R) -> Self {
-        let mut weights = <[<W as ConstructWeightArray<S>>::WeightArray; C]>::long_default();
+        FcMSE { fc: rng.gen() }
+    }
+    fn apply(&self, input: &<bool as PackedElement<S>>::Array) -> [u32; C] {
+        let mut target = <[u32; C]>::default();
         for c in 0..C {
-            weights[c] = <() as WeightArray<S, W>>::rand(rng);
+            target[c] = self.fc[c].bma(input);
         }
-        FcMSE { fc: weights }
+        target
     }
     fn indices() -> FcMSEindexIter<S, C> {
         FcMSEindexIter {
@@ -178,12 +234,12 @@ where
         }
     }
     fn mutate_in_place(&mut self, (head, tail): (usize, <S as Shape>::Index), weight: W) {
-        <()>::mutate_in_place(&mut self.fc[head], tail, weight);
+        self.fc[head].set_element_in_place(tail, weight);
     }
     fn top_act(&self, input: &<bool as PackedElement<S>>::Array) -> usize {
         self.fc
             .iter()
-            .map(|w| <()>::bma(w, input))
+            .map(|w| w.bma(input))
             .enumerate()
             .max_by_key(|(_, a)| *a)
             .unwrap()
@@ -193,7 +249,7 @@ where
         let mut target = <[(u32, u32); C]>::default();
         for c in 0..C {
             target[c] = (
-                <()>::bma(&self.fc[c], input),
+                self.fc[c].bma(input),
                 (c == class) as u32 * <() as WeightArray<S, W>>::MAX,
             );
         }
@@ -210,7 +266,7 @@ where
     ) -> FcMSEchanCache<W, C> {
         let mut target = <[(W, u32, u32); C]>::default();
         for c in 0..C {
-            let weight = <()>::get_weight(&self.fc[c], chan_index);
+            let weight = self.fc[c].get_element(chan_index);
             target[c] = (
                 weight,
                 cache.cache[c].0 - weight.bma(cur_value),
@@ -228,7 +284,7 @@ where
             .enumerate()
             .map(|(c, w)| {
                 let target_act = (c == class) as u32 * <() as WeightArray<S, W>>::MAX;
-                let act = <()>::bma(&w, input);
+                let act = w.bma(input);
                 let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
                 (dist as u64).pow(2)
             })
@@ -245,7 +301,7 @@ where
             .enumerate()
             .map(|(c, w)| {
                 let target_act = (c == class) as u32 * <() as WeightArray<S, W>>::MAX;
-                let act = <()>::bma(&w, input);
+                let act = w.bma(input);
                 let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
                 let class_null_loss = (dist as u64).pow(2) as i64;
                 <()>::loss_deltas(&w, input, threshold, |act| {
@@ -263,86 +319,16 @@ where
 }
 
 #[derive(Copy, Clone)]
-pub struct FC<S, W, O: Shape, H: Model<<bool as PackedElement<O>>::Array, C>, const C: usize>
+pub struct FC<I, W, O: Shape, H: Model<<bool as PackedElement<O>>::Array, C>, const C: usize>
 where
     bool: PackedElement<O>,
-    S: Shape,
-    W: ConstructWeightArray<S>,
-    <<W as ConstructWeightArray<S>>::WeightArray as Element<O>>::Array: Copy,
-    <W as ConstructWeightArray<S>>::WeightArray: Element<O>,
-{
-    fc: <<W as ConstructWeightArray<S>>::WeightArray as Element<O>>::Array,
-    tail: H,
-}
-
-impl<W, S, O, H, const C: usize> FC<S, W, O, H, C>
-where
-    S: Shape + PackedIndexMap<bool>,
-    (): WeightArray<S, W>,
-    bool: PackedElement<O> + PackedElement<S>,
-    W: 'static + ConstructWeightArray<S> + Weight,
-    H: Model<<bool as PackedElement<O>>::Array, C>,
-    <bool as PackedElement<S>>::Array: Copy + PackedArray<Weight = bool, Shape = S>,
-    O: Shape + PackedMap<<W as ConstructWeightArray<S>>::WeightArray, bool>,
-    <<W as ConstructWeightArray<S>>::WeightArray as Element<O>>::Array: Copy,
-    <W as ConstructWeightArray<S>>::WeightArray: Element<O> + Copy,
-{
-    fn acts(&self, input: &<bool as PackedElement<S>>::Array) -> <bool as PackedElement<O>>::Array {
-        <O as PackedMap<<W as ConstructWeightArray<S>>::WeightArray, bool>>::map(&self.fc, |w| {
-            <() as WeightArray<S, W>>::act(&w, input)
-        })
-    }
-}
-
-pub struct FCiter<
     I: Shape,
-    O: Shape,
-    H: Model<<bool as PackedElement<O>>::Array, C>,
-    const C: usize,
-> where
-    bool: PackedElement<O>,
+    W: PackedElement<I>,
+    <W as PackedElement<I>>::Array: Element<O>,
+    <<W as PackedElement<I>>::Array as Element<O>>::Array: Copy,
 {
-    cur_output_index: Option<O::Index>,
-    input_index: I::IndexIter,
-    output_index: O::IndexIter,
-    head_iter: H::IndexIter,
-}
-
-impl<I: Shape, O: Shape, H: Model<<bool as PackedElement<O>>::Array, C>, const C: usize>
-    FCiter<I, O, H, C>
-where
-    bool: PackedElement<O>,
-{
-    fn new() -> Self {
-        let mut out_iter = O::indices();
-        FCiter {
-            cur_output_index: out_iter.next(),
-            input_index: I::indices(),
-            output_index: out_iter,
-            head_iter: H::indices(),
-        }
-    }
-}
-
-impl<I: Shape, O: Shape, H: Model<<bool as PackedElement<O>>::Array, C>, const C: usize> Iterator
-    for FCiter<I, O, H, C>
-where
-    bool: PackedElement<O>,
-{
-    type Item = LayerIndex<(O::Index, I::Index), H::Index>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(o) = self.cur_output_index {
-            if let Some(i) = self.input_index.next() {
-                Some(LayerIndex::Head((o, i)))
-            } else {
-                self.cur_output_index = self.output_index.next();
-                self.input_index = I::indices();
-                self.next()
-            }
-        } else {
-            self.head_iter.next().map(|i| LayerIndex::Tail(i))
-        }
-    }
+    fc: <<W as PackedElement<I>>::Array as Element<O>>::Array,
+    tail: H,
 }
 
 pub struct FCcache<O: Shape, H: Model<<bool as PackedElement<O>>::Array, C>, const C: usize>
@@ -366,7 +352,7 @@ pub struct FCchanCache<
 > where
     I: Shape,
     bool: PackedElement<O> + PackedElement<I>,
-    <bool as PackedElement<I>>::Array: PackedArray<Weight = bool, Shape = I> + Copy,
+    <bool as PackedElement<I>>::Array: PackedArray<Element = bool, Shape = I> + Copy,
     (W, u32): Element<O>,
 {
     input_shape: PhantomData<I>,
@@ -385,11 +371,11 @@ impl<
         const C: usize,
     > Cache<bool> for FCchanCache<I, W, O, H, C>
 where
-    W: 'static + Weight + ConstructWeightArray<I>,
+    W: 'static + BitScaler + PackedElement<I>,
     I: Shape + PackedIndexMap<bool>,
     bool: PackedElement<O> + PackedElement<I>,
-    <W as ConstructWeightArray<I>>::WeightArray: Copy,
-    <bool as PackedElement<I>>::Array: PackedArray<Weight = bool, Shape = I> + Copy,
+    <W as PackedElement<I>>::Array: Copy + BMA + PackedArray<Element = W, Shape = I>,
+    <bool as PackedElement<I>>::Array: PackedArray<Element = bool, Shape = I> + Copy,
     (W, u32): Element<O>,
     (): WeightArray<I, W>,
 {
@@ -403,9 +389,8 @@ where
 
 impl<I, W, O, H, const C: usize> Model<<bool as PackedElement<I>>::Array, C> for FC<I, W, O, H, C>
 where
-    (): Element<O, Array = O>,
-    (): WeightArray<I, W>,
-    W: 'static + Weight + ConstructWeightArray<I>,
+    (): Element<O, Array = O> + WeightArray<I, W>,
+    W: 'static + BitScaler + PackedElement<I>,
     H: Model<
         <bool as PackedElement<O>>::Array,
         C,
@@ -413,63 +398,67 @@ where
         InputIndex = O::Index,
         InputValue = bool,
     >,
-    O: PackedMap<<W as ConstructWeightArray<I>>::WeightArray, bool>
+    O: PackedMap<<W as PackedElement<I>>::Array, bool>
         + Shape
         + Default
-        + MutMap<(), <W as ConstructWeightArray<I>>::WeightArray>
-        + ZipMap<<W as ConstructWeightArray<I>>::WeightArray, u32, (W, u32)>
-        + Map<<W as ConstructWeightArray<I>>::WeightArray, u32>
+        + MutMap<(), <W as PackedElement<I>>::Array>
+        + ZipMap<<W as PackedElement<I>>::Array, u32, (W, u32)>
+        + Map<<W as PackedElement<I>>::Array, u32>
         + PackedMap<(W, u32), bool>,
     Self: Copy,
     bool: PackedElement<I> + PackedElement<O>,
     I: Shape + PackedIndexMap<bool>,
-    <W as ConstructWeightArray<I>>::WeightArray: Element<O> + Copy,
-    <bool as PackedElement<I>>::Array: PackedArray<Weight = bool, Shape = I> + Copy,
-    <<W as ConstructWeightArray<I>>::WeightArray as Element<O>>::Array:
-        IndexGet<O::Index, Element = <W as ConstructWeightArray<I>>::WeightArray> + Default + Copy,
+    <W as PackedElement<I>>::Array: Element<O> + Copy + BMA + PackedArray<Element = W, Shape = I>,
+    <bool as PackedElement<I>>::Array: PackedArray<Element = bool, Shape = I> + Copy,
+    <<W as PackedElement<I>>::Array as Element<O>>::Array:
+        IndexGet<O::Index, Element = <W as PackedElement<I>>::Array> + Default + Copy,
     Self::ChanCache: Cache<bool>,
     u32: Element<O>,
     (W, u32): Element<O>,
-    <bool as PackedElement<O>>::Array: PackedArray<Shape = O, Weight = bool>,
+    <bool as PackedElement<O>>::Array: PackedArray<Shape = O, Element = bool>,
+    Standard: Distribution<<<W as PackedElement<I>>::Array as Element<O>>::Array>,
 {
     type Index = LayerIndex<(O::Index, <I as Shape>::Index), H::Index>;
     type Weight = W;
-    type IndexIter = FCiter<I, O, H, C>;
+    type IndexIter = LayerIter<I, O, H::IndexIter, C>;
     type Cache = FCcache<O, H, C>;
     type ChanCache = FCchanCache<I, W, O, H, C>;
     type InputIndex = <I as Shape>::Index;
     type InputValue = bool;
+    type Output = <bool as PackedElement<O>>::Array;
     fn rand<R: Rng>(rng: &mut R) -> Self {
         FC {
-            fc: <O as MutMap<(), <W as ConstructWeightArray<I>>::WeightArray>>::map(
-                &O::default(),
-                &mut |_| <() as WeightArray<I, W>>::rand(rng),
-            ),
+            fc: rng.gen(),
             tail: H::rand(rng),
         }
     }
+    fn apply(
+        &self,
+        input: &<bool as PackedElement<I>>::Array,
+    ) -> <bool as PackedElement<O>>::Array {
+        <O as PackedMap<<W as PackedElement<I>>::Array, bool>>::map(&self.fc, |w| {
+            <() as WeightArray<I, W>>::act(&w, input)
+        })
+    }
     fn indices() -> Self::IndexIter {
-        FCiter::new()
+        LayerIter::new(H::indices())
     }
     fn mutate_in_place(&mut self, index: Self::Index, weight: W) {
         match index {
-            LayerIndex::Head((o, i)) => {
-                <()>::mutate_in_place(&mut self.fc.index_get_mut(o), i, weight)
-            }
+            LayerIndex::Head((o, i)) => self.fc.index_get_mut(o).set_element_in_place(i, weight),
             LayerIndex::Tail(i) => self.tail.mutate_in_place(i, weight),
         }
     }
     fn top_act(&self, input: &<bool as PackedElement<I>>::Array) -> usize {
-        let hidden = self.acts(input);
+        let hidden = self.apply(input);
         self.tail.top_act(&hidden)
     }
     fn cache(&self, input: &<bool as PackedElement<I>>::Array, class: usize) -> Self::Cache {
         FCcache {
             is_alive: true,
-            sums: <O as Map<<W as ConstructWeightArray<I>>::WeightArray, u32>>::map(
-                &self.fc,
-                |weights| <()>::bma(&weights, input),
-            ),
+            sums: <O as Map<<W as PackedElement<I>>::Array, u32>>::map(&self.fc, |weights| {
+                weights.bma(input)
+            }),
             true_class: class,
             null_loss: self.loss(input, class) as i64,
             head: PhantomData::default(),
@@ -484,22 +473,21 @@ where
         FCchanCache {
             input_shape: PhantomData::default(),
             is_alive: true,
-            sums:
-                <O as ZipMap<<W as ConstructWeightArray<I>>::WeightArray, u32, (W, u32)>>::zip_map(
-                    &self.fc,
-                    &cache.sums,
-                    |weights, sum| {
-                        let w = <()>::get_weight(&weights, chan_index);
-                        (w, sum - w.bma(cur_value))
-                    },
-                ),
+            sums: <O as ZipMap<<W as PackedElement<I>>::Array, u32, (W, u32)>>::zip_map(
+                &self.fc,
+                &cache.sums,
+                |weights, sum| {
+                    let w = weights.get_element(chan_index);
+                    (w, sum - w.bma(cur_value))
+                },
+            ),
             true_class: cache.true_class,
             null_loss: cache.null_loss,
             head: self.tail,
         }
     }
     fn loss(&self, input: &<bool as PackedElement<I>>::Array, class: usize) -> u64 {
-        let hidden = self.acts(input);
+        let hidden = self.apply(input);
         self.tail.loss(&hidden, class)
     }
     fn loss_deltas(
@@ -508,13 +496,13 @@ where
         threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, W, i64)> {
-        let hidden = self.acts(inputs);
+        let hidden = self.apply(inputs);
         // for a given output, if we flip it, what is the new loss?
         // for fc, we will only call it once, but for conv, we will call it many time for a given channel.
         let cache = self.tail.cache(&hidden, class);
         O::indices()
             .map(|o| {
-                let input = hidden.get_weight(o);
+                let input = hidden.get_element(o);
                 let weight_array = self.fc.index_get(o);
 
                 let chan_cache = self.tail.subtract_input(&cache, o, input);
@@ -538,21 +526,177 @@ where
     }
 }
 
-#[derive(Copy, Clone)]
-pub struct Conv2D<ImageShape, InputPixelShape, OutputPixelShape, W, H, const PX: usize, const PY: usize, const C: usize>
+pub struct ConvCache {}
+
+pub struct ConvChanCache<IS> {
+    image_shape: PhantomData<IS>,
+}
+
+impl<IS> Cache<<bool as Pixel<IS>>::Image> for ConvChanCache<IS>
 where
-    OutputPixelShape: Shape,
-    InputPixelShape: Shape,
-    H: Model<<<bool as PackedElement<OutputPixelShape>>::Array as Pixel<ImageShape>>::Image, C>,
-    bool: PackedElement<OutputPixelShape>,
-    <bool as PackedElement<OutputPixelShape>>::Array: Pixel<ImageShape>,
-    W: PackedElement<InputPixelShape>,
-    [[<W as PackedElement<InputPixelShape>>::Array; PY]; PY]: Element<OutputPixelShape>,
-    <[[<W as PackedElement<InputPixelShape>>::Array; PY]; PY] as Element<OutputPixelShape>>::Array: Copy + Clone,
+    bool: Pixel<IS>,
 {
-    fc: <[[<W as PackedElement<InputPixelShape>>::Array; PY]; PY] as Element<OutputPixelShape>>::Array,
+    fn loss_delta(&self, input: &<bool as Pixel<IS>>::Image) -> i64 {
+        0
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct Conv2D<IS, IPS, OPS, W, H, const PX: usize, const PY: usize, const C: usize>
+where
+    OPS: Shape,
+    IPS: Shape,
+    H: Model<<<bool as PackedElement<OPS>>::Array as Pixel<IS>>::Image, C>,
+    bool: PackedElement<OPS>,
+    <bool as PackedElement<OPS>>::Array: Pixel<IS>,
+    W: PackedElement<[[IPS; PY]; PX]>,
+    <W as PackedElement<[[IPS; PY]; PX]>>::Array: Element<OPS>,
+    <<W as PackedElement<[[IPS; PY]; PX]>>::Array as Element<OPS>>::Array: Copy + Clone,
+{
+    kernel: <<W as PackedElement<[[IPS; PY]; PX]>>::Array as Element<OPS>>::Array,
     tail: H,
-    image_shape: PhantomData<ImageShape>,
+    image_shape: PhantomData<IS>,
+}
+
+impl<IS, IPS, OPS, W, H, const PX: usize, const PY: usize, const C: usize>
+    Model<<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image, C>
+    for Conv2D<IS, IPS, OPS, W, H, PX, PY, C>
+where
+    IS: ImageShape
+        + Copy
+        + PixelMap<<bool as PackedElement<OPS>>::Array, bool>
+        + Conv<<bool as PackedElement<IPS>>::Array, <bool as PackedElement<OPS>>::Array, PX, PY>
+        + Conv<
+            <bool as PackedElement<IPS>>::Array,
+            <bool as PackedElement<[[IPS; PY]; PX]>>::Array,
+            PX,
+            PY,
+        > + PixelMap<<bool as PackedElement<[[IPS; PY]; PX]>>::Array, bool>,
+    IPS: Shape + Copy + PackedIndexMap<bool>,
+    OPS: Shape + Copy + PackedMap<<W as PackedElement<[[IPS; PY]; PX]>>::Array, bool>,
+    W: 'static + PackedElement<IPS> + Copy + BitScaler + PackedElement<[[IPS; PY]; PX]>,
+    H: Model<
+        <<bool as PackedElement<OPS>>::Array as Pixel<IS>>::Image,
+        C,
+        Weight = W,
+        InputIndex = OPS::Index,
+        InputValue = <bool as Pixel<IS>>::Image,
+    >,
+    bool: PackedElement<OPS> + PackedElement<IPS> + Pixel<IS>,
+    <bool as PackedElement<OPS>>::Array: Pixel<IS> + Default + IndexGet<OPS::Index, Element = bool>,
+    <bool as PackedElement<IPS>>::Array:
+        Pixel<IS> + PackedArray<Shape = IPS, Element = bool> + Copy,
+    <W as PackedElement<IPS>>::Array: Copy + PackedArray<Element = W, Shape = IPS> + BMA + Copy,
+    <W as PackedElement<[[IPS; PY]; PX]>>::Array:
+        Element<OPS> + PackedArray<Element = W, Shape = [[IPS; PY]; PX]> + BMA + Copy,
+    <<W as PackedElement<[[IPS; PY]; PX]>>::Array as Element<OPS>>::Array:
+        Copy + Clone + IndexGet<OPS::Index, Element = <W as PackedElement<[[IPS; PY]; PX]>>::Array>,
+    <bool as PackedElement<[[IPS; PY]; PX]>>::Array: Pixel<IS> + Default,
+    Standard: Distribution<<<W as PackedElement<[[IPS; PY]; PX]>>::Array as Element<OPS>>::Array>,
+    (): WeightArray<IPS, W>,
+{
+    type Index = LayerIndex<(OPS::Index, <[[IPS; PY]; PX] as Shape>::Index), H::Index>;
+    type Weight = W;
+    type IndexIter = LayerIter<[[IPS; PY]; PX], OPS, H::IndexIter, C>;
+    type Cache = ConvCache;
+    type ChanCache = ConvChanCache<IS>;
+    type InputValue = <bool as Pixel<IS>>::Image;
+    type InputIndex = IPS::Index;
+    type Output = <<bool as PackedElement<OPS>>::Array as Pixel<IS>>::Image;
+    fn rand<R: Rng>(rng: &mut R) -> Self {
+        Conv2D {
+            kernel: rng.gen(),
+            tail: H::rand(rng),
+            image_shape: PhantomData::default(),
+        }
+    }
+    fn apply(
+        &self,
+        input: &<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image,
+    ) -> <<bool as PackedElement<OPS>>::Array as Pixel<IS>>::Image {
+        //<() as WeightArray<[[IPS; PY]; PX], W>>::THRESHOLD;
+        <IS as Conv<
+            <bool as PackedElement<IPS>>::Array,
+            <bool as PackedElement<OPS>>::Array,
+            PX,
+            PY,
+        >>::conv(input, |patch| {
+            /*
+            <OPS as PackedMap<<W as PackedElement<[[IPS; PY]; PX]>>::Array, bool>>::map(&self.kernel, |weights| {
+                <() as WeightArray<[[IPS; PY]; PX], W>>::act(weights, &patch)
+                //weights.bma(&patch) > <() as WeightArray<[[IPS; PY]; PX], W>>::THRESHOLD
+                //true
+            })
+            */
+            Default::default()
+        })
+    }
+    fn indices() -> Self::IndexIter {
+        LayerIter::new(H::indices())
+    }
+    fn mutate_in_place(&mut self, index: Self::Index, weight: W) {
+        match index {
+            LayerIndex::Head((o, i)) => {
+                self.kernel.index_get_mut(o).set_element_in_place(i, weight)
+            }
+            LayerIndex::Tail(i) => self.tail.mutate_in_place(i, weight),
+        }
+    }
+    fn top_act(&self, input: &<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image) -> usize {
+        self.tail.top_act(&self.apply(input))
+    }
+    fn cache(
+        &self,
+        input: &<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image,
+        class: usize,
+    ) -> ConvCache {
+        ConvCache {}
+    }
+    fn subtract_input(
+        &self,
+        cache: &ConvCache,
+        chan_index: Self::InputIndex,
+        cur_value: Self::InputValue,
+    ) -> ConvChanCache<IS> {
+        ConvChanCache {
+            image_shape: PhantomData::default(),
+        }
+    }
+    fn loss(
+        &self,
+        input: &<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image,
+        class: usize,
+    ) -> u64 {
+        self.tail.loss(&self.apply(input), class)
+    }
+    fn loss_deltas(
+        &self,
+        input: &<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image,
+        threshold: u64,
+        class: usize,
+    ) -> Vec<(Self::Index, Self::Weight, i64)> {
+        let null_acts = self.apply(input);
+        let cache = self.tail.cache(&null_acts, class);
+        // for each output channel
+        /*
+        OPS::indices().map(|o| {
+            let null_chan_acts = <IS as PixelMap<<bool as PackedElement<OPS>>::Array, bool>>::map(&null_acts, |pixel| pixel.get_element(o));
+            let chan_cache = self.tail.subtract_input(&cache, o, null_chan_acts);
+            let weights_channel = self.kernel.index_get(o);
+            W::states().map(|w| {
+                let chan_acts = <IS as Conv<<bool as PackedElement<IPS>>::Array, <bool as PackedElement<[[IPS; PY]; PX]>>::Array, PX, PY>>::conv(input, |patch| {
+                    //<() as WeightArray<[[IPS; PY]; PX], W>>::acts(weights_channel, &patch, w)
+                    <bool as PackedElement<[[IPS; PY]; PX]>>::Array::default()
+                });
+                <[[IPS; PY]; PX]>::indices().map(|i| {
+                    let mut_weight_acts = <IS as PixelMap<<bool as PackedElement<[[IPS; PY]; PX]>>::Array, bool>>::map(&chan_acts, |pixel| pixel.get_element(i));
+                    chan_cache.loss_delta(&mut_weight_acts)
+                });
+            });
+        });
+        */
+        vec![]
+    }
 }
 
 pub struct GlobalAvgPoolCache<TailCache, P: Shape, const C: usize>
@@ -578,8 +722,14 @@ pub struct GlobalAvgPoolChanCache<
     image_shape: PhantomData<I>,
 }
 
-impl<W: Weight, TailChanCache, I: ImageShape, const PX: usize, const PY: usize, const C: usize>
-    Cache<<bool as Pixel<I>>::Image> for GlobalAvgPoolChanCache<W, TailChanCache, I, PX, PY, C>
+impl<
+        W: BitScaler,
+        TailChanCache,
+        I: ImageShape,
+        const PX: usize,
+        const PY: usize,
+        const C: usize,
+    > Cache<<bool as Pixel<I>>::Image> for GlobalAvgPoolChanCache<W, TailChanCache, I, PX, PY, C>
 where
     bool: Pixel<I>,
     TailChanCache: Cache<bool>,
@@ -642,7 +792,7 @@ where
     u32: Element<P>,
     <u32 as Element<P>>::Array: Default + std::fmt::Debug,
     bool: PackedElement<P> + Pixel<I>,
-    <bool as PackedElement<P>>::Array: Pixel<I> + Default + PackedArray<Weight = bool, Shape = P>,
+    <bool as PackedElement<P>>::Array: Pixel<I> + Default + PackedArray<Element = bool, Shape = P>,
     <H as Model<<bool as PackedElement<P>>::Array, C>>::ChanCache: Cache<bool>,
 {
     type Index = H::Index;
@@ -652,12 +802,20 @@ where
     type ChanCache = GlobalAvgPoolChanCache<H::Weight, H::ChanCache, I, PX, PY, C>;
     type InputIndex = P::Index;
     type InputValue = <bool as Pixel<I>>::Image;
+    type Output = <bool as PackedElement<P>>::Array;
     fn rand<R: Rng>(rng: &mut R) -> Self {
         GlobalAvgPool {
             pixel_shape: PhantomData::default(),
             image_shape: PhantomData::default(),
             tail: H::rand(rng),
         }
+    }
+    fn apply(
+        &self,
+        input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
+    ) -> <bool as PackedElement<P>>::Array {
+        let (_, acts) = Self::pool(input);
+        acts
     }
     fn indices() -> H::IndexIter {
         H::indices()
@@ -666,8 +824,7 @@ where
         self.tail.mutate_in_place(index, weight)
     }
     fn top_act(&self, input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image) -> usize {
-        let (_, acts) = Self::pool(input);
-        self.tail.top_act(&acts)
+        self.tail.top_act(&self.apply(input))
     }
     fn cache(
         &self,
@@ -692,7 +849,7 @@ where
             tail_chan_cache: self.tail.subtract_input(
                 &cache.tail_cache,
                 chan_index,
-                cache.acts.get_weight(chan_index),
+                cache.acts.get_element(chan_index),
             ),
             weight_type: PhantomData::default(),
             image_shape: PhantomData::default(),
@@ -703,8 +860,7 @@ where
         input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
         class: usize,
     ) -> u64 {
-        let (_, acts) = Self::pool(input);
-        self.tail.loss(&acts, class)
+        self.tail.loss(&self.apply(input), class)
     }
     fn loss_deltas(
         &self,
@@ -712,8 +868,7 @@ where
         threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, Self::Weight, i64)> {
-        let (_, acts) = Self::pool(input);
-        self.tail.loss_deltas(&acts, threshold, class)
+        self.tail.loss_deltas(&self.apply(input), threshold, class)
     }
 }
 
@@ -721,7 +876,7 @@ where
 mod tests {
     use super::{Cache, FcMSE, GlobalAvgPool, Model, FC};
     use crate::bits::{
-        b128, b32, b8, t128, t32, t8, PackedArray, PackedElement, Weight, WeightArray,
+        b128, b32, b8, t128, t32, t8, BitScaler, PackedArray, PackedElement, WeightArray,
     };
     use crate::shape::{Map, ZipMap};
     use rand::Rng;
@@ -777,7 +932,7 @@ mod tests {
                                 <[[(); $input_y]; $input_x] as Map<
                                     <bool as PackedElement<$input_pixel_shape>>::Array,
                                     bool,
-                                >>::map(&input, |pixel| pixel.get_weight(i));
+                                >>::map(&input, |pixel| pixel.get_element(i));
                             let chan_cache = weights.subtract_input(&cache, i, null_chan);
                             for c in 0..$n_chan_iters {
                                 let new_channel: [[bool; $input_y]; $input_x] = rng.gen();
@@ -790,7 +945,7 @@ mod tests {
                                 >>::zip_map(
                                     &input,
                                     &new_channel,
-                                    |pixel, &bit| pixel.set_weight(i, bit),
+                                    |pixel, &bit| pixel.set_element(i, bit),
                                 );
                                 let true_loss = weights.loss(&new_input, class);
                                 assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
@@ -838,10 +993,10 @@ mod tests {
                         let null_loss = weights.loss(&inputs, class);
                         let cache = weights.cache(&inputs, class);
                         for i in <$input_shape as Shape>::indices() {
-                            let chan_cache = weights.subtract_input(&cache, i, <<bool as PackedElement<$input_shape>>::Array as PackedArray>::get_weight(&inputs, i));
+                            let chan_cache = weights.subtract_input(&cache, i, <<bool as PackedElement<$input_shape>>::Array as PackedArray>::get_element(&inputs, i));
                             for sign in &[false, true] {
                                 let loss_delta = chan_cache.loss_delta(sign);
-                                let true_loss = weights.loss(&inputs.set_weight(i, *sign), class);
+                                let true_loss = weights.loss(&inputs.set_element(i, *sign), class);
                                 assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
                             }
                         }

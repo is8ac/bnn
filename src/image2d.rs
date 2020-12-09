@@ -66,7 +66,7 @@ impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usiz
     }
 }
 
-pub trait Conv<I: Pixel<Self>, O: Pixel<Self>, const PY: usize, const PX: usize>
+pub trait Conv<I: Pixel<Self>, O: Pixel<Self>, const PX: usize, const PY: usize>
 where
     Self: ImageShape,
 {
@@ -77,7 +77,7 @@ where
 }
 
 impl<I: Copy, O, const PY: usize, const PX: usize, const X: usize, const Y: usize>
-    Conv<I, O, PY, PX> for [[(); Y]; X]
+    Conv<I, O, PX, PY> for [[(); Y]; X]
 where
     [[(); Y]; X]: ImageShape,
     [[O; Y]; X]: Default,
