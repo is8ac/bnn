@@ -1,4 +1,4 @@
-use crate::shape::{Element, Merge, Shape, ZipMap};
+use crate::shape::{Shape, ZipMap};
 use rand::Rng;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -7,8 +7,8 @@ pub trait ImageShape {}
 
 impl<const X: usize, const Y: usize> ImageShape for [[(); Y]; X] {}
 
-pub trait Pixel<S: ?Sized> {
-    type Image;
+pub trait PixelPack<P> {
+    type I;
 }
 
 pub struct DynamicImageShape {
@@ -16,18 +16,18 @@ pub struct DynamicImageShape {
     y: usize,
 }
 
-impl<T: Sized, const X: usize, const Y: usize> Pixel<[[(); Y]; X]> for T {
-    type Image = [[T; Y]; X];
+impl<P: Sized, const X: usize, const Y: usize> PixelPack<P> for [[(); Y]; X] {
+    type I = [[P; Y]; X];
 }
 
-pub trait PixelMap<I: Pixel<Self>, O: Pixel<Self>>
+pub trait PixelMap<I, O>
 where
-    Self: ImageShape,
+    Self: PixelPack<I> + PixelPack<O>,
 {
     fn map<F: Fn(I) -> O>(
-        input: &<I as Pixel<Self>>::Image,
+        input: &<Self as PixelPack<I>>::I,
         map_fn: F,
-    ) -> <O as Pixel<Self>>::Image;
+    ) -> <Self as PixelPack<O>>::I;
 }
 
 impl<I: Copy, O, const X: usize, const Y: usize> PixelMap<I, O> for [[(); Y]; X]
@@ -46,11 +46,11 @@ where
     }
 }
 
-pub trait PixelFold<B, P: Pixel<Self>, const PX: usize, const PY: usize>
+pub trait PixelFold<B, P, const PX: usize, const PY: usize>
 where
-    Self: ImageShape,
+    Self: ImageShape + PixelPack<P>,
 {
-    fn pixel_fold<F: Fn(B, &P) -> B>(input: &<P as Pixel<Self>>::Image, acc: B, fold_fn: F) -> B;
+    fn pixel_fold<F: Fn(B, &P) -> B>(input: &<Self as PixelPack<P>>::I, acc: B, fold_fn: F) -> B;
 }
 
 impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usize>
@@ -66,14 +66,14 @@ impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usiz
     }
 }
 
-pub trait Conv<I: Pixel<Self>, O: Pixel<Self>, const PX: usize, const PY: usize>
+pub trait Conv<I, O, const PX: usize, const PY: usize>
 where
-    Self: ImageShape,
+    Self: ImageShape + PixelPack<I> + PixelPack<O>,
 {
     fn conv<F: Fn([[I; PY]; PX]) -> O>(
-        input: &<I as Pixel<Self>>::Image,
+        input: &<Self as PixelPack<I>>::I,
         map_fn: F,
-    ) -> <O as Pixel<Self>>::Image;
+    ) -> <Self as PixelPack<O>>::I;
 }
 
 impl<I: Copy, O, const PY: usize, const PX: usize, const X: usize, const Y: usize>

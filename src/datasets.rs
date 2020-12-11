@@ -33,7 +33,7 @@ pub mod mnist {
             let mut image_words = <[b32; 25]>::default();
             for (p, &pixel) in images_bytes.iter().enumerate() {
                 let word_index = p / 32;
-                image_words[word_index] |= b32(((pixel > 128) as u32) << (p % 32));
+                image_words[word_index].0 |= ((pixel > 128) as u32) << (p % 32);
             }
             images.push(image_words);
         }

@@ -43,6 +43,22 @@ where
     }
 }
 
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
+pub struct bit(pub bool);
+
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
+pub struct trit(pub Option<bool>);
+
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
+pub struct quat(pub (bool, bool));
+
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
+pub struct pent(pub Option<(bool, bool)>);
+
 pub trait BitScaler
 where
     Self: Sized + Copy,
@@ -53,6 +69,17 @@ where
     fn bma(self, input: bool) -> u32;
 }
 
+impl BitScaler for bit {
+    const RANGE: u32 = 2;
+    const N: usize = 2;
+    fn states() -> iter::Cloned<slice::Iter<'static, bit>> {
+        [bit(true), bit(false)].iter().cloned()
+    }
+    fn bma(self, input: bool) -> u32 {
+        (self.0 ^ input) as u32
+    }
+}
+
 impl BitScaler for bool {
     const RANGE: u32 = 2;
     const N: usize = 2;
@@ -61,6 +88,23 @@ impl BitScaler for bool {
     }
     fn bma(self, input: bool) -> u32 {
         (self ^ input) as u32
+    }
+}
+
+impl BitScaler for trit {
+    const RANGE: u32 = 3;
+    const N: usize = 3;
+    fn states() -> iter::Cloned<slice::Iter<'static, trit>> {
+        [trit(Some(true)), trit(None), trit(Some(false))]
+            .iter()
+            .cloned()
+    }
+    fn bma(self, input: bool) -> u32 {
+        if let Some(sign) = self.0 {
+            (sign ^ input) as u32 * 2
+        } else {
+            1
+        }
     }
 }
 
@@ -75,6 +119,36 @@ impl BitScaler for Option<bool> {
             (sign ^ input) as u32 * 2
         } else {
             1
+        }
+    }
+}
+
+impl BitScaler for quat {
+    const RANGE: u32 = 4;
+    const N: usize = 4;
+    fn states() -> iter::Cloned<slice::Iter<'static, quat>> {
+        [
+            quat((true, true)),
+            quat((true, false)),
+            quat((false, false)),
+            quat((false, true)),
+        ]
+        .iter()
+        .cloned()
+    }
+    fn bma(self, input: bool) -> u32 {
+        if (self.0).1 {
+            if input ^ (self.0).0 {
+                3
+            } else {
+                0
+            }
+        } else {
+            if input ^ (self.0).0 {
+                2
+            } else {
+                1
+            }
         }
     }
 }
@@ -100,6 +174,41 @@ impl BitScaler for (bool, bool) {
             } else {
                 1
             }
+        }
+    }
+}
+
+impl BitScaler for pent {
+    const RANGE: u32 = 5;
+    const N: usize = 5;
+    fn states() -> iter::Cloned<slice::Iter<'static, pent>> {
+        [
+            pent(Some((true, true))),
+            pent(Some((true, false))),
+            pent(None),
+            pent(Some((false, false))),
+            pent(Some((false, true))),
+        ]
+        .iter()
+        .cloned()
+    }
+    fn bma(self, input: bool) -> u32 {
+        if let Some(weight) = self.0 {
+            if weight.1 {
+                if input ^ weight.0 {
+                    4
+                } else {
+                    0
+                }
+            } else {
+                if input ^ weight.0 {
+                    3
+                } else {
+                    1
+                }
+            }
+        } else {
+            2
         }
     }
 }
@@ -139,9 +248,9 @@ impl BitScaler for Option<(bool, bool)> {
     }
 }
 
-pub trait WeightArray<S: Shape, W: BitScaler>
+pub trait WeightArray<W: BitScaler>
 where
-    S: Shape
+    Self: Shape
         + PackedIndexMap<bool>
         + BitPack<bool>
         + BitPack<W>
@@ -149,42 +258,42 @@ where
         + PackedIndexSGet<W>
         + PackedIndexSGet<bool>,
     W: 'static + BitScaler,
-    <S as BitPack<W>>::T: Copy,
-    <S as BitPack<bool>>::T: Copy,
+    <Self as BitPack<W>>::T: Copy,
+    <Self as BitPack<bool>>::T: Copy,
 {
     const MAX: u32;
     const THRESHOLD: u32;
     /// thresholded activation
-    fn act(weights: &<S as BitPack<W>>::T, input: &<S as BitPack<bool>>::T) -> bool {
-        <S as BMA<W>>::bma(weights, input) > <Self as WeightArray<S, W>>::THRESHOLD
+    fn act(weights: &<Self as BitPack<W>>::T, input: &<Self as BitPack<bool>>::T) -> bool {
+        <Self as BMA<W>>::bma(weights, input) > <Self as WeightArray<W>>::THRESHOLD
     }
-    fn act_is_alive(weights: &<S as BitPack<W>>::T, input: &<S as BitPack<bool>>::T) -> bool {
-        let act = <S as BMA<W>>::bma(weights, input);
-        ((act + W::RANGE) > <Self as WeightArray<S, W>>::THRESHOLD)
-            | ((<Self as WeightArray<S, W>>::THRESHOLD + W::RANGE) < act)
+    fn act_is_alive(weights: &<Self as BitPack<W>>::T, input: &<Self as BitPack<bool>>::T) -> bool {
+        let act = <Self as BMA<W>>::bma(weights, input);
+        ((act + W::RANGE) > <Self as WeightArray<W>>::THRESHOLD)
+            | ((<Self as WeightArray<W>>::THRESHOLD + W::RANGE) < act)
     }
     /// loss delta if we were to set each of the elements to each different value. Is permited to prune null deltas.
     fn loss_deltas<F: Fn(u32) -> i64>(
-        weights: &<S as BitPack<W>>::T,
-        input: &<S as BitPack<bool>>::T,
+        weights: &<Self as BitPack<W>>::T,
+        input: &<Self as BitPack<bool>>::T,
         threshold: u64,
         loss_delta_fn: F,
-    ) -> Vec<(<S as Shape>::Index, W, i64)>;
+    ) -> Vec<(<Self as Shape>::Index, W, i64)>;
     /// Does the same thing as loss_deltas but is a lot slower.
     fn loss_deltas_slow<F: Fn(u32) -> i64>(
-        weights: &<S as BitPack<W>>::T,
-        input: &<S as BitPack<bool>>::T,
+        weights: &<Self as BitPack<W>>::T,
+        input: &<Self as BitPack<bool>>::T,
         threshold: u64,
         loss_delta_fn: F,
-    ) -> Vec<(<S as Shape>::Index, W, i64)> {
+    ) -> Vec<(<Self as Shape>::Index, W, i64)> {
         <W as BitScaler>::states()
             .map(|value| {
-                <S as Shape>::indices()
+                <Self as Shape>::indices()
                     .map(|index| {
                         (
                             index,
                             value,
-                            loss_delta_fn(S::bma(&S::set(*weights, index, value), &input)),
+                            loss_delta_fn(Self::bma(&Self::set(*weights, index, value), &input)),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -195,44 +304,44 @@ where
     }
     /// Acts if we were to set each element to value
     fn acts(
-        weights: &<S as BitPack<W>>::T,
-        input: &<S as BitPack<bool>>::T,
+        weights: &<Self as BitPack<W>>::T,
+        input: &<Self as BitPack<bool>>::T,
         value: W,
-    ) -> <S as BitPack<bool>>::T;
+    ) -> <Self as BitPack<bool>>::T;
     /// acts_slow does the same thing as grads, but it is a lot slower.
     fn acts_slow(
-        &weights: &<S as BitPack<W>>::T,
-        input: &<S as BitPack<bool>>::T,
+        &weights: &<Self as BitPack<W>>::T,
+        input: &<Self as BitPack<bool>>::T,
         value: W,
-    ) -> <S as BitPack<bool>>::T {
-        <S as PackedIndexMap<bool>>::index_map(|index| {
-            <Self as WeightArray<S, W>>::act(&S::set(weights, index, value), input)
+    ) -> <Self as BitPack<bool>>::T {
+        <Self as PackedIndexMap<bool>>::index_map(|index| {
+            <Self as WeightArray<W>>::act(&Self::set(weights, index, value), input)
         })
     }
     /// Act if each input is flipped.
     fn input_acts(
-        weights: &<S as BitPack<W>>::T,
-        input: &<S as BitPack<bool>>::T,
-    ) -> <S as BitPack<bool>>::T;
+        weights: &<Self as BitPack<W>>::T,
+        input: &<Self as BitPack<bool>>::T,
+    ) -> <Self as BitPack<bool>>::T;
     /// input_acts_slow does the same thing as input_acts, but it is a lot slower.
     fn input_acts_slow(
-        weights: &<S as BitPack<W>>::T,
-        input: &<S as BitPack<bool>>::T,
-    ) -> <S as BitPack<bool>>::T {
-        <S as PackedIndexMap<bool>>::index_map(|index| {
-            <Self as WeightArray<S, W>>::act(
+        weights: &<Self as BitPack<W>>::T,
+        input: &<Self as BitPack<bool>>::T,
+    ) -> <Self as BitPack<bool>>::T {
+        <Self as PackedIndexMap<bool>>::index_map(|index| {
+            <Self as WeightArray<W>>::act(
                 weights,
-                &<S as PackedIndexSGet<bool>>::set(
+                &<Self as PackedIndexSGet<bool>>::set(
                     *input,
                     index,
-                    !<S as PackedIndexSGet<bool>>::get(input, index),
+                    !<Self as PackedIndexSGet<bool>>::get(input, index),
                 ),
             )
         })
     }
 }
 
-impl<S> WeightArray<S, bool> for ()
+impl<S> WeightArray<bool> for S
 where
     S: Shape + Blit<bool> + BMA<bool> + PackedIndexSGet<bool> + PackedIndexMap<bool> + WBBZM<bool>,
     <S as BitPack<bool>>::T: Copy,
@@ -275,7 +384,7 @@ where
         value: bool,
     ) -> <S as BitPack<bool>>::T {
         let cur_act = S::bma(weights, input);
-        if cur_act == <() as WeightArray<S, bool>>::THRESHOLD {
+        if cur_act == <S as WeightArray<bool>>::THRESHOLD {
             // we need to go up by one to flip
             if value {
                 S::map(weights, input, |weight, input| {
@@ -286,7 +395,7 @@ where
                     !(weight.sign() ^ input) & weight.sign()
                 })
             }
-        } else if cur_act == (<() as WeightArray<S, bool>>::THRESHOLD + 1) {
+        } else if cur_act == (<S as WeightArray<bool>>::THRESHOLD + 1) {
             // we need to go down by one to flip
             if value {
                 S::map(weights, input, |weight, input| {
@@ -298,7 +407,7 @@ where
                 })
             }
         } else {
-            S::blit(cur_act > <() as WeightArray<S, bool>>::THRESHOLD)
+            S::blit(cur_act > <S as WeightArray<bool>>::THRESHOLD)
         }
     }
     fn input_acts(
@@ -306,17 +415,17 @@ where
         input: &<S as BitPack<bool>>::T,
     ) -> <S as BitPack<bool>>::T {
         let cur_act = S::bma(weights, input);
-        if (cur_act == <() as WeightArray<S, bool>>::THRESHOLD)
-            | (cur_act == (<() as WeightArray<S, bool>>::THRESHOLD + 1))
+        if (cur_act == <S as WeightArray<bool>>::THRESHOLD)
+            | (cur_act == (<S as WeightArray<bool>>::THRESHOLD + 1))
         {
             S::map(weights, input, |weight, input| weight.sign() ^ !input)
         } else {
-            S::blit(cur_act > <() as WeightArray<S, bool>>::THRESHOLD)
+            S::blit(cur_act > <S as WeightArray<bool>>::THRESHOLD)
         }
     }
 }
 
-impl<S: Shape> WeightArray<S, Option<bool>> for ()
+impl<S: Shape> WeightArray<Option<bool>> for S
 where
     S: BitPack<bool>
         + BitPack<Option<bool>>
@@ -398,73 +507,69 @@ where
         let value_sign = value.unwrap_or(false);
         let value_mask = value.is_some();
 
-        if (cur_act + 2) <= <() as WeightArray<S, Option<bool>>>::THRESHOLD {
+        if (cur_act + 2) <= <S as WeightArray<Option<bool>>>::THRESHOLD {
             S::blit(false)
-        } else if cur_act > (<() as WeightArray<S, Option<bool>>>::THRESHOLD + 2) {
+        } else if cur_act > (<S as WeightArray<Option<bool>>>::THRESHOLD + 2) {
             S::blit(true)
-        } else if (cur_act + 1) == <() as WeightArray<S, Option<bool>>>::THRESHOLD {
+        } else if (cur_act + 1) == <S as WeightArray<Option<bool>>>::THRESHOLD {
             // go up 2 to activate
             if value_mask {
                 if value_sign {
-                    S::map(weights, &input, |trit, input| {
-                        ((!input ^ trit.sign()) & trit.mask()) & !trit.sign()
+                    S::map(weights, &input, |w, input| {
+                        ((!input ^ w.sign()) & w.mask()) & !w.sign()
                     })
                 } else {
-                    S::map(weights, &input, |trit, input| {
-                        ((!input ^ trit.sign()) & trit.mask()) & trit.sign()
+                    S::map(weights, &input, |w, input| {
+                        ((!input ^ w.sign()) & w.mask()) & w.sign()
                     })
                 }
             } else {
                 S::blit(false)
             }
-        } else if cur_act == (<() as WeightArray<S, Option<bool>>>::THRESHOLD + 2) {
+        } else if cur_act == (<S as WeightArray<Option<bool>>>::THRESHOLD + 2) {
             // go down 2 to deactivate
             if value_mask {
                 if value_sign {
-                    S::map(weights, &input, |trit, input| {
-                        !(((input ^ trit.sign()) & trit.mask()) & !trit.sign())
+                    S::map(weights, &input, |w, input| {
+                        !(((input ^ w.sign()) & w.mask()) & !w.sign())
                     })
                 } else {
-                    S::map(weights, &input, |trit, input| {
-                        !(((input ^ trit.sign()) & trit.mask()) & trit.sign())
+                    S::map(weights, &input, |w, input| {
+                        !(((input ^ w.sign()) & w.mask()) & w.sign())
                     })
                 }
             } else {
                 S::blit(true)
             }
-        } else if cur_act == <() as WeightArray<S, Option<bool>>>::THRESHOLD {
+        } else if cur_act == <S as WeightArray<Option<bool>>>::THRESHOLD {
             // go up 1 to activate
             if value_mask {
                 if value_sign {
-                    S::map(weights, &input, |trit, input| {
-                        !((input ^ trit.sign()) & trit.mask()) & !input
+                    S::map(weights, &input, |w, input| {
+                        !((input ^ w.sign()) & w.mask()) & !input
                     })
                 } else {
-                    S::map(weights, &input, |trit, input| {
-                        !((input ^ trit.sign()) & trit.mask()) & input
+                    S::map(weights, &input, |w, input| {
+                        !((input ^ w.sign()) & w.mask()) & input
                     })
                 }
             } else {
-                S::map(weights, &input, |trit, input| {
-                    (input ^ !trit.sign()) & trit.mask()
-                })
+                S::map(weights, &input, |w, input| (input ^ !w.sign()) & w.mask())
             }
-        } else if cur_act == (<() as WeightArray<S, Option<bool>>>::THRESHOLD + 1) {
+        } else if cur_act == (<S as WeightArray<Option<bool>>>::THRESHOLD + 1) {
             // go down 1 to deactivate
             if value_mask {
                 if value_sign {
-                    S::map(weights, &input, |trit, input| {
-                        !(input & !(trit.sign() & trit.mask()))
+                    S::map(weights, &input, |w, input| {
+                        !(input & !(w.sign() & w.mask()))
                     })
                 } else {
-                    S::map(weights, &input, |trit, input| {
-                        (!((input ^ trit.sign()) & trit.mask()) & trit.mask()) | input
+                    S::map(weights, &input, |w, input| {
+                        (!((input ^ w.sign()) & w.mask()) & w.mask()) | input
                     })
                 }
             } else {
-                S::map(weights, &input, |trit, input| {
-                    !((input ^ trit.sign()) & trit.mask())
-                })
+                S::map(weights, &input, |w, input| !((input ^ w.sign()) & w.mask()))
             }
         } else {
             unreachable!();
@@ -476,21 +581,21 @@ where
     ) -> <S as BitPack<bool>>::T {
         let cur_act = S::bma(weights, input);
 
-        if (cur_act + 2) <= <() as WeightArray<S, Option<bool>>>::THRESHOLD {
+        if (cur_act + 2) <= <S as WeightArray<Option<bool>>>::THRESHOLD {
             S::blit(false)
-        } else if cur_act > (<() as WeightArray<S, Option<bool>>>::THRESHOLD + 2) {
+        } else if cur_act > (<S as WeightArray<Option<bool>>>::THRESHOLD + 2) {
             S::blit(true)
-        } else if ((cur_act + 1) == <() as WeightArray<S, Option<bool>>>::THRESHOLD)
-            | (cur_act == <() as WeightArray<S, Option<bool>>>::THRESHOLD)
+        } else if ((cur_act + 1) == <S as WeightArray<Option<bool>>>::THRESHOLD)
+            | (cur_act == <S as WeightArray<Option<bool>>>::THRESHOLD)
         {
-            S::map(weights, &input, |trit, input| {
-                (!input ^ trit.sign()) & trit.mask()
+            S::map(weights, &input, |val, input| {
+                (!input ^ val.sign()) & val.mask()
             })
-        } else if (cur_act == (<() as WeightArray<S, Option<bool>>>::THRESHOLD + 2))
-            | (cur_act == (<() as WeightArray<S, Option<bool>>>::THRESHOLD + 1))
+        } else if (cur_act == (<S as WeightArray<Option<bool>>>::THRESHOLD + 2))
+            | (cur_act == (<S as WeightArray<Option<bool>>>::THRESHOLD + 1))
         {
-            S::map(weights, &input, |trit, input| {
-                !((input ^ trit.sign()) & trit.mask())
+            S::map(weights, &input, |val, input| {
+                !((input ^ val.sign()) & val.mask())
             })
         } else {
             unreachable!();
@@ -758,12 +863,12 @@ macro_rules! for_uints {
                 let magn = (self.1 >> index) & 1 == 1;
                 Some(sign).filter(|_| magn)
             }
-            fn set_trit_in_place(&mut self, index: usize, trit: Option<bool>) {
+            fn set_trit_in_place(&mut self, index: usize, val: Option<bool>) {
                 self.0 &= !(1 << index);
-                self.0 |= ((trit.unwrap_or(false) as $u_type) << index);
+                self.0 |= ((val.unwrap_or(false) as $u_type) << index);
 
                 self.1 &= !(1 << index);
-                self.1 |= ((trit.is_some() as $u_type) << index);
+                self.1 |= ((val.is_some() as $u_type) << index);
             }
         }
 
@@ -948,6 +1053,16 @@ macro_rules! for_uints {
             }
         }
 
+        impl<I> PackedMap<I, bool> for [(); $len] {
+            fn map<F: Fn(&I) -> bool>(input: &[I; $len], map_fn: F) -> $b_type {
+                let mut target = <$b_type>::default();
+                for i in 0..$len {
+                    target.set_bit_in_place(i, map_fn(&input[i]));
+                }
+                target
+            }
+        }
+
         impl Blit<bool> for [(); $len] {
             fn blit(val: bool) -> $b_type {
                 $b_type((Wrapping(0) - Wrapping(val as $u_type)).0)
@@ -1110,9 +1225,8 @@ mod tests {
                     let weights: <$s as BitPack<$w>>::T = rng.gen();
 
                     for val in <$w>::states() {
-                        let acts = <() as WeightArray<$s, $w>>::acts(&weights, &inputs, val);
-                        let true_acts =
-                            <() as WeightArray<$s, $w>>::acts_slow(&weights, &inputs, val);
+                        let acts = <$s as WeightArray<$w>>::acts(&weights, &inputs, val);
+                        let true_acts = <$s as WeightArray<$w>>::acts_slow(&weights, &inputs, val);
                         assert_eq!(acts, true_acts);
                     }
                 })
@@ -1129,8 +1243,8 @@ mod tests {
                     let inputs: <$s as BitPack<bool>>::T = rng.gen();
                     let weights: <$s as BitPack<$w>>::T = rng.gen();
 
-                    let acts = <() as WeightArray<$s, $w>>::input_acts(&weights, &inputs);
-                    let true_acts = <() as WeightArray<$s, $w>>::input_acts_slow(&weights, &inputs);
+                    let acts = <$s as WeightArray<$w>>::input_acts(&weights, &inputs);
+                    let true_acts = <$s as WeightArray<$w>>::input_acts_slow(&weights, &inputs);
                     assert_eq!(acts, true_acts);
                 })
             }
@@ -1148,14 +1262,14 @@ mod tests {
 
                     let null_act = <$s as BMA<$w>>::bma(&weights, &inputs);
                     for &threshold in &[0, 10, 100, 1000] {
-                        let mut loss_deltas = <() as WeightArray<$s, $w>>::loss_deltas(
+                        let mut loss_deltas = <$s as WeightArray<$w>>::loss_deltas(
                             &weights,
                             &inputs,
                             threshold,
                             |x| x as i64 - null_act as i64,
                         );
                         loss_deltas.sort();
-                        let mut true_loss_deltas = <() as WeightArray<$s, $w>>::loss_deltas_slow(
+                        let mut true_loss_deltas = <$s as WeightArray<$w>>::loss_deltas_slow(
                             &weights,
                             &inputs,
                             threshold,

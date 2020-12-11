@@ -1,27 +1,21 @@
 use crate::bits::{
-    BitScaler, IncrementCounters, PackedArray, PackedElement, PackedIndexMap, PackedMap,
-    WeightArray, BMA,
+    BitPack, BitScaler, IncrementCounters, PackedIndexMap, PackedIndexSGet, PackedMap, WeightArray,
+    BMA,
 };
-use crate::image2d::{Conv, ImageShape, Pixel, PixelFold, PixelMap};
-use crate::shape::{Element, IndexGet, LongDefault, Map, MutMap, Shape, ZipMap};
+use crate::image2d::{Conv, ImageShape, PixelFold, PixelMap, PixelPack};
+use crate::shape::{IndexGet, LongDefault, Map, Pack, Shape, ZipMap};
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use std::marker::PhantomData;
 
-pub struct LayerIter<I: Shape, O: Shape, H, const C: usize>
-where
-    bool: PackedElement<O>,
-{
+pub struct LayerIter<I: Shape, O: Shape, H, const C: usize> {
     cur_output_index: Option<O::Index>,
     input_index: I::IndexIter,
     output_index: O::IndexIter,
     head_iter: H,
 }
 
-impl<I: Shape, O: Shape, H, const C: usize> LayerIter<I, O, H, C>
-where
-    bool: PackedElement<O>,
-{
+impl<I: Shape, O: Shape, H, const C: usize> LayerIter<I, O, H, C> {
     fn new(head_iter: H) -> Self {
         let mut out_iter = O::indices();
         LayerIter {
@@ -35,7 +29,6 @@ where
 
 impl<I: Shape, O: Shape, H: Iterator, const C: usize> Iterator for LayerIter<I, O, H, C>
 where
-    bool: PackedElement<O>,
     H::Item: Copy,
 {
     type Item = LayerIndex<(O::Index, I::Index), H::Item>;
@@ -139,11 +132,12 @@ where
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct FcMSE<S: Shape, W: PackedElement<S>, const C: usize>
+pub struct FcMSE<S, W, const C: usize>
 where
-    [<W as PackedElement<S>>::Array; C]: Copy + std::fmt::Debug,
+    [<S as BitPack<W>>::T; C]: Copy + std::fmt::Debug,
+    S: Shape + BitPack<W>,
 {
-    pub fc: [<W as PackedElement<S>>::Array; C],
+    pub fc: [<S as BitPack<W>>::T; C],
 }
 
 pub struct FcMSEindexIter<S: Shape, const C: usize> {
@@ -193,21 +187,26 @@ impl<W: BitScaler, const C: usize> Cache<bool> for FcMSEchanCache<W, C> {
     }
 }
 
-impl<S, W, const C: usize> Model<<bool as PackedElement<S>>::Array, C> for FcMSE<S, W, C>
+impl<S, W, const C: usize> Model<<S as BitPack<bool>>::T, C> for FcMSE<S, W, C>
 where
-    S: Shape + PackedIndexMap<bool> + Copy,
-    W: 'static + BitScaler + PackedElement<S>,
-    bool: PackedElement<S>,
-    (): WeightArray<S, W>,
-    <W as PackedElement<S>>::Array:
-        Copy + std::fmt::Debug + BMA + PackedArray<Element = W, Shape = S>,
-    [<W as PackedElement<S>>::Array; C]: LongDefault,
+    S: Shape
+        + PackedIndexMap<bool>
+        + Copy
+        + BitPack<W>
+        + BitPack<bool>
+        + BMA<W>
+        + PackedIndexSGet<W>
+        + PackedIndexSGet<bool>
+        + BMA<W>
+        + WeightArray<W>,
+    W: 'static + BitScaler,
     <S as Shape>::Index: Copy,
-    <bool as PackedElement<S>>::Array: Copy + PackedArray<Element = bool, Shape = S>,
     [(W, u32, u32); C]: Default,
     [(u32, u32); C]: Default,
     [u32; C]: Default,
-    Standard: Distribution<[<W as PackedElement<S>>::Array; C]>,
+    Standard: Distribution<[<S as BitPack<W>>::T; C]>,
+    <S as BitPack<bool>>::T: Copy,
+    <S as BitPack<W>>::T: Copy + std::fmt::Debug,
 {
     type Index = (usize, <S as Shape>::Index);
     type Weight = W;
@@ -220,10 +219,10 @@ where
     fn rand<R: Rng>(rng: &mut R) -> Self {
         FcMSE { fc: rng.gen() }
     }
-    fn apply(&self, input: &<bool as PackedElement<S>>::Array) -> [u32; C] {
+    fn apply(&self, input: &<S as BitPack<bool>>::T) -> [u32; C] {
         let mut target = <[u32; C]>::default();
         for c in 0..C {
-            target[c] = self.fc[c].bma(input);
+            target[c] = S::bma(&self.fc[c], input);
         }
         target
     }
@@ -234,23 +233,23 @@ where
         }
     }
     fn mutate_in_place(&mut self, (head, tail): (usize, <S as Shape>::Index), weight: W) {
-        self.fc[head].set_element_in_place(tail, weight);
+        S::set_in_place(&mut self.fc[head], tail, weight);
     }
-    fn top_act(&self, input: &<bool as PackedElement<S>>::Array) -> usize {
+    fn top_act(&self, input: &<S as BitPack<bool>>::T) -> usize {
         self.fc
             .iter()
-            .map(|w| w.bma(input))
+            .map(|w| S::bma(w, input))
             .enumerate()
             .max_by_key(|(_, a)| *a)
             .unwrap()
             .0
     }
-    fn cache(&self, input: &<bool as PackedElement<S>>::Array, class: usize) -> FcMSEcache<C> {
+    fn cache(&self, input: &<S as BitPack<bool>>::T, class: usize) -> FcMSEcache<C> {
         let mut target = <[(u32, u32); C]>::default();
         for c in 0..C {
             target[c] = (
-                self.fc[c].bma(input),
-                (c == class) as u32 * <() as WeightArray<S, W>>::MAX,
+                S::bma(&self.fc[c], input),
+                (c == class) as u32 * <S as WeightArray<W>>::MAX,
             );
         }
         FcMSEcache {
@@ -266,7 +265,7 @@ where
     ) -> FcMSEchanCache<W, C> {
         let mut target = <[(W, u32, u32); C]>::default();
         for c in 0..C {
-            let weight = self.fc[c].get_element(chan_index);
+            let weight = S::get(&self.fc[c], chan_index);
             target[c] = (
                 weight,
                 cache.cache[c].0 - weight.bma(cur_value),
@@ -278,13 +277,13 @@ where
             null_loss: cache.null_loss,
         }
     }
-    fn loss(&self, input: &<bool as PackedElement<S>>::Array, class: usize) -> u64 {
+    fn loss(&self, input: &<S as BitPack<bool>>::T, class: usize) -> u64 {
         self.fc
             .iter()
             .enumerate()
             .map(|(c, w)| {
-                let target_act = (c == class) as u32 * <() as WeightArray<S, W>>::MAX;
-                let act = w.bma(input);
+                let target_act = (c == class) as u32 * <S as WeightArray<W>>::MAX;
+                let act = S::bma(w, input);
                 let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
                 (dist as u64).pow(2)
             })
@@ -292,7 +291,7 @@ where
     }
     fn loss_deltas(
         &self,
-        input: &<bool as PackedElement<S>>::Array,
+        input: &<S as BitPack<bool>>::T,
         threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, W, i64)> {
@@ -300,11 +299,11 @@ where
             .iter()
             .enumerate()
             .map(|(c, w)| {
-                let target_act = (c == class) as u32 * <() as WeightArray<S, W>>::MAX;
-                let act = w.bma(input);
+                let target_act = (c == class) as u32 * <S as WeightArray<W>>::MAX;
+                let act = S::bma(w, input);
                 let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
                 let class_null_loss = (dist as u64).pow(2) as i64;
-                <()>::loss_deltas(&w, input, threshold, |act| {
+                <S as WeightArray<W>>::loss_deltas(&w, input, threshold, |act| {
                     ((act.saturating_sub(target_act) | target_act.saturating_sub(act)) as u64)
                         .pow(2) as i64
                         - class_null_loss
@@ -319,45 +318,34 @@ where
 }
 
 #[derive(Copy, Clone)]
-pub struct FC<I, W, O: Shape, H: Model<<bool as PackedElement<O>>::Array, C>, const C: usize>
+pub struct FC<I, W, O: Shape, H: Model<<O as BitPack<bool>>::T, C>, const C: usize>
 where
-    bool: PackedElement<O>,
-    I: Shape,
-    W: PackedElement<I>,
-    <W as PackedElement<I>>::Array: Element<O>,
-    <<W as PackedElement<I>>::Array as Element<O>>::Array: Copy,
+    O: BitPack<bool> + Pack<<I as BitPack<W>>::T>,
+    I: Shape + BitPack<W>,
+    <O as Pack<<I as BitPack<W>>::T>>::T: Copy,
 {
-    fc: <<W as PackedElement<I>>::Array as Element<O>>::Array,
+    fc: <O as Pack<<I as BitPack<W>>::T>>::T,
     tail: H,
 }
 
-pub struct FCcache<O: Shape, H: Model<<bool as PackedElement<O>>::Array, C>, const C: usize>
+pub struct FCcache<O: Shape, H: Model<<O as BitPack<bool>>::T, C>, const C: usize>
 where
-    bool: PackedElement<O>,
-    u32: Element<O>,
+    O: BitPack<bool> + Pack<u32>,
 {
     is_alive: bool,
-    sums: <u32 as Element<O>>::Array,
+    sums: <O as Pack<u32>>::T,
     true_class: usize,
     null_loss: i64,
     head: PhantomData<H>,
 }
 
-pub struct FCchanCache<
-    I,
-    W,
-    O: Shape,
-    H: Model<<bool as PackedElement<O>>::Array, C>,
-    const C: usize,
-> where
-    I: Shape,
-    bool: PackedElement<O> + PackedElement<I>,
-    <bool as PackedElement<I>>::Array: PackedArray<Element = bool, Shape = I> + Copy,
-    (W, u32): Element<O>,
+pub struct FCchanCache<I, W, O: Shape, H: Model<<O as BitPack<bool>>::T, C>, const C: usize>
+where
+    O: Pack<(W, u32)> + BitPack<bool>,
 {
     input_shape: PhantomData<I>,
     is_alive: bool,
-    sums: <(W, u32) as Element<O>>::Array,
+    sums: <O as Pack<(W, u32)>>::T,
     true_class: usize,
     null_loss: i64,
     head: H,
@@ -367,56 +355,52 @@ impl<
         I,
         W,
         O: Shape + PackedMap<(W, u32), bool>,
-        H: Model<<bool as PackedElement<O>>::Array, C>,
+        H: Model<<O as BitPack<bool>>::T, C>,
         const C: usize,
     > Cache<bool> for FCchanCache<I, W, O, H, C>
 where
-    W: 'static + BitScaler + PackedElement<I>,
-    I: Shape + PackedIndexMap<bool>,
-    bool: PackedElement<O> + PackedElement<I>,
-    <W as PackedElement<I>>::Array: Copy + BMA + PackedArray<Element = W, Shape = I>,
-    <bool as PackedElement<I>>::Array: PackedArray<Element = bool, Shape = I> + Copy,
-    (W, u32): Element<O>,
-    (): WeightArray<I, W>,
+    W: 'static + BitScaler,
+    O: Pack<(W, u32)> + BitPack<bool>,
+    I: WeightArray<W>,
+    I: BMA<W> + PackedIndexMap<bool> + PackedIndexSGet<bool> + PackedIndexSGet<W>,
+    <I as BitPack<W>>::T: Copy,
+    <I as BitPack<bool>>::T: Copy,
 {
     fn loss_delta(&self, &input: &bool) -> i64 {
         let hidden = <O as PackedMap<(W, u32), bool>>::map(&self.sums, |(w, sum)| {
-            (sum + w.bma(input)) > <() as WeightArray<I, W>>::THRESHOLD
+            (sum + w.bma(input)) > <I as WeightArray<W>>::THRESHOLD
         });
         self.head.loss(&hidden, self.true_class) as i64 - self.null_loss
     }
 }
 
-impl<I, W, O, H, const C: usize> Model<<bool as PackedElement<I>>::Array, C> for FC<I, W, O, H, C>
+impl<I, W, O, H, const C: usize> Model<<I as BitPack<bool>>::T, C> for FC<I, W, O, H, C>
 where
-    (): Element<O, Array = O> + WeightArray<I, W>,
-    W: 'static + BitScaler + PackedElement<I>,
-    H: Model<
-        <bool as PackedElement<O>>::Array,
-        C,
-        Weight = W,
-        InputIndex = O::Index,
-        InputValue = bool,
-    >,
-    O: PackedMap<<W as PackedElement<I>>::Array, bool>
+    I: WeightArray<W>
         + Shape
+        + PackedIndexMap<bool>
+        + BitPack<bool>
+        + PackedIndexSGet<W>
+        + BMA<W>
+        + PackedIndexSGet<bool>,
+    W: 'static + BitScaler,
+    H: Model<<O as BitPack<bool>>::T, C, Weight = W, InputIndex = O::Index, InputValue = bool>,
+    O: Shape
         + Default
-        + MutMap<(), <W as PackedElement<I>>::Array>
-        + ZipMap<<W as PackedElement<I>>::Array, u32, (W, u32)>
-        + Map<<W as PackedElement<I>>::Array, u32>
-        + PackedMap<(W, u32), bool>,
+        + ZipMap<<I as BitPack<W>>::T, u32, (W, u32)>
+        + Map<<I as BitPack<W>>::T, u32>
+        + PackedMap<(W, u32), bool>
+        + Pack<u32>
+        + Pack<(W, u32)>
+        + PackedMap<<I as BitPack<W>>::T, bool>
+        + IndexGet<<I as BitPack<W>>::T>
+        + PackedIndexSGet<bool>,
     Self: Copy,
-    bool: PackedElement<I> + PackedElement<O>,
-    I: Shape + PackedIndexMap<bool>,
-    <W as PackedElement<I>>::Array: Element<O> + Copy + BMA + PackedArray<Element = W, Shape = I>,
-    <bool as PackedElement<I>>::Array: PackedArray<Element = bool, Shape = I> + Copy,
-    <<W as PackedElement<I>>::Array as Element<O>>::Array:
-        IndexGet<O::Index, Element = <W as PackedElement<I>>::Array> + Default + Copy,
     Self::ChanCache: Cache<bool>,
-    u32: Element<O>,
-    (W, u32): Element<O>,
-    <bool as PackedElement<O>>::Array: PackedArray<Shape = O, Element = bool>,
-    Standard: Distribution<<<W as PackedElement<I>>::Array as Element<O>>::Array>,
+    <I as BitPack<W>>::T: Copy,
+    <I as BitPack<bool>>::T: Copy,
+    <O as Pack<<I as BitPack<W>>::T>>::T: Copy,
+    Standard: Distribution<<O as Pack<<I as BitPack<W>>::T>>::T>,
 {
     type Index = LayerIndex<(O::Index, <I as Shape>::Index), H::Index>;
     type Weight = W;
@@ -425,19 +409,16 @@ where
     type ChanCache = FCchanCache<I, W, O, H, C>;
     type InputIndex = <I as Shape>::Index;
     type InputValue = bool;
-    type Output = <bool as PackedElement<O>>::Array;
+    type Output = <O as BitPack<bool>>::T;
     fn rand<R: Rng>(rng: &mut R) -> Self {
         FC {
             fc: rng.gen(),
             tail: H::rand(rng),
         }
     }
-    fn apply(
-        &self,
-        input: &<bool as PackedElement<I>>::Array,
-    ) -> <bool as PackedElement<O>>::Array {
-        <O as PackedMap<<W as PackedElement<I>>::Array, bool>>::map(&self.fc, |w| {
-            <() as WeightArray<I, W>>::act(&w, input)
+    fn apply(&self, input: &<I as BitPack<bool>>::T) -> <O as BitPack<bool>>::T {
+        <O as PackedMap<<I as BitPack<W>>::T, bool>>::map(&self.fc, |w| {
+            <I as WeightArray<W>>::act(&w, input)
         })
     }
     fn indices() -> Self::IndexIter {
@@ -445,19 +426,21 @@ where
     }
     fn mutate_in_place(&mut self, index: Self::Index, weight: W) {
         match index {
-            LayerIndex::Head((o, i)) => self.fc.index_get_mut(o).set_element_in_place(i, weight),
+            LayerIndex::Head((o, i)) => {
+                I::set_in_place(O::index_get_mut(&mut self.fc, o), i, weight)
+            }
             LayerIndex::Tail(i) => self.tail.mutate_in_place(i, weight),
         }
     }
-    fn top_act(&self, input: &<bool as PackedElement<I>>::Array) -> usize {
+    fn top_act(&self, input: &<I as BitPack<bool>>::T) -> usize {
         let hidden = self.apply(input);
         self.tail.top_act(&hidden)
     }
-    fn cache(&self, input: &<bool as PackedElement<I>>::Array, class: usize) -> Self::Cache {
+    fn cache(&self, input: &<I as BitPack<bool>>::T, class: usize) -> Self::Cache {
         FCcache {
             is_alive: true,
-            sums: <O as Map<<W as PackedElement<I>>::Array, u32>>::map(&self.fc, |weights| {
-                weights.bma(input)
+            sums: <O as Map<<I as BitPack<W>>::T, u32>>::map(&self.fc, |weights| {
+                I::bma(weights, input)
             }),
             true_class: class,
             null_loss: self.loss(input, class) as i64,
@@ -473,11 +456,11 @@ where
         FCchanCache {
             input_shape: PhantomData::default(),
             is_alive: true,
-            sums: <O as ZipMap<<W as PackedElement<I>>::Array, u32, (W, u32)>>::zip_map(
+            sums: <O as ZipMap<<I as BitPack<W>>::T, u32, (W, u32)>>::zip_map(
                 &self.fc,
                 &cache.sums,
                 |weights, sum| {
-                    let w = weights.get_element(chan_index);
+                    let w = I::get(weights, chan_index);
                     (w, sum - w.bma(cur_value))
                 },
             ),
@@ -486,13 +469,13 @@ where
             head: self.tail,
         }
     }
-    fn loss(&self, input: &<bool as PackedElement<I>>::Array, class: usize) -> u64 {
+    fn loss(&self, input: &<I as BitPack<bool>>::T, class: usize) -> u64 {
         let hidden = self.apply(input);
         self.tail.loss(&hidden, class)
     }
     fn loss_deltas(
         &self,
-        inputs: &<bool as PackedElement<I>>::Array,
+        inputs: &<I as BitPack<bool>>::T,
         threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, W, i64)> {
@@ -502,14 +485,14 @@ where
         let cache = self.tail.cache(&hidden, class);
         O::indices()
             .map(|o| {
-                let input = hidden.get_element(o);
-                let weight_array = self.fc.index_get(o);
+                let input = O::get(&hidden, o);
+                let weight_array = O::index_get(&self.fc, o);
 
                 let chan_cache = self.tail.subtract_input(&cache, o, input);
                 let deltas = [chan_cache.loss_delta(&false), chan_cache.loss_delta(&true)];
 
-                <()>::loss_deltas(&weight_array, &inputs, threshold, |act| {
-                    deltas[(act > <() as WeightArray<I, W>>::THRESHOLD) as usize]
+                <I as WeightArray<W>>::loss_deltas(&weight_array, &inputs, threshold, |act| {
+                    deltas[(act > <I as WeightArray<W>>::THRESHOLD) as usize]
                 })
                 .iter()
                 .map(|&(i, w, l)| (LayerIndex::Head((o, i)), w, l))
@@ -532,11 +515,11 @@ pub struct ConvChanCache<IS> {
     image_shape: PhantomData<IS>,
 }
 
-impl<IS> Cache<<bool as Pixel<IS>>::Image> for ConvChanCache<IS>
+impl<IS> Cache<<IS as PixelPack<bool>>::I> for ConvChanCache<IS>
 where
-    bool: Pixel<IS>,
+    IS: PixelPack<bool>,
 {
-    fn loss_delta(&self, input: &<bool as Pixel<IS>>::Image) -> i64 {
+    fn loss_delta(&self, input: &<IS as PixelPack<bool>>::I) -> i64 {
         0
     }
 }
@@ -544,65 +527,66 @@ where
 #[derive(Copy, Clone)]
 pub struct Conv2D<IS, IPS, OPS, W, H, const PX: usize, const PY: usize, const C: usize>
 where
-    OPS: Shape,
-    IPS: Shape,
-    H: Model<<<bool as PackedElement<OPS>>::Array as Pixel<IS>>::Image, C>,
-    bool: PackedElement<OPS>,
-    <bool as PackedElement<OPS>>::Array: Pixel<IS>,
-    W: PackedElement<[[IPS; PY]; PX]>,
-    <W as PackedElement<[[IPS; PY]; PX]>>::Array: Element<OPS>,
-    <<W as PackedElement<[[IPS; PY]; PX]>>::Array as Element<OPS>>::Array: Copy + Clone,
+    IS: PixelPack<<IPS as BitPack<bool>>::T> + PixelPack<<OPS as BitPack<bool>>::T>,
+    OPS: Shape + Pack<[[<IPS as BitPack<W>>::T; PY]; PX]> + BitPack<bool>,
+    IPS: Shape + BitPack<W> + BitPack<bool>,
+    H: Model<<IS as PixelPack<<OPS as BitPack<bool>>::T>>::I, C>,
+    <OPS as Pack<[[<IPS as BitPack<W>>::T; PY]; PX]>>::T: Copy,
+    IS: PixelPack<<IPS as BitPack<bool>>::T>,
 {
-    kernel: <<W as PackedElement<[[IPS; PY]; PX]>>::Array as Element<OPS>>::Array,
+    kernel: <OPS as Pack<[[<IPS as BitPack<W>>::T; PY]; PX]>>::T,
     tail: H,
     image_shape: PhantomData<IS>,
 }
 
 impl<IS, IPS, OPS, W, H, const PX: usize, const PY: usize, const C: usize>
-    Model<<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image, C>
+    Model<<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I, C>
     for Conv2D<IS, IPS, OPS, W, H, PX, PY, C>
 where
+    IPS: Shape + Copy + PackedIndexMap<bool> + BitPack<bool> + BitPack<W> + PackedIndexSGet<bool>,
+    OPS: Shape
+        + Copy
+        + PackedMap<[[<IPS as BitPack<W>>::T; PY]; PX], bool>
+        + BitPack<bool>
+        + IndexGet<[[<IPS as BitPack<W>>::T; PY]; PX]>
+        + PackedIndexSGet<bool>,
     IS: ImageShape
         + Copy
-        + PixelMap<<bool as PackedElement<OPS>>::Array, bool>
-        + Conv<<bool as PackedElement<IPS>>::Array, <bool as PackedElement<OPS>>::Array, PX, PY>
-        + Conv<
-            <bool as PackedElement<IPS>>::Array,
-            <bool as PackedElement<[[IPS; PY]; PX]>>::Array,
-            PX,
-            PY,
-        > + PixelMap<<bool as PackedElement<[[IPS; PY]; PX]>>::Array, bool>,
-    IPS: Shape + Copy + PackedIndexMap<bool>,
-    OPS: Shape + Copy + PackedMap<<W as PackedElement<[[IPS; PY]; PX]>>::Array, bool>,
-    W: 'static + PackedElement<IPS> + Copy + BitScaler + PackedElement<[[IPS; PY]; PX]>,
+        + PixelMap<<OPS as BitPack<bool>>::T, bool>
+        + Conv<<IPS as BitPack<bool>>::T, <OPS as BitPack<bool>>::T, PX, PY>
+        + Conv<<IPS as BitPack<bool>>::T, [[<IPS as BitPack<bool>>::T; PY]; PX], PX, PY>
+        + PixelMap<[[<IPS as BitPack<bool>>::T; PY]; PX], bool>,
     H: Model<
-        <<bool as PackedElement<OPS>>::Array as Pixel<IS>>::Image,
-        C,
-        Weight = W,
-        InputIndex = OPS::Index,
-        InputValue = <bool as Pixel<IS>>::Image,
-    >,
-    bool: PackedElement<OPS> + PackedElement<IPS> + Pixel<IS>,
-    <bool as PackedElement<OPS>>::Array: Pixel<IS> + Default + IndexGet<OPS::Index, Element = bool>,
-    <bool as PackedElement<IPS>>::Array:
-        Pixel<IS> + PackedArray<Shape = IPS, Element = bool> + Copy,
-    <W as PackedElement<IPS>>::Array: Copy + PackedArray<Element = W, Shape = IPS> + BMA + Copy,
-    <W as PackedElement<[[IPS; PY]; PX]>>::Array:
-        Element<OPS> + PackedArray<Element = W, Shape = [[IPS; PY]; PX]> + BMA + Copy,
-    <<W as PackedElement<[[IPS; PY]; PX]>>::Array as Element<OPS>>::Array:
-        Copy + Clone + IndexGet<OPS::Index, Element = <W as PackedElement<[[IPS; PY]; PX]>>::Array>,
-    <bool as PackedElement<[[IPS; PY]; PX]>>::Array: Pixel<IS> + Default,
-    Standard: Distribution<<<W as PackedElement<[[IPS; PY]; PX]>>::Array as Element<OPS>>::Array>,
-    (): WeightArray<IPS, W>,
+            <IS as PixelPack<<OPS as BitPack<bool>>::T>>::I,
+            C,
+            Weight = W,
+            InputIndex = OPS::Index,
+            InputValue = <IS as PixelPack<bool>>::I,
+        > + Copy,
+    Standard: Distribution<<OPS as Pack<[[<IPS as BitPack<W>>::T; PY]; PX]>>::T>,
+    W: 'static + BitScaler + Copy,
+    <IPS as BitPack<bool>>::T: Copy,
+    <IPS as BitPack<W>>::T: Copy,
+    <OPS as Pack<[[<IPS as BitPack<W>>::T; PY]; PX]>>::T: Copy,
+    <IS as PixelPack<<OPS as BitPack<bool>>::T>>::I: Default,
+    [[IPS; PY]; PX]: WeightArray<W>
+        + BitPack<W, T = [[<IPS as BitPack<W>>::T; PY]; PX]>
+        + BitPack<bool, T = [[<IPS as BitPack<bool>>::T; PY]; PX]>
+        + PackedIndexSGet<W>,
+    <[[IPS; PY]; PX] as BitPack<W>>::T: Copy,
+    <[[IPS; PY]; PX] as BitPack<bool>>::T: Copy + Default,
+    OPS::Index: Copy,
+    [[IPS; PY]; PX]: Copy,
+    LayerIndex<(OPS::Index, <[[IPS; PY]; PX] as Shape>::Index), H::Index>: Copy,
 {
     type Index = LayerIndex<(OPS::Index, <[[IPS; PY]; PX] as Shape>::Index), H::Index>;
     type Weight = W;
     type IndexIter = LayerIter<[[IPS; PY]; PX], OPS, H::IndexIter, C>;
     type Cache = ConvCache;
     type ChanCache = ConvChanCache<IS>;
-    type InputValue = <bool as Pixel<IS>>::Image;
+    type InputValue = <IS as PixelPack<bool>>::I;
     type InputIndex = IPS::Index;
-    type Output = <<bool as PackedElement<OPS>>::Array as Pixel<IS>>::Image;
+    type Output = <IS as PixelPack<<OPS as BitPack<bool>>::T>>::I;
     fn rand<R: Rng>(rng: &mut R) -> Self {
         Conv2D {
             kernel: rng.gen(),
@@ -612,24 +596,17 @@ where
     }
     fn apply(
         &self,
-        input: &<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image,
-    ) -> <<bool as PackedElement<OPS>>::Array as Pixel<IS>>::Image {
-        //<() as WeightArray<[[IPS; PY]; PX], W>>::THRESHOLD;
-        <IS as Conv<
-            <bool as PackedElement<IPS>>::Array,
-            <bool as PackedElement<OPS>>::Array,
-            PX,
-            PY,
-        >>::conv(input, |patch| {
-            /*
-            <OPS as PackedMap<<W as PackedElement<[[IPS; PY]; PX]>>::Array, bool>>::map(&self.kernel, |weights| {
-                <() as WeightArray<[[IPS; PY]; PX], W>>::act(weights, &patch)
-                //weights.bma(&patch) > <() as WeightArray<[[IPS; PY]; PX], W>>::THRESHOLD
-                //true
-            })
-            */
-            Default::default()
-        })
+        input: &<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I,
+    ) -> <IS as PixelPack<<OPS as BitPack<bool>>::T>>::I {
+        <IS as Conv<<IPS as BitPack<bool>>::T, <OPS as BitPack<bool>>::T, PX, PY>>::conv(
+            input,
+            |patch| {
+                <OPS as PackedMap<<[[IPS; PY]; PX] as BitPack<W>>::T, bool>>::map(
+                    &self.kernel,
+                    |weights| <[[IPS; PY]; PX] as WeightArray<W>>::act(weights, &patch),
+                )
+            },
+        )
     }
     fn indices() -> Self::IndexIter {
         LayerIter::new(H::indices())
@@ -637,17 +614,17 @@ where
     fn mutate_in_place(&mut self, index: Self::Index, weight: W) {
         match index {
             LayerIndex::Head((o, i)) => {
-                self.kernel.index_get_mut(o).set_element_in_place(i, weight)
+                <[[IPS; PY]; PX]>::set_in_place(OPS::index_get_mut(&mut self.kernel, o), i, weight)
             }
             LayerIndex::Tail(i) => self.tail.mutate_in_place(i, weight),
         }
     }
-    fn top_act(&self, input: &<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image) -> usize {
+    fn top_act(&self, input: &<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I) -> usize {
         self.tail.top_act(&self.apply(input))
     }
     fn cache(
         &self,
-        input: &<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image,
+        input: &<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I,
         class: usize,
     ) -> ConvCache {
         ConvCache {}
@@ -662,50 +639,83 @@ where
             image_shape: PhantomData::default(),
         }
     }
-    fn loss(
-        &self,
-        input: &<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image,
-        class: usize,
-    ) -> u64 {
+    fn loss(&self, input: &<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I, class: usize) -> u64 {
         self.tail.loss(&self.apply(input), class)
     }
     fn loss_deltas(
         &self,
-        input: &<<bool as PackedElement<IPS>>::Array as Pixel<IS>>::Image,
+        input: &<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I,
         threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, Self::Weight, i64)> {
+        // acts if we do nothing
         let null_acts = self.apply(input);
+        // init the base cache
         let cache = self.tail.cache(&null_acts, class);
         // for each output channel
-        /*
-        OPS::indices().map(|o| {
-            let null_chan_acts = <IS as PixelMap<<bool as PackedElement<OPS>>::Array, bool>>::map(&null_acts, |pixel| pixel.get_element(o));
-            let chan_cache = self.tail.subtract_input(&cache, o, null_chan_acts);
-            let weights_channel = self.kernel.index_get(o);
-            W::states().map(|w| {
-                let chan_acts = <IS as Conv<<bool as PackedElement<IPS>>::Array, <bool as PackedElement<[[IPS; PY]; PX]>>::Array, PX, PY>>::conv(input, |patch| {
-                    //<() as WeightArray<[[IPS; PY]; PX], W>>::acts(weights_channel, &patch, w)
-                    <bool as PackedElement<[[IPS; PY]; PX]>>::Array::default()
-                });
-                <[[IPS; PY]; PX]>::indices().map(|i| {
-                    let mut_weight_acts = <IS as PixelMap<<bool as PackedElement<[[IPS; PY]; PX]>>::Array, bool>>::map(&chan_acts, |pixel| pixel.get_element(i));
-                    chan_cache.loss_delta(&mut_weight_acts)
-                });
-            });
-        });
-        */
-        vec![]
+        OPS::indices()
+            .map(|o| {
+                // extract the channel of the null_acts
+                let null_chan_acts =
+                    <IS as PixelMap<<OPS as BitPack<bool>>::T, bool>>::map(&null_acts, |pixel| {
+                        OPS::get(&pixel, o)
+                    });
+                // and subtract it from the cache
+                let chan_cache = self.tail.subtract_input(&cache, o, null_chan_acts);
+                // also extract the ouptut channel of the weights.
+                let weights_channel = OPS::index_get(&self.kernel, o);
+                // For each state of the weights,
+                W::states()
+                    .map(|w| {
+                        // for each output pixel input,
+                        let chan_acts = <IS as Conv<
+                            <IPS as BitPack<bool>>::T,
+                            <[[IPS; PY]; PX] as BitPack<bool>>::T,
+                            PX,
+                            PY,
+                        >>::conv(input, |patch| {
+                            // what would the act be if we set the weight to w?
+                            <[[IPS; PY]; PX] as WeightArray<W>>::acts(weights_channel, &patch, w)
+                        });
+                        // and for each input channel,
+                        <[[IPS; PY]; PX]>::indices()
+                            .map(|i| {
+                                // extract the activation pixels
+                                let mut_weight_acts = <IS as PixelMap<
+                                    <[[IPS; PY]; PX] as BitPack<bool>>::T,
+                                    bool,
+                                >>::map(
+                                    &chan_acts,
+                                    |pixel| <[[IPS; PY]; PX]>::get(&pixel, i),
+                                );
+                                // and pass to the chan cache to get loss delta.
+                                let loss_delta = chan_cache.loss_delta(&mut_weight_acts);
+                                (LayerIndex::Head((o, i)), w, loss_delta)
+                            })
+                            .filter(|(_, _, l)| l.abs() as u64 > threshold)
+                            .collect::<Vec<_>>()
+                    })
+                    .flatten()
+                    .collect::<Vec<_>>()
+            })
+            .flatten()
+            .chain(
+                self.tail
+                    .loss_deltas(&null_acts, threshold, class)
+                    .iter()
+                    .map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)),
+            )
+            .collect()
     }
 }
 
 pub struct GlobalAvgPoolCache<TailCache, P: Shape, const C: usize>
 where
-    bool: PackedElement<P>,
+    P: BitPack<bool>,
 {
     tail_cache: TailCache,
     threshold: u32,
-    acts: <bool as PackedElement<P>>::Array,
+    acts: <P as BitPack<bool>>::T,
 }
 
 pub struct GlobalAvgPoolChanCache<
@@ -729,13 +739,12 @@ impl<
         const PX: usize,
         const PY: usize,
         const C: usize,
-    > Cache<<bool as Pixel<I>>::Image> for GlobalAvgPoolChanCache<W, TailChanCache, I, PX, PY, C>
+    > Cache<<I as PixelPack<bool>>::I> for GlobalAvgPoolChanCache<W, TailChanCache, I, PX, PY, C>
 where
-    bool: Pixel<I>,
     TailChanCache: Cache<bool>,
     I: PixelFold<u32, bool, PX, PY>,
 {
-    fn loss_delta(&self, input: &<bool as Pixel<I>>::Image) -> i64 {
+    fn loss_delta(&self, input: &<I as PixelPack<bool>>::I) -> i64 {
         let sum = <I as PixelFold<u32, bool, PX, PY>>::pixel_fold(input, 0u32, |sum, &bit| {
             sum + (bit as u32)
         });
@@ -752,24 +761,22 @@ pub struct GlobalAvgPool<I, P, H, const PX: usize, const PY: usize> {
 
 impl<I, P, H, const PX: usize, const PY: usize> GlobalAvgPool<I, P, H, PX, PY>
 where
-    P: Shape + PackedMap<u32, bool> + IncrementCounters,
-    I: PixelFold<(usize, <u32 as Element<P>>::Array), <bool as PackedElement<P>>::Array, PX, PY>,
-    bool: PackedElement<P>,
-    <bool as PackedElement<P>>::Array: Pixel<I> + Default,
-    u32: Element<P>,
-    <u32 as Element<P>>::Array: Default,
+    P: BitPack<bool> + Pack<u32> + IncrementCounters + PackedMap<u32, bool>,
+    I: PixelPack<<P as BitPack<bool>>::T>
+        + PixelFold<(usize, <P as Pack<u32>>::T), <P as BitPack<bool>>::T, PX, PY>,
+    (usize, <P as Pack<u32>>::T): Default,
 {
     fn pool(
-        input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
-    ) -> (u32, <bool as PackedElement<P>>::Array) {
+        input: &<I as PixelPack<<P as BitPack<bool>>::T>>::I,
+    ) -> (u32, <P as BitPack<bool>>::T) {
         let (n, counts) = <I as PixelFold<
-            (usize, <u32 as Element<P>>::Array),
-            <bool as PackedElement<P>>::Array,
+            (usize, <P as Pack<u32>>::T),
+            <P as BitPack<bool>>::T,
             PX,
             PY,
         >>::pixel_fold(
             input,
-            <(usize, <u32 as Element<P>>::Array)>::default(),
+            <(usize, <P as Pack<u32>>::T)>::default(),
             |acc, pixel| P::counted_increment(pixel, acc),
         );
         let threshold = n as u32 / 2;
@@ -781,19 +788,23 @@ where
 }
 
 impl<I, P, H, const PX: usize, const PY: usize, const C: usize>
-    Model<<<bool as PackedElement<P>>::Array as Pixel<I>>::Image, C>
-    for GlobalAvgPool<I, P, H, PX, PY>
+    Model<<I as PixelPack<<P as BitPack<bool>>::T>>::I, C> for GlobalAvgPool<I, P, H, PX, PY>
 where
-    Self: Copy,
-    P: Shape + PackedMap<u32, bool> + IncrementCounters,
-    I: PixelFold<(usize, <u32 as Element<P>>::Array), <bool as PackedElement<P>>::Array, PX, PY>
-        + PixelFold<u32, bool, PX, PY>,
-    H: Model<<bool as PackedElement<P>>::Array, C, InputIndex = P::Index, InputValue = bool>,
-    u32: Element<P>,
-    <u32 as Element<P>>::Array: Default + std::fmt::Debug,
-    bool: PackedElement<P> + Pixel<I>,
-    <bool as PackedElement<P>>::Array: Pixel<I> + Default + PackedArray<Element = bool, Shape = P>,
-    <H as Model<<bool as PackedElement<P>>::Array, C>>::ChanCache: Cache<bool>,
+    P: Shape
+        + Copy
+        + BitPack<bool>
+        + Pack<u32>
+        + IncrementCounters
+        + PackedMap<u32, bool>
+        + PackedIndexSGet<bool>,
+    I: PixelPack<<P as BitPack<bool>>::T>
+        + Copy
+        + PixelPack<bool>
+        + PixelFold<u32, bool, PX, PY>
+        + PixelFold<(usize, <P as Pack<u32>>::T), <P as BitPack<bool>>::T, PX, PY>,
+    H: Model<<P as BitPack<bool>>::T, C, InputIndex = P::Index, InputValue = bool>,
+    <H as Model<<P as BitPack<bool>>::T, C>>::ChanCache: Cache<bool>,
+    (usize, <P as Pack<u32>>::T): Default,
 {
     type Index = H::Index;
     type Weight = H::Weight;
@@ -801,8 +812,8 @@ where
     type Cache = GlobalAvgPoolCache<H::Cache, P, C>;
     type ChanCache = GlobalAvgPoolChanCache<H::Weight, H::ChanCache, I, PX, PY, C>;
     type InputIndex = P::Index;
-    type InputValue = <bool as Pixel<I>>::Image;
-    type Output = <bool as PackedElement<P>>::Array;
+    type InputValue = <I as PixelPack<bool>>::I;
+    type Output = <P as BitPack<bool>>::T;
     fn rand<R: Rng>(rng: &mut R) -> Self {
         GlobalAvgPool {
             pixel_shape: PhantomData::default(),
@@ -812,8 +823,8 @@ where
     }
     fn apply(
         &self,
-        input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
-    ) -> <bool as PackedElement<P>>::Array {
+        input: &<I as PixelPack<<P as BitPack<bool>>::T>>::I,
+    ) -> <P as BitPack<bool>>::T {
         let (_, acts) = Self::pool(input);
         acts
     }
@@ -823,12 +834,12 @@ where
     fn mutate_in_place(&mut self, index: H::Index, weight: H::Weight) {
         self.tail.mutate_in_place(index, weight)
     }
-    fn top_act(&self, input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image) -> usize {
+    fn top_act(&self, input: &<I as PixelPack<<P as BitPack<bool>>::T>>::I) -> usize {
         self.tail.top_act(&self.apply(input))
     }
     fn cache(
         &self,
-        input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
+        input: &<I as PixelPack<<P as BitPack<bool>>::T>>::I,
         class: usize,
     ) -> Self::Cache {
         let (threshold, acts) = Self::pool(input);
@@ -849,22 +860,18 @@ where
             tail_chan_cache: self.tail.subtract_input(
                 &cache.tail_cache,
                 chan_index,
-                cache.acts.get_element(chan_index),
+                P::get(&cache.acts, chan_index),
             ),
             weight_type: PhantomData::default(),
             image_shape: PhantomData::default(),
         }
     }
-    fn loss(
-        &self,
-        input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
-        class: usize,
-    ) -> u64 {
+    fn loss(&self, input: &<I as PixelPack<<P as BitPack<bool>>::T>>::I, class: usize) -> u64 {
         self.tail.loss(&self.apply(input), class)
     }
     fn loss_deltas(
         &self,
-        input: &<<bool as PackedElement<P>>::Array as Pixel<I>>::Image,
+        input: &<I as PixelPack<<P as BitPack<bool>>::T>>::I,
         threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, Self::Weight, i64)> {
@@ -874,9 +881,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Cache, FcMSE, GlobalAvgPool, Model, FC};
+    use super::{Cache, Conv2D, FcMSE, GlobalAvgPool, Model, FC};
     use crate::bits::{
-        b128, b32, b8, t128, t32, t8, BitScaler, PackedArray, PackedElement, WeightArray,
+        b128, b32, b8, t128, t32, t8, BitPack, BitScaler, PackedIndexSGet, WeightArray,
     };
     use crate::shape::{Map, ZipMap};
     use rand::Rng;
@@ -886,10 +893,10 @@ mod tests {
     use crate::shape::Shape;
 
     macro_rules! test_loss_deltas_conv {
-        ($name:ident, $input_pixel:ty, $input_x:expr, $input_y:expr, $model:ty, $n_classes:expr, $n_iters:expr) => {
+        ($name:ident, $input_pixel:ty, $input_x:expr, $input_y:expr, $model:ty, $n_classes:expr, $n_iters:expr, $seed:expr) => {
             #[test]
             fn $name() {
-                let mut rng = Hc128Rng::seed_from_u64(0);
+                let mut rng = Hc128Rng::seed_from_u64($seed);
                 (0..$n_iters).for_each(|_| {
                     let inputs: [[$input_pixel; $input_y]; $input_x] = rng.gen();
                     let weights = <$model as Model<
@@ -897,14 +904,11 @@ mod tests {
                         $n_classes,
                     >>::rand(&mut rng);
                     for class in 0..$n_classes {
-                        for &threshold in &[0, 10, 100, 1000] {
-                            let mut true_loss_deltas =
-                                weights.loss_deltas_slow(&inputs, threshold, class);
-                            true_loss_deltas.sort();
-                            let mut loss_deltas = weights.loss_deltas(&inputs, threshold, class);
-                            loss_deltas.sort();
-                            assert_eq!(true_loss_deltas, loss_deltas);
-                        }
+                        let mut true_loss_deltas = weights.loss_deltas_slow(&inputs, 0, class);
+                        true_loss_deltas.sort();
+                        let mut loss_deltas = weights.loss_deltas(&inputs, 0, class);
+                        loss_deltas.sort();
+                        assert_eq!(true_loss_deltas, loss_deltas);
                     }
                 })
             }
@@ -917,10 +921,10 @@ mod tests {
             fn $name() {
                 let mut rng = Hc128Rng::seed_from_u64(0);
                 (0..$n_iters).for_each(|_| {
-                    let input: [[<bool as PackedElement<$input_pixel_shape>>::Array; $input_y];
-                        $input_x] = rng.gen();
+                    let input: [[<$input_pixel_shape as BitPack<bool>>::T; $input_y]; $input_x] =
+                        rng.gen();
                     let weights = <$model as Model<
-                        [[<bool as PackedElement<$input_pixel_shape>>::Array; $input_y]; $input_x],
+                        [[<$input_pixel_shape as BitPack<bool>>::T; $input_y]; $input_x],
                         $n_classes,
                     >>::rand(&mut rng);
 
@@ -928,24 +932,25 @@ mod tests {
                         let null_loss = weights.loss(&input, class);
                         let cache = weights.cache(&input, class);
                         for i in <$input_pixel_shape as Shape>::indices() {
-                            let null_chan =
-                                <[[(); $input_y]; $input_x] as Map<
-                                    <bool as PackedElement<$input_pixel_shape>>::Array,
-                                    bool,
-                                >>::map(&input, |pixel| pixel.get_element(i));
+                            let null_chan = <[[(); $input_y]; $input_x] as Map<
+                                <$input_pixel_shape as BitPack<bool>>::T,
+                                bool,
+                            >>::map(&input, |pixel| {
+                                <$input_pixel_shape>::get(pixel, i)
+                            });
                             let chan_cache = weights.subtract_input(&cache, i, null_chan);
                             for c in 0..$n_chan_iters {
                                 let new_channel: [[bool; $input_y]; $input_x] = rng.gen();
                                 let loss_delta = chan_cache.loss_delta(&new_channel);
 
                                 let new_input = <[[(); $input_y]; $input_x] as ZipMap<
-                                    <bool as PackedElement<$input_pixel_shape>>::Array,
+                                    <$input_pixel_shape as BitPack<bool>>::T,
                                     bool,
-                                    <bool as PackedElement<$input_pixel_shape>>::Array,
+                                    <$input_pixel_shape as BitPack<bool>>::T,
                                 >>::zip_map(
                                     &input,
                                     &new_channel,
-                                    |pixel, &bit| pixel.set_element(i, bit),
+                                    |&pixel, &bit| <$input_pixel_shape>::set(pixel, i, bit),
                                 );
                                 let true_loss = weights.loss(&new_input, class);
                                 assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
@@ -986,17 +991,22 @@ mod tests {
             fn $name() {
                 let mut rng = Hc128Rng::seed_from_u64(0);
                 (0..$n_iters).for_each(|_| {
-                    let inputs: <bool as PackedElement<$input_shape>>::Array = rng.gen();
-                    let weights = <$weights as Model<<bool as PackedElement<$input_shape>>::Array, $n_classes>>::rand(&mut rng);
+                    let inputs: <$input_shape as BitPack<bool>>::T = rng.gen();
+                    let weights = <$weights as Model<
+                        <$input_shape as BitPack<bool>>::T,
+                        $n_classes,
+                    >>::rand(&mut rng);
 
                     for class in 0..$n_classes {
                         let null_loss = weights.loss(&inputs, class);
                         let cache = weights.cache(&inputs, class);
                         for i in <$input_shape as Shape>::indices() {
-                            let chan_cache = weights.subtract_input(&cache, i, <<bool as PackedElement<$input_shape>>::Array as PackedArray>::get_element(&inputs, i));
+                            let chan_cache =
+                                weights.subtract_input(&cache, i, <$input_shape>::get(&inputs, i));
                             for sign in &[false, true] {
                                 let loss_delta = chan_cache.loss_delta(sign);
-                                let true_loss = weights.loss(&inputs.set_element(i, *sign), class);
+                                let true_loss =
+                                    weights.loss(&<$input_shape>::set(inputs, i, *sign), class);
                                 assert_eq!(loss_delta, true_loss as i64 - null_loss as i64);
                             }
                         }
@@ -1024,10 +1034,175 @@ mod tests {
     test_input_loss_deltas!(rand_fc_fcmse_bit_input_losses_large, [[(); 8]; 3], FC<[[(); 8]; 3], bool, [[(); 32]; 2], FcMSE<[[(); 32]; 2], bool, 10>, 10>, 10, 100);
     test_input_loss_deltas!(rand_fc_fcmse_trit_input_losses_large, [[(); 8]; 3], FC<[[(); 8]; 3], Option<bool>, [[(); 32]; 2], FcMSE<[[(); 32]; 2], Option<bool>, 10>, 10>, 10, 100);
 
-    test_loss_deltas_conv!(rand_global_avg_pool_fcmse_bit_small, [b32; 2], 16, 16, GlobalAvgPool<[[(); 16]; 16], [[(); 32]; 2], FcMSE<[[(); 32]; 2], bool, 7>, 3, 3>, 7, 100);
+    test_loss_deltas_conv!(rand_global_avg_pool_fcmse_bit_small, [b32; 2], 5, 5, GlobalAvgPool<[[(); 5]; 5], [[(); 32]; 2], FcMSE<[[(); 32]; 2], bool, 7>, 3, 3>, 7, 100, 0);
+    test_loss_deltas_conv!(rand_global_avg_pool_fcmse_trit_small, [b32; 2], 5, 5, GlobalAvgPool<[[(); 5]; 5], [[(); 32]; 2], FcMSE<[[(); 32]; 2], Option<bool>, 7>, 3, 3>, 7, 100, 0);
+    test_loss_deltas_conv!(rand_global_avg_pool_fcmse_bit_large, [b32; 2], 16, 16, GlobalAvgPool<[[(); 16]; 16], [[(); 32]; 2], FcMSE<[[(); 32]; 2], bool, 7>, 3, 3>, 7, 100, 0);
+
+    type ConvPoolModel = Conv2D<
+        [[(); 8]; 8],
+        [[(); 32]; 1],
+        [[(); 32]; 1],
+        bool,
+        GlobalAvgPool<[[(); 8]; 8], [[(); 32]; 1], FcMSE<[[(); 32]; 1], bool, 7>, 3, 3>,
+        3,
+        3,
+        7,
+    >;
+
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_small_a,
+        [b32; 1],
+        8,
+        8,
+        ConvPoolModel,
+        7,
+        80,
+        0
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_small_b,
+        [b32; 1],
+        8,
+        8,
+        ConvPoolModel,
+        7,
+        80,
+        1
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_small_c,
+        [b32; 1],
+        8,
+        8,
+        ConvPoolModel,
+        7,
+        80,
+        2
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_small_d,
+        [b32; 1],
+        8,
+        8,
+        ConvPoolModel,
+        7,
+        80,
+        3
+    );
+
+    type ConvPoolModelLarge = Conv2D<
+        [[(); 8]; 8],
+        [[(); 32]; 3],
+        [[(); 32]; 2],
+        bool,
+        GlobalAvgPool<[[(); 8]; 8], [[(); 32]; 2], FcMSE<[[(); 32]; 2], bool, 5>, 3, 3>,
+        3,
+        3,
+        5,
+    >;
+
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_large_a,
+        [b32; 3],
+        8,
+        8,
+        ConvPoolModelLarge,
+        5,
+        3,
+        0
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_large_b,
+        [b32; 3],
+        8,
+        8,
+        ConvPoolModelLarge,
+        5,
+        3,
+        1
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_large_c,
+        [b32; 3],
+        8,
+        8,
+        ConvPoolModelLarge,
+        5,
+        3,
+        2
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_large_d,
+        [b32; 3],
+        8,
+        8,
+        ConvPoolModelLarge,
+        5,
+        3,
+        3
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_large_e,
+        [b32; 3],
+        8,
+        8,
+        ConvPoolModelLarge,
+        5,
+        3,
+        4
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_large_f,
+        [b32; 3],
+        8,
+        8,
+        ConvPoolModelLarge,
+        5,
+        3,
+        5
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_large_g,
+        [b32; 3],
+        8,
+        8,
+        ConvPoolModelLarge,
+        5,
+        3,
+        6
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_large_h,
+        [b32; 3],
+        8,
+        8,
+        ConvPoolModelLarge,
+        5,
+        3,
+        7
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_large_i,
+        [b32; 3],
+        8,
+        8,
+        ConvPoolModelLarge,
+        5,
+        3,
+        8
+    );
+    test_loss_deltas_conv!(
+        rand_conv_global_avg_pool_fcmse_bit_large_l,
+        [b32; 3],
+        8,
+        8,
+        ConvPoolModelLarge,
+        5,
+        3,
+        9
+    );
 
     test_input_loss_deltas_conv!(rand_global_avg_pool_input_losses_bit_small, [(); 32], 6, 6, GlobalAvgPool<[[(); 6]; 6], [(); 32], FcMSE<[(); 32], bool, 7>, 3, 3>, 7, 200, 1000);
     test_input_loss_deltas_conv!(rand_global_avg_pool_input_losses_trit_small, [(); 32], 6, 6, GlobalAvgPool<[[(); 6]; 6], [(); 32], FcMSE<[(); 32], Option<bool>, 7>, 3, 3>, 7, 200, 1000);
     test_input_loss_deltas_conv!(rand_global_avg_pool_input_losses_bit_large, [[(); 32]; 2], 16, 16, GlobalAvgPool<[[(); 16]; 16], [[(); 32]; 2], FcMSE<[[(); 32]; 2], bool, 7>, 3, 3>, 7, 20, 100);
-    test_input_loss_deltas_conv!(rand_global_avg_pool_input_losses_bit_small_5x5, [(); 32], 8, 8, GlobalAvgPool<[[(); 8]; 8], [(); 32], FcMSE<[(); 32], bool, 7>, 5, 5>, 7, 20, 100);
 }
