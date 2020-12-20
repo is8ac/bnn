@@ -65,54 +65,26 @@ where
 {
     const RANGE: u32;
     const N: usize;
-    fn states() -> iter::Cloned<slice::Iter<'static, Self>>;
+    fn states() -> Vec<Self>;
     fn bma(self, input: bool) -> u32;
-}
-
-impl BitScaler for bit {
-    const RANGE: u32 = 2;
-    const N: usize = 2;
-    fn states() -> iter::Cloned<slice::Iter<'static, bit>> {
-        [bit(true), bit(false)].iter().cloned()
-    }
-    fn bma(self, input: bool) -> u32 {
-        (self.0 ^ input) as u32
-    }
 }
 
 impl BitScaler for bool {
     const RANGE: u32 = 2;
     const N: usize = 2;
-    fn states() -> iter::Cloned<slice::Iter<'static, bool>> {
-        [true, false].iter().cloned()
+    fn states() -> Vec<bool> {
+        vec![true, false]
     }
     fn bma(self, input: bool) -> u32 {
         (self ^ input) as u32
     }
 }
 
-impl BitScaler for trit {
-    const RANGE: u32 = 3;
-    const N: usize = 3;
-    fn states() -> iter::Cloned<slice::Iter<'static, trit>> {
-        [trit(Some(true)), trit(None), trit(Some(false))]
-            .iter()
-            .cloned()
-    }
-    fn bma(self, input: bool) -> u32 {
-        if let Some(sign) = self.0 {
-            (sign ^ input) as u32 * 2
-        } else {
-            1
-        }
-    }
-}
-
 impl BitScaler for Option<bool> {
     const RANGE: u32 = 3;
     const N: usize = 3;
-    fn states() -> iter::Cloned<slice::Iter<'static, Option<bool>>> {
-        [Some(true), None, Some(false)].iter().cloned()
+    fn states() -> Vec<Option<bool>> {
+        vec![Some(true), None, Some(false)]
     }
     fn bma(self, input: bool) -> u32 {
         if let Some(sign) = self {
@@ -123,43 +95,11 @@ impl BitScaler for Option<bool> {
     }
 }
 
-impl BitScaler for quat {
-    const RANGE: u32 = 4;
-    const N: usize = 4;
-    fn states() -> iter::Cloned<slice::Iter<'static, quat>> {
-        [
-            quat((true, true)),
-            quat((true, false)),
-            quat((false, false)),
-            quat((false, true)),
-        ]
-        .iter()
-        .cloned()
-    }
-    fn bma(self, input: bool) -> u32 {
-        if (self.0).1 {
-            if input ^ (self.0).0 {
-                3
-            } else {
-                0
-            }
-        } else {
-            if input ^ (self.0).0 {
-                2
-            } else {
-                1
-            }
-        }
-    }
-}
-
 impl BitScaler for (bool, bool) {
     const RANGE: u32 = 4;
     const N: usize = 4;
-    fn states() -> iter::Cloned<slice::Iter<'static, (bool, bool)>> {
-        [(true, true), (true, false), (false, false), (false, true)]
-            .iter()
-            .cloned()
+    fn states() -> Vec<(bool, bool)> {
+        vec![(true, true), (true, false), (false, false), (false, true)]
     }
     fn bma(self, input: bool) -> u32 {
         if self.1 {
@@ -178,54 +118,17 @@ impl BitScaler for (bool, bool) {
     }
 }
 
-impl BitScaler for pent {
-    const RANGE: u32 = 5;
-    const N: usize = 5;
-    fn states() -> iter::Cloned<slice::Iter<'static, pent>> {
-        [
-            pent(Some((true, true))),
-            pent(Some((true, false))),
-            pent(None),
-            pent(Some((false, false))),
-            pent(Some((false, true))),
-        ]
-        .iter()
-        .cloned()
-    }
-    fn bma(self, input: bool) -> u32 {
-        if let Some(weight) = self.0 {
-            if weight.1 {
-                if input ^ weight.0 {
-                    4
-                } else {
-                    0
-                }
-            } else {
-                if input ^ weight.0 {
-                    3
-                } else {
-                    1
-                }
-            }
-        } else {
-            2
-        }
-    }
-}
-
 impl BitScaler for Option<(bool, bool)> {
     const RANGE: u32 = 5;
     const N: usize = 5;
-    fn states() -> iter::Cloned<slice::Iter<'static, Option<(bool, bool)>>> {
-        [
+    fn states() -> Vec<Option<(bool, bool)>> {
+        vec![
             Some((true, true)),
             Some((true, false)),
             None,
             Some((false, false)),
             Some((false, true)),
         ]
-        .iter()
-        .cloned()
     }
     fn bma(self, input: bool) -> u32 {
         if let Some(weight) = self {
@@ -257,7 +160,7 @@ where
         + BMA<W>
         + PackedIndexSGet<W>
         + PackedIndexSGet<bool>,
-    W: 'static + BitScaler,
+    W: BitScaler,
     <Self as BitPack<W>>::T: Copy,
     <Self as BitPack<bool>>::T: Copy,
 {
@@ -287,7 +190,8 @@ where
         loss_delta_fn: F,
     ) -> Vec<(<Self as Shape>::Index, W, i64)> {
         <W as BitScaler>::states()
-            .map(|value| {
+            .iter()
+            .map(|&value| {
                 <Self as Shape>::indices()
                     .map(|index| {
                         (
@@ -846,23 +750,28 @@ macro_rules! for_uints {
         impl_long_default_for_type!($q_type);
 
         impl $b_type {
+            #[inline(always)]
             pub fn count_ones(self) -> u32 {
                 self.0.count_ones()
             }
+            #[inline(always)]
             pub fn get_bit(self, index: usize) -> bool {
                 ((self.0 >> index) & 1) == 1
             }
+            #[inline(always)]
             pub fn set_bit_in_place(&mut self, index: usize, value: bool) {
                 self.0 &= !(1 << index);
                 self.0 |= ((value as $u_type) << index);
             }
         }
         impl $t_type {
+            #[inline(always)]
             fn get_trit(&self, index: usize) -> Option<bool> {
                 let sign = (self.0 >> index) & 1 == 1;
                 let magn = (self.1 >> index) & 1 == 1;
                 Some(sign).filter(|_| magn)
             }
+            #[inline(always)]
             fn set_trit_in_place(&mut self, index: usize, val: Option<bool>) {
                 self.0 &= !(1 << index);
                 self.0 |= ((val.unwrap_or(false) as $u_type) << index);
@@ -971,17 +880,20 @@ macro_rules! for_uints {
         }
 
         impl BMA<bool> for [(); $len] {
+            #[inline(always)]
             fn bma(&weights: &$b_type, &rhs: &$b_type) -> u32 {
                 (weights.0 ^ rhs.0).count_ones()
             }
         }
         impl BMA<Option<bool>> for [(); $len] {
+            #[inline(always)]
             fn bma(&weights: &$t_type, &rhs: &$b_type) -> u32 {
                 weights.1.count_zeros() + ((weights.0 ^ rhs.0) & weights.1).count_ones() * 2
             }
         }
 
         impl WBBZM<bool> for [(); $len] {
+            #[inline(always)]
             fn map<F: Fn($b_type, $u_type) -> $u_type>(
                 weights: &$b_type,
                 rhs: &$b_type,
@@ -991,6 +903,7 @@ macro_rules! for_uints {
             }
         }
         impl WBBZM<Option<bool>> for [(); $len] {
+            #[inline(always)]
             fn map<F: Fn($t_type, $u_type) -> $u_type>(
                 weights: &$t_type,
                 rhs: &$b_type,
@@ -1000,6 +913,7 @@ macro_rules! for_uints {
             }
         }
         impl WBBZM<(bool, bool)> for [(); $len] {
+            #[inline(always)]
             fn map<F: Fn($q_type, $u_type) -> $u_type>(
                 weights: &$q_type,
                 rhs: &$b_type,
@@ -1010,17 +924,21 @@ macro_rules! for_uints {
         }
 
         impl PackedIndexSGet<bool> for [(); $len] {
+            #[inline(always)]
             fn get(&array: &$b_type, (i, _): (u8, ())) -> bool {
                 array.get_bit(i as usize)
             }
+            #[inline(always)]
             fn set_in_place(array: &mut $b_type, (i, _): (u8, ()), val: bool) {
                 array.set_bit_in_place(i as usize, val);
             }
         }
         impl PackedIndexSGet<Option<bool>> for [(); $len] {
+            #[inline(always)]
             fn get(&array: &$t_type, (i, _): (u8, ())) -> Option<bool> {
                 array.get_trit(i as usize)
             }
+            #[inline(always)]
             fn set_in_place(array: &mut $t_type, (i, _): (u8, ()), val: Option<bool>) {
                 array.set_trit_in_place(i as usize, val);
             }
@@ -1041,6 +959,7 @@ macro_rules! for_uints {
             W: Pack<[(); $len]>,
             <W as Pack<[(); $len]>>::T: Shape,
         {
+            #[inline(always)]
             fn index_map_inner<F: Fn(<<W as Pack<[(); $len]>>::T as Shape>::Index) -> bool>(
                 outer_index: W::Index,
                 map_fn: F,
@@ -1064,11 +983,13 @@ macro_rules! for_uints {
         }
 
         impl Blit<bool> for [(); $len] {
+            #[inline(always)]
             fn blit(val: bool) -> $b_type {
                 $b_type((Wrapping(0) - Wrapping(val as $u_type)).0)
             }
         }
         impl Blit<Option<bool>> for [(); $len] {
+            #[inline(always)]
             fn blit(val: Option<bool>) -> $t_type {
                 $t_type(
                     (Wrapping(0) - Wrapping(val.unwrap_or(false) as $u_type)).0,
@@ -1077,6 +998,7 @@ macro_rules! for_uints {
             }
         }
         impl Blit<(bool, bool)> for [(); $len] {
+            #[inline(always)]
             fn blit(value: (bool, bool)) -> $q_type {
                 $q_type(
                     (Wrapping(0) - Wrapping(value.0 as $u_type)).0,
@@ -1118,6 +1040,16 @@ for_uints!(q16, t16, b16, u16, 16, "{:016b}");
 for_uints!(q32, t32, b32, u32, 32, "{:032b}");
 for_uints!(q64, t64, b64, u64, 64, "{:064b}");
 for_uints!(q128, t128, b128, u128, 128, "{:0128b}");
+
+pub trait GetBit {
+    fn bit(self, i: usize) -> bool;
+}
+
+impl GetBit for usize {
+    fn bit(self, i: usize) -> bool {
+        ((self >> i) & 1) == 1
+    }
+}
 
 #[cfg(test)]
 mod tests {

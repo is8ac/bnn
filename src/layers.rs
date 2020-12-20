@@ -57,10 +57,29 @@ pub enum LayerIndex<H: Copy, T: Copy> {
     Tail(T),
 }
 
+pub trait IndexDepth {
+    fn depth(&self) -> usize;
+}
+
+impl<H: Copy, T: IndexDepth + Copy> IndexDepth for LayerIndex<H, T> {
+    fn depth(&self) -> usize {
+        match self {
+            LayerIndex::Head(h) => 0,
+            LayerIndex::Tail(t) => t.depth() + 1,
+        }
+    }
+}
+
+impl<I> IndexDepth for (usize, I) {
+    fn depth(&self) -> usize {
+        0
+    }
+}
+
 pub trait Model<I, const C: usize>
 where
     Self: Sized + Copy,
-    Self::Weight: 'static + BitScaler,
+    Self::Weight: BitScaler,
     Self::IndexIter: Iterator<Item = Self::Index>,
     Self::Index: Copy,
     Self::ChanCache: Cache<Self::InputValue>,
@@ -94,7 +113,7 @@ where
         &self,
         cache: &Self::Cache,
         chan_index: Self::InputIndex,
-        cur_value: Self::InputValue,
+        cur_value: &Self::InputValue,
     ) -> Self::ChanCache;
     /// loss of the model
     fn loss(&self, input: &I, class: usize) -> u64;
@@ -114,7 +133,8 @@ where
     ) -> Vec<(Self::Index, Self::Weight, i64)> {
         let null_loss = self.loss(input, class) as i64;
         <Self::Weight as BitScaler>::states()
-            .map(|w| {
+            .iter()
+            .map(|&w| {
                 Self::indices()
                     .map(|i| {
                         (
@@ -199,7 +219,7 @@ where
         + PackedIndexSGet<bool>
         + BMA<W>
         + WeightArray<W>,
-    W: 'static + BitScaler,
+    W: BitScaler,
     <S as Shape>::Index: Copy,
     [(W, u32, u32); C]: Default,
     [(u32, u32); C]: Default,
@@ -261,7 +281,7 @@ where
         &self,
         cache: &FcMSEcache<C>,
         chan_index: Self::InputIndex,
-        cur_value: bool,
+        &cur_value: &bool,
     ) -> FcMSEchanCache<W, C> {
         let mut target = <[(W, u32, u32); C]>::default();
         for c in 0..C {
@@ -359,7 +379,7 @@ impl<
         const C: usize,
     > Cache<bool> for FCchanCache<I, W, O, H, C>
 where
-    W: 'static + BitScaler,
+    W: BitScaler,
     O: Pack<(W, u32)> + BitPack<bool>,
     I: WeightArray<W>,
     I: BMA<W> + PackedIndexMap<bool> + PackedIndexSGet<bool> + PackedIndexSGet<W>,
@@ -383,7 +403,7 @@ where
         + PackedIndexSGet<W>
         + BMA<W>
         + PackedIndexSGet<bool>,
-    W: 'static + BitScaler,
+    W: BitScaler,
     H: Model<<O as BitPack<bool>>::T, C, Weight = W, InputIndex = O::Index, InputValue = bool>,
     O: Shape
         + Default
@@ -451,7 +471,7 @@ where
         &self,
         cache: &Self::Cache,
         chan_index: Self::InputIndex,
-        cur_value: bool,
+        &cur_value: &bool,
     ) -> Self::ChanCache {
         FCchanCache {
             input_shape: PhantomData::default(),
@@ -488,7 +508,7 @@ where
                 let input = O::get(&hidden, o);
                 let weight_array = O::index_get(&self.fc, o);
 
-                let chan_cache = self.tail.subtract_input(&cache, o, input);
+                let chan_cache = self.tail.subtract_input(&cache, o, &input);
                 let deltas = [chan_cache.loss_delta(&false), chan_cache.loss_delta(&true)];
 
                 <I as WeightArray<W>>::loss_deltas(&weight_array, &inputs, threshold, |act| {
@@ -564,7 +584,7 @@ where
             InputValue = <IS as PixelPack<bool>>::I,
         > + Copy,
     Standard: Distribution<<OPS as Pack<[[<IPS as BitPack<W>>::T; PY]; PX]>>::T>,
-    W: 'static + BitScaler + Copy,
+    W: BitScaler + Copy,
     <IPS as BitPack<bool>>::T: Copy,
     <IPS as BitPack<W>>::T: Copy,
     <OPS as Pack<[[<IPS as BitPack<W>>::T; PY]; PX]>>::T: Copy,
@@ -578,6 +598,9 @@ where
     OPS::Index: Copy,
     [[IPS; PY]; PX]: Copy,
     LayerIndex<(OPS::Index, <[[IPS; PY]; PX] as Shape>::Index), H::Index>: Copy,
+    <[[IPS; PY]; PX] as Shape>::Index: Copy,
+    [[<IPS as BitPack<bool>>::T; PY]; PX]: Default,
+    Self::Index: Copy,
 {
     type Index = LayerIndex<(OPS::Index, <[[IPS; PY]; PX] as Shape>::Index), H::Index>;
     type Weight = W;
@@ -633,7 +656,7 @@ where
         &self,
         cache: &ConvCache,
         chan_index: Self::InputIndex,
-        cur_value: Self::InputValue,
+        cur_value: &Self::InputValue,
     ) -> ConvChanCache<IS> {
         ConvChanCache {
             image_shape: PhantomData::default(),
@@ -648,6 +671,8 @@ where
         threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, Self::Weight, i64)> {
+        let states = W::states();
+        let patch_indices: Vec<_> = <[[IPS; PY]; PX]>::indices().collect();
         // acts if we do nothing
         let null_acts = self.apply(input);
         // init the base cache
@@ -661,12 +686,13 @@ where
                         OPS::get(&pixel, o)
                     });
                 // and subtract it from the cache
-                let chan_cache = self.tail.subtract_input(&cache, o, null_chan_acts);
-                // also extract the ouptut channel of the weights.
+                let chan_cache = self.tail.subtract_input(&cache, o, &null_chan_acts);
+                // also extract the output channel of the weights.
                 let weights_channel = OPS::index_get(&self.kernel, o);
                 // For each state of the weights,
-                W::states()
-                    .map(|w| {
+                states
+                    .iter()
+                    .map(|&w| {
                         // for each output pixel input,
                         let chan_acts = <IS as Conv<
                             <IPS as BitPack<bool>>::T,
@@ -678,8 +704,9 @@ where
                             <[[IPS; PY]; PX] as WeightArray<W>>::acts(weights_channel, &patch, w)
                         });
                         // and for each input channel,
-                        <[[IPS; PY]; PX]>::indices()
-                            .map(|i| {
+                        patch_indices
+                            .iter()
+                            .filter_map(|&i| {
                                 // extract the activation pixels
                                 let mut_weight_acts = <IS as PixelMap<
                                     <[[IPS; PY]; PX] as BitPack<bool>>::T,
@@ -688,11 +715,15 @@ where
                                     &chan_acts,
                                     |pixel| <[[IPS; PY]; PX]>::get(&pixel, i),
                                 );
-                                // and pass to the chan cache to get loss delta.
+                                // and compute the loss delta for that output
                                 let loss_delta = chan_cache.loss_delta(&mut_weight_acts);
-                                (LayerIndex::Head((o, i)), w, loss_delta)
+                                //let loss_delta = 1_i64;
+                                if loss_delta.abs() as u64 > threshold {
+                                    Some((LayerIndex::Head((o, i)), w, loss_delta))
+                                } else {
+                                    None
+                                }
                             })
-                            .filter(|(_, _, l)| l.abs() as u64 > threshold)
                             .collect::<Vec<_>>()
                     })
                     .flatten()
@@ -853,14 +884,14 @@ where
         &self,
         cache: &Self::Cache,
         chan_index: Self::InputIndex,
-        _: Self::InputValue,
+        _: &Self::InputValue,
     ) -> Self::ChanCache {
         GlobalAvgPoolChanCache {
             threshold: cache.threshold,
             tail_chan_cache: self.tail.subtract_input(
                 &cache.tail_cache,
                 chan_index,
-                P::get(&cache.acts, chan_index),
+                &P::get(&cache.acts, chan_index),
             ),
             weight_type: PhantomData::default(),
             image_shape: PhantomData::default(),
@@ -938,7 +969,7 @@ mod tests {
                             >>::map(&input, |pixel| {
                                 <$input_pixel_shape>::get(pixel, i)
                             });
-                            let chan_cache = weights.subtract_input(&cache, i, null_chan);
+                            let chan_cache = weights.subtract_input(&cache, i, &null_chan);
                             for c in 0..$n_chan_iters {
                                 let new_channel: [[bool; $input_y]; $input_x] = rng.gen();
                                 let loss_delta = chan_cache.loss_delta(&new_channel);
@@ -1002,7 +1033,7 @@ mod tests {
                         let cache = weights.cache(&inputs, class);
                         for i in <$input_shape as Shape>::indices() {
                             let chan_cache =
-                                weights.subtract_input(&cache, i, <$input_shape>::get(&inputs, i));
+                                weights.subtract_input(&cache, i, &<$input_shape>::get(&inputs, i));
                             for sign in &[false, true] {
                                 let loss_delta = chan_cache.loss_delta(sign);
                                 let true_loss =

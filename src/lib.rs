@@ -10,3 +10,4 @@ pub mod descend;
 pub mod image2d;
 pub mod layers;
 pub mod shape;
+pub mod unary;
