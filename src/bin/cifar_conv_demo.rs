@@ -12,7 +12,7 @@ use std::iter;
 use std::path::PathBuf;
 use std::time::Instant;
 
-const N_EXAMPLES: usize = 50_00;
+const N_EXAMPLES: usize = 50_0;
 
 type WeightType = bool;
 //type WeightType = Option<bool>;
@@ -26,6 +26,7 @@ type ConvPoolFcMSEModel = Conv2D<
     HiddenShape,
     WeightType,
     GlobalAvgPool<[[(); 32]; 32], HiddenShape, FcMSE<HiddenShape, WeightType, 10>, 3, 3>,
+    1,
     3,
     3,
     10,
@@ -59,7 +60,7 @@ fn main() {
         .par_iter()
         .map(|(image, class)| {
             (
-                <[[(); 32]; 32] as PixelMap<[u8; 3], b32>>::map(image, |pixel| {
+                <[[(); 32]; 32] as PixelMap<[u8; 3], b32>>::map(image, |&pixel| {
                     unary::u8x3_to_b32(pixel)
                 }),
                 *class,
@@ -71,7 +72,7 @@ fn main() {
         .par_iter()
         .map(|(image, class)| {
             (
-                <[[(); 32]; 32] as PixelMap<[u8; 3], b32>>::map(image, |pixel| {
+                <[[(); 32]; 32] as PixelMap<[u8; 3], b32>>::map(image, |&pixel| {
                     unary::u8x3_to_b32(pixel)
                 }),
                 *class,
@@ -81,42 +82,42 @@ fn main() {
 
     let threshold = 0;
     let trunc = 10_000;
-    let updates = 7;
-    let max_minibatch_size = 1000;
+    let updates = 5;
+    let max_minibatch_size = 128;
     let scale = (1, 2);
     let n_epochs = 1;
 
     println!("| n epochs | n updates | threshold | max | scale | truncation | updates | train acc | test acc | train time |");
     println!("| - | - | - | - | - | - | - | - | - | - | - |");
 
-    for &max_minibatch_size in &[128, 256, 512, 1024, 2048] {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-        let model = <ConvPoolFcMSEModel as Model<InputType, 10>>::rand(&mut rng);
-        let start = Instant::now();
+    //for &max_minibatch_size in &[128, 256, 512, 1024, 2048] {
+    let mut rng = Hc128Rng::seed_from_u64(0);
+    let model = <ConvPoolFcMSEModel as Model<InputType, 10>>::rand(&mut rng);
+    let start = Instant::now();
 
-        let (model, min_minibatch, n_updates) = model.train_n_epochs(
-            &unary_train_examples,
-            threshold,
-            trunc,
-            updates,
-            n_epochs,
-            max_minibatch_size,
-            scale,
-        );
+    let (model, min_minibatch, n_updates) = model.train_n_epochs(
+        &unary_train_examples,
+        threshold,
+        trunc,
+        updates,
+        n_epochs,
+        max_minibatch_size,
+        scale,
+    );
 
-        println!(
-            "| {} | {} | {} | {} | {}/{} | {} | {} | {:.3}% | {:.3}% | {:?} |",
-            n_epochs,
-            n_updates,
-            threshold,
-            max_minibatch_size,
-            scale.0,
-            scale.1,
-            trunc,
-            updates,
-            model.avg_acc(&unary_train_examples) * 100f64,
-            model.avg_acc(&unary_test_examples) * 100f64,
-            start.elapsed()
-        );
-    }
+    println!(
+        "| {} | {} | {} | {} | {}/{} | {} | {} | {:.3}% | {:.3}% | {:?} |",
+        n_epochs,
+        n_updates,
+        threshold,
+        max_minibatch_size,
+        scale.0,
+        scale.1,
+        trunc,
+        updates,
+        model.avg_acc(&unary_train_examples) * 100f64,
+        model.avg_acc(&unary_test_examples) * 100f64,
+        start.elapsed()
+    );
+    //}
 }

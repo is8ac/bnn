@@ -1,11 +1,8 @@
 use crate::bits::GetBit;
 use crate::layers::{IndexDepth, Model};
-use rand::seq::SliceRandom;
-use rand::Rng;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::time::Instant;
 
 pub trait Descend<I, const C: usize>
 where
@@ -123,6 +120,7 @@ where
             .take(n_updates)
             .collect()
     }
+    /// This runs in time exponential with candidate_mutations.len()
     fn evaluate_update_combinations(
         &self,
         examples: &[(I, usize)],
@@ -143,11 +141,10 @@ where
                                 .iter()
                                 .enumerate()
                                 .filter(|&(mask_index, _)| set_index.bit(mask_index))
-                                .fold(*self, |model, (mask_index, &(index, weight))| {
+                                .fold(*self, |model, (_, &(index, weight))| {
                                     model.mutate(index, weight)
                                 });
-                            let new_loss = new_model.loss(image, *class);
-                            new_loss as i64 - null_loss
+                            sum + (new_model.loss(image, *class) as i64 - null_loss)
                         })
                         .collect()
                 },

@@ -144,6 +144,60 @@ where
     }
 }
 
+pub trait IndexMap<O, W: Shape>
+where
+    Self: Shape + Sized + Pack<O>,
+    W: Pack<Self>,
+    <W as Pack<Self>>::T: Shape,
+{
+    fn index_map<F: Fn(<<W as Pack<Self>>::T as Shape>::Index) -> O>(
+        outer_index: W::Index,
+        map_fn: F,
+    ) -> <Self as Pack<O>>::T;
+}
+
+impl<O, W> IndexMap<O, W> for ()
+where
+    W: Shape + Pack<(), T = W>,
+{
+    fn index_map<F: Fn(W::Index) -> O>(outer_index: W::Index, map_fn: F) -> O {
+        map_fn(outer_index)
+    }
+}
+
+/*
+impl<
+        O: Element<S>,
+        W: Shape,
+        S: Shape + IndexMap<O, <[(); L] as Element<W>>::Array>,
+        const L: usize,
+    > IndexMap<O, W> for [S; L]
+where
+    [S; L]: Element<W, Array = <S as Element<<[(); L] as Element<W>>::Array>>::Array>,
+    <[S; L] as Element<W>>::Array: Shape,
+    [(); L]: Element<W>,
+    <[(); L] as Element<W>>::Array: Shape,
+    <S as Element<<[(); L] as Element<W>>::Array>>::Array: Shape,
+    [<O as Element<S>>::Array; L]: Default,
+    (u8, ()): Wrap<W::Index, Wrapped = <<[(); L] as Element<W>>::Array as Shape>::Index>,
+    W::Index: Copy,
+{
+    fn index_map<F: Fn(<<[S; L] as Element<W>>::Array as Shape>::Index) -> O>(
+        outer_index: W::Index,
+        map_fn: F,
+    ) -> [<O as Element<S>>::Array; L] {
+        let mut target = <[<O as Element<S>>::Array; L]>::default();
+        for i in 0..L {
+            target[i] = <S as IndexMap<O, <[(); L] as Element<W>>::Array>>::index_map(
+                (i as u8, ()).wrap(outer_index),
+                &map_fn,
+            );
+        }
+        target
+    }
+}
+*/
+
 pub trait IndexGet<E>
 where
     Self: Shape + Pack<E>,

@@ -5,12 +5,9 @@ use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::hash::{Hash, Hasher};
 use std::iter;
 use std::num::Wrapping;
 use std::ops;
-use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
-use std::slice;
 
 pub trait BitPack<E> {
     type Word;

@@ -94,9 +94,8 @@ pub mod cifar {
 
         let mut image_bytes: [u8; 1024 * 3] = [0; 1024 * 3];
         let mut label: [u8; 1] = [0; 1];
-        let mut images: Vec<([[[u8; 3]; 32]; 32], usize)> = Vec::new();
         (0..n)
-            .map(|i| {
+            .map(|_| {
                 file.read_exact(&mut label).expect("can't read label");
                 file.read_exact(&mut image_bytes)
                     .expect("can't read images");
