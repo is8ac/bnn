@@ -1,4 +1,6 @@
-pub trait ImageShape {}
+pub trait ImageShape {
+    fn dims() -> (usize, usize);
+}
 
 pub struct Iter2D {
     max_x: usize,
@@ -41,7 +43,11 @@ impl Iterator for Iter2D {
     }
 }
 
-impl<const X: usize, const Y: usize> ImageShape for [[(); Y]; X] {}
+impl<const X: usize, const Y: usize> ImageShape for [[(); Y]; X] {
+    fn dims() -> (usize, usize) {
+        (X, Y)
+    }
+}
 
 pub trait PixelIndexSGet<I>
 where
@@ -76,7 +82,7 @@ impl<P: Sized, const X: usize, const Y: usize> PixelPack<P> for [[(); Y]; X] {
     type I = [[P; Y]; X];
 }
 
-pub trait PixelMap<I, O>
+pub trait PixelMap<I, O, const PX: usize, const PY: usize>
 where
     Self: PixelPack<I> + PixelPack<O>,
 {
@@ -86,23 +92,24 @@ where
     ) -> <Self as PixelPack<O>>::I;
 }
 
-impl<I, O, const X: usize, const Y: usize> PixelMap<I, O> for [[(); Y]; X]
+impl<I, O, const PX: usize, const PY: usize, const X: usize, const Y: usize> PixelMap<I, O, PX, PY>
+    for [[(); Y]; X]
 where
     [[(); Y]; X]: ImageShape,
     [[O; Y]; X]: Default,
 {
     fn map<F: Fn(&I) -> O>(input: &[[I; Y]; X], map_fn: F) -> [[O; Y]; X] {
         let mut target = <[[O; Y]; X]>::default();
-        for x in 0..X {
-            for y in 0..Y {
-                target[x][y] = map_fn(&input[x][y]);
+        for x in 0..(X - (PX / 2) * 2) {
+            for y in 0..(X - (PY / 2) * 2) {
+                target[x + PX / 2][y + PY / 2] = map_fn(&input[x + PX / 2][y + PY / 2]);
             }
         }
         target
     }
 }
 
-pub trait PixelZipMap<A, B, O>
+pub trait PixelZipMap<A, B, O, const PX: usize, const PY: usize>
 where
     Self: PixelPack<A> + PixelPack<B> + PixelPack<O>,
 {
@@ -113,16 +120,18 @@ where
     ) -> <Self as PixelPack<O>>::I;
 }
 
-impl<A: Copy, B: Copy, O, const X: usize, const Y: usize> PixelZipMap<A, B, O> for [[(); Y]; X]
+impl<A: Copy, B: Copy, O, const PX: usize, const PY: usize, const X: usize, const Y: usize>
+    PixelZipMap<A, B, O, PX, PY> for [[(); Y]; X]
 where
     [[(); Y]; X]: ImageShape,
     [[O; Y]; X]: Default,
 {
     fn zip_map<F: Fn(A, B) -> O>(a: &[[A; Y]; X], b: &[[B; Y]; X], map_fn: F) -> [[O; Y]; X] {
         let mut target = <[[O; Y]; X]>::default();
-        for x in 0..X {
-            for y in 0..Y {
-                target[x][y] = map_fn(a[x][y], b[x][y]);
+        for x in 0..(X - (PX / 2) * 2) {
+            for y in 0..(X - (PY / 2) * 2) {
+                target[x + PX / 2][y + PY / 2] =
+                    map_fn(a[x + PX / 2][y + PY / 2], b[x + PX / 2][y + PY / 2]);
             }
         }
         target
@@ -143,6 +152,145 @@ impl<P: Copy, B, const X: usize, const Y: usize, const PX: usize, const PY: usiz
         for x in 0..(X - (PX / 2) * 2) {
             for y in 0..(X - (PY / 2) * 2) {
                 acc = fold_fn(acc, &input[x + PX / 2][y + PY / 2]);
+            }
+        }
+        acc
+    }
+}
+
+pub trait SegmentedPixelFold<
+    B,
+    P,
+    const SX: usize,
+    const SY: usize,
+    const PX: usize,
+    const PY: usize,
+> where
+    Self: ImageShape + PixelPack<P>,
+{
+    fn seg_fold<F: Fn(B, &P) -> B>(
+        input: &<Self as PixelPack<P>>::I,
+        sx: usize,
+        sy: usize,
+        acc: B,
+        fold_fn: F,
+    ) -> B;
+    fn indexed_seg_fold<F: Fn(B, (usize, usize), &P) -> B>(
+        input: &<Self as PixelPack<P>>::I,
+        sx: usize,
+        sy: usize,
+        acc: B,
+        fold_fn: F,
+    ) -> B;
+}
+
+impl<
+        P: Copy,
+        B,
+        const X: usize,
+        const Y: usize,
+        const SX: usize,
+        const SY: usize,
+        const PX: usize,
+        const PY: usize,
+    > SegmentedPixelFold<B, P, SX, SY, PX, PY> for [[(); Y]; X]
+{
+    fn seg_fold<F: Fn(B, &P) -> B>(
+        input: &[[P; Y]; X],
+        sx: usize,
+        sy: usize,
+        mut acc: B,
+        fold_fn: F,
+    ) -> B {
+        assert!(sx < SX);
+        assert!(sy < SY);
+        let x_seg = (X - (PX / 2) * 2) / SX;
+        let y_seg = (Y - (PY / 2) * 2) / SY;
+        //dbg!((x_seg * sx, x_seg * (sx + 1)));
+        //dbg!((y_seg * sy, y_seg * (sy + 1)));
+        for x in x_seg * sx..x_seg * (sx + 1) {
+            for y in y_seg * sy..y_seg * (sy + 1) {
+                acc = fold_fn(acc, &input[x + PX / 2][y + PY / 2]);
+            }
+        }
+        acc
+    }
+    fn indexed_seg_fold<F: Fn(B, (usize, usize), &P) -> B>(
+        input: &[[P; Y]; X],
+        sx: usize,
+        sy: usize,
+        mut acc: B,
+        fold_fn: F,
+    ) -> B {
+        assert!(sx < SX);
+        assert!(sy < SY);
+        let x_seg = (X - (PX / 2) * 2) / SX;
+        let y_seg = (Y - (PY / 2) * 2) / SY;
+        for x in x_seg * sx..x_seg * (sx + 1) {
+            for y in y_seg * sy..y_seg * (sy + 1) {
+                acc = fold_fn(
+                    acc,
+                    (x + PX / 2, y + PY / 2),
+                    &input[x + PX / 2][y + PY / 2],
+                );
+            }
+        }
+        acc
+    }
+}
+
+pub trait SegmentedConvFold<
+    B,
+    P,
+    const SX: usize,
+    const SY: usize,
+    const PX: usize,
+    const PY: usize,
+> where
+    Self: ImageShape + PixelPack<P>,
+{
+    fn seg_conv_fold<F: Fn(B, [[P; PY]; PX]) -> B>(
+        input: &<Self as PixelPack<P>>::I,
+        sx: usize,
+        sy: usize,
+        acc: B,
+        fold_fn: F,
+    ) -> B;
+}
+
+impl<
+        P: Copy,
+        B,
+        const X: usize,
+        const Y: usize,
+        const SX: usize,
+        const SY: usize,
+        const PX: usize,
+        const PY: usize,
+    > SegmentedConvFold<B, P, SX, SY, PX, PY> for [[(); Y]; X]
+where
+    [[P; PY]; PX]: Default,
+{
+    fn seg_conv_fold<F: Fn(B, [[P; PY]; PX]) -> B>(
+        input: &[[P; Y]; X],
+        sx: usize,
+        sy: usize,
+        mut acc: B,
+        fold_fn: F,
+    ) -> B {
+        assert!(sx < SX);
+        assert!(sy < SY);
+        let x_seg = (X - (PX / 2) * 2) / SX;
+        let y_seg = (Y - (PY / 2) * 2) / SY;
+        for x in x_seg * sx..x_seg * (sx + 1) {
+            for y in y_seg * sy..y_seg * (sy + 1) {
+                let mut patch = <[[P; PY]; PX]>::default();
+                for px in 0..PX {
+                    for py in 0..PY {
+                        patch[px][py] = input[x + px][y + py];
+                    }
+                }
+                acc = fold_fn(acc, patch);
             }
         }
         acc

@@ -40,6 +40,7 @@ where
     }
 }
 
+/*
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Serialize, Deserialize)]
 pub struct bit(pub bool);
@@ -55,6 +56,7 @@ pub struct quat(pub (bool, bool));
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Serialize, Deserialize)]
 pub struct pent(pub Option<(bool, bool)>);
+*/
 
 pub trait BitScaler
 where
@@ -167,10 +169,10 @@ where
     fn act(weights: &<Self as BitPack<W>>::T, input: &<Self as BitPack<bool>>::T) -> bool {
         <Self as BMA<W>>::bma(weights, input) > <Self as WeightArray<W>>::THRESHOLD
     }
-    fn act_is_alive(weights: &<Self as BitPack<W>>::T, input: &<Self as BitPack<bool>>::T) -> bool {
-        let act = <Self as BMA<W>>::bma(weights, input);
-        ((act + W::RANGE) > <Self as WeightArray<W>>::THRESHOLD)
-            | ((<Self as WeightArray<W>>::THRESHOLD + W::RANGE) < act)
+    fn mutant_act(cur_sum: u32) -> Option<bool> {
+        let low = (cur_sum <= (<Self as WeightArray<W>>::THRESHOLD - (W::RANGE - 1)));
+        let high = (cur_sum >= (<Self as WeightArray<W>>::THRESHOLD + W::RANGE));
+        Some(high).filter(|_| high | low)
     }
     /// loss delta if we were to set each of the elements to each different value. Is permited to prune null deltas.
     fn loss_deltas<F: Fn(u32) -> i64>(
@@ -204,11 +206,20 @@ where
             .collect()
     }
     /// Acts if we were to set each element to value
+    fn acts_simple(
+        weights: &<Self as BitPack<W>>::T,
+        input: &<Self as BitPack<bool>>::T,
+        cur_sum: u32,
+        value: W,
+    ) -> <Self as BitPack<bool>>::T;
     fn acts(
         weights: &<Self as BitPack<W>>::T,
         input: &<Self as BitPack<bool>>::T,
         value: W,
-    ) -> <Self as BitPack<bool>>::T;
+    ) -> <Self as BitPack<bool>>::T {
+        let cur_sum = Self::bma(weights, input);
+        Self::acts_simple(weights, input, cur_sum, value)
+    }
     /// acts_slow does the same thing as grads, but it is a lot slower.
     fn acts_slow(
         &weights: &<Self as BitPack<W>>::T,
@@ -279,12 +290,12 @@ where
             vec![]
         }
     }
-    fn acts(
+    fn acts_simple(
         weights: &<S as BitPack<bool>>::T,
         input: &<S as BitPack<bool>>::T,
+        cur_act: u32,
         value: bool,
     ) -> <S as BitPack<bool>>::T {
-        let cur_act = S::bma(weights, input);
         if cur_act == <S as WeightArray<bool>>::THRESHOLD {
             // we need to go up by one to flip
             if value {
@@ -399,12 +410,12 @@ where
             vec![]
         }
     }
-    fn acts(
+    fn acts_simple(
         weights: &<S as BitPack<Option<bool>>>::T,
         input: &<S as BitPack<bool>>::T,
+        cur_act: u32,
         value: Option<bool>,
     ) -> <S as BitPack<bool>>::T {
-        let cur_act = S::bma(weights, input);
         let value_sign = value.unwrap_or(false);
         let value_mask = value.is_some();
 
@@ -637,6 +648,42 @@ pub trait IncrementCounters
 where
     Self: Shape + Sized + Pack<u32> + BitPack<bool>,
 {
+    fn some_option_counted_increment(
+        bits: &<Self as BitPack<bool>>::T,
+        mut counters: (usize, <Self as Pack<u32>>::T, u32),
+    ) -> (usize, <Self as Pack<u32>>::T, u32) {
+        counters.0 += 1;
+        Self::increment_in_place(bits, &mut counters.1);
+        counters
+    }
+    fn some_option_counted_increment_in_place(
+        bits: &<Self as BitPack<bool>>::T,
+        counters: &mut (usize, <Self as Pack<u32>>::T, u32),
+    ) {
+        counters.0 += 1;
+        Self::increment_in_place(bits, &mut counters.1);
+    }
+    fn none_option_counted_increment(
+        bit: bool,
+        mut counters: (usize, <Self as Pack<u32>>::T, u32),
+    ) -> (usize, <Self as Pack<u32>>::T, u32) {
+        counters.0 += 1;
+        counters.2 += bit as u32;
+        counters
+    }
+    fn none_option_counted_increment_in_place(
+        bit: bool,
+        counters: &mut (usize, <Self as Pack<u32>>::T, u32),
+    ) {
+        counters.0 += 1;
+        counters.2 += bit as u32;
+    }
+    fn finalize_option_counted_increment(
+        mut counters: (usize, <Self as Pack<u32>>::T, u32),
+    ) -> (usize, <Self as Pack<u32>>::T) {
+        Self::add_in_place(counters.2, &mut counters.1);
+        (counters.0, counters.1)
+    }
     fn counted_increment(
         bits: &<Self as BitPack<bool>>::T,
         counters: (usize, <Self as Pack<u32>>::T),
@@ -650,6 +697,7 @@ where
         Self::increment_in_place(bits, &mut counters);
         counters
     }
+    fn add_in_place(val: u32, counters: &mut <Self as Pack<u32>>::T);
     fn increment_in_place(bits: &<Self as BitPack<bool>>::T, counters: &mut <Self as Pack<u32>>::T);
 }
 
@@ -657,6 +705,11 @@ impl<S: IncrementCounters, const L: usize> IncrementCounters for [S; L]
 where
     S: Pack<u32> + BitPack<bool>,
 {
+    fn add_in_place(val: u32, counters: &mut <Self as Pack<u32>>::T) {
+        for i in 0..L {
+            S::add_in_place(val, &mut counters[i]);
+        }
+    }
     fn increment_in_place(
         bits: &[<S as BitPack<bool>>::T; L],
         counters: &mut [<S as Pack<u32>>::T; L],
@@ -942,6 +995,11 @@ macro_rules! for_uints {
         }
 
         impl IncrementCounters for [(); $len] {
+            fn add_in_place(val: u32, counters: &mut [u32; $len]) {
+                for i in 0..$len {
+                    counters[i] += val;
+                }
+            }
             fn increment_in_place(&bits: &$b_type, counters: &mut [u32; $len]) {
                 for i in 0..$len {
                     counters[i] += bits.get_bit(i) as u32;

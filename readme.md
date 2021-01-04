@@ -6,11 +6,6 @@ This project makes extensive use of const generics. You must therefore use rust 
 ```
 https://rustup.rs/
 ```
-Due to a [bug](https://github.com/rust-lang/rust/issues/73298), you must pin rustc versions
-```
-rustup default nightly-2020-05-15
-```
-
 
 To run:
 ```
@@ -20,8 +15,7 @@ where `mnist` is the path the MNIST dataset.
 If needed, download from http://yann.lecun.com/exdb/mnist/
 
 # Testing
-Until [78632](https://github.com/rust-lang/rust/issues/78632) is fixed, you cannot run the tests in the bits mod and layers mod at the same time.
-Comment out whichever one you don't need.
+Use `--release` to make tests run faster.
 
 # Literature
 ## Low precision neural nets
