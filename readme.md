@@ -2,6 +2,8 @@
 
 See description: https://www.isaacleonard.com/ml/distributed/
 
+The codebase is undergone significant code churn. Do not expect the `master` branch to necessarily compile.
+
 This project makes extensive use of const generics. You must therefore use rust nightly.
 ```
 https://rustup.rs/

@@ -1,6 +1,6 @@
 use crate::bits::{
-    BitPack, BitScaler, IncrementCounters, PackedIndexMap, PackedIndexSGet, PackedMap, WeightArray,
-    BMA,
+    BitPack, BitScaler, GetBit, IncrementCounters, PackedIndexMap, PackedIndexSGet, PackedMap,
+    WeightArray, BMA,
 };
 use crate::image2d::{
     Conv, ImageShape, PixelFold, PixelIndexSGet, PixelMap, PixelPack, PixelZipMap,
@@ -9,10 +9,10 @@ use crate::image2d::{
 use crate::shape::{IndexGet, Map, Pack, Shape, ZipMap};
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
+use rayon::prelude::*;
 use std::fmt;
 use std::iter;
 use std::marker::PhantomData;
-use std::time::Instant;
 
 pub struct NullIter<T> {
     item_type: PhantomData<T>,
@@ -60,7 +60,7 @@ where
                 self.next()
             }
         } else {
-            self.head_iter.next().map(|i| LayerIndex::Tail(i))
+            self.head_iter.next().map(LayerIndex::Tail)
         }
     }
 }
@@ -109,7 +109,7 @@ where
         self.head
             .next()
             .map(|h| LayerIndex::Head(h))
-            .or_else(|| self.tail.next().map(|t| LayerIndex::Tail(t)))
+            .or_else(|| self.tail.next().map(LayerIndex::Tail))
     }
 }
 
@@ -1489,10 +1489,10 @@ where
 
         SegmentedAvgPoolCache {
             tail: self.tail,
-            thresholds: thresholds,
-            acts: acts,
-            null_loss: null_loss,
-            class: class,
+            thresholds,
+            acts,
+            null_loss,
+            class,
         }
     }
     fn subtract_input(
@@ -1633,102 +1633,6 @@ where
                 )
             })
     }
-    fn conv_pool_acts_2(
-        &self,
-        input: &<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I,
-    ) -> [u32; C] {
-        let patches = <IS as Conv<
-            <IPS as BitPack<bool>>::T,
-            [[<IPS as BitPack<bool>>::T; PY]; PX],
-            PX,
-            PY,
-        >>::conv(input, |patch| patch);
-
-        let mut seg_acts = <[[<OPS as BitPack<bool>>::T; SY]; SX]>::default();
-        for sx in 0..SX {
-            for sy in 0..SY {
-                let (n, counts) = <IS as SegmentedPixelFold<
-                    (usize, <OPS as Pack<u32>>::T),
-                    [[<IPS as BitPack<bool>>::T; PY]; PX],
-                    SX,
-                    SY,
-                    PX,
-                    PY,
-                >>::seg_fold(
-                    &patches,
-                    sx,
-                    sy,
-                    <(usize, <OPS as Pack<u32>>::T)>::default(),
-                    |(n, acc), patch| {
-                        (
-                            n + 1,
-                            <OPS as ZipMap<u32, [[<IPS as BitPack<W>>::T; PY]; PX], u32>>::zip_map(
-                                &acc,
-                                &self.conv,
-                                |sum, weights| {
-                                    sum + (<[[IPS; PY]; PX] as WeightArray<W>>::act(
-                                        weights, &patch,
-                                    )) as u32
-                                },
-                            ),
-                        )
-                    },
-                );
-                let threshold = n as u32 / 2;
-                let acts = <OPS as PackedMap<u32, bool>>::map(&counts, |&sum| sum > threshold);
-                seg_acts[sx][sy] = acts;
-            }
-        }
-        <[(); C]>::map(&self.fc, |class_weights| {
-            <[[OPS; SY]; SX]>::bma(class_weights, &seg_acts)
-        })
-    }
-    fn conv_pool_seg_counts(
-        &self,
-        input: &<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I,
-    ) -> [[<OPS as Pack<u32>>::T; SY]; SX] {
-        let patches = <IS as Conv<
-            <IPS as BitPack<bool>>::T,
-            [[<IPS as BitPack<bool>>::T; PY]; PX],
-            PX,
-            PY,
-        >>::conv(input, |patch| patch);
-
-        let mut seg_sums = <[[<OPS as Pack<u32>>::T; SY]; SX]>::default();
-        for sx in 0..SX {
-            for sy in 0..SY {
-                let (n, counts) = <IS as SegmentedPixelFold<
-                    (usize, <OPS as Pack<u32>>::T),
-                    [[<IPS as BitPack<bool>>::T; PY]; PX],
-                    SX,
-                    SY,
-                    PX,
-                    PY,
-                >>::seg_fold(
-                    &patches,
-                    sx,
-                    sy,
-                    <(usize, <OPS as Pack<u32>>::T)>::default(),
-                    |(n, acc), patch| {
-                        (
-                            n + 1,
-                            <OPS as ZipMap<u32, [[<IPS as BitPack<W>>::T; PY]; PX], u32>>::zip_map(
-                                &acc,
-                                &self.conv,
-                                |sum, weights| {
-                                    sum + (<[[IPS; PY]; PX] as WeightArray<W>>::act(
-                                        weights, &patch,
-                                    )) as u32
-                                },
-                            ),
-                        )
-                    },
-                );
-                seg_sums[sx][sy] = counts;
-            }
-        }
-        seg_sums
-    }
     fn conv_pool_seg_acts(
         &self,
         input: &<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I,
@@ -1794,6 +1698,17 @@ impl<
     for FusedConvSegmentedAvgPoolFcMSE<IS, IPS, OPS, W, IMPL, SX, SY, PX, PY, C>
 where
     Self: Copy,
+    OPS::Index: Send + Sync,
+    OPS::IndexIter: Send + Sync,
+    IPS::Index: Send,
+    W: Send,
+    <[[OPS; SY]; SX] as Shape>::Index: Send,
+    <OPS as BitPack<W>>::T: Sync,
+    IS: Sync,
+    <OPS as BitPack<bool>>::T: Sync,
+    ((usize, <[[OPS; SY]; SX] as Shape>::Index), W, i64): Send + Sync,
+    <OPS as Pack<[[<IPS as BitPack<W>>::T; PY]; PX]>>::T: Sync,
+    <IS as PixelPack<<IPS as BitPack<bool>>::T>>::I: Sync,
     W: BitScaler + fmt::Debug + std::cmp::PartialEq,
     OPS: Shape
         + WeightArray<W>
@@ -1901,8 +1816,17 @@ where
             PY,
         > + SegmentedConvFold<(usize, <OPS as Pack<u32>>::T), <IPS as BitPack<bool>>::T, SX, SY, PX, PY>,
     OPS::Index: fmt::Debug,
+    Box<
+        <IS as PixelPack<(
+            [[<IPS as BitPack<bool>>::T; PY]; PX],
+            u32,
+            std::option::Option<bool>,
+            bool,
+        )>>::I,
+    >: Default,
     [(); C]: Pack<u32, T = [u32; C]>
         + Pack<W, T = [W; C]>
+        + Map<W, u32>
         + Map<u32, u32>
         + Map<[[<OPS as BitPack<W>>::T; SY]; SX], W>
         + Map<[[<OPS as BitPack<W>>::T; SY]; SX], [[W; SY]; SX]>
@@ -1940,6 +1864,7 @@ where
         + Pack<W, T = [[W; SY]; SX]>,
     [[<IPS as Pack<[u32; C]>>::T; PY]; PX]: Default + fmt::Debug,
     [[<OPS as Pack<u32>>::T; SY]; SX]: Default,
+    [[IPS; PY]; PX]: PackedMap<u32, bool>,
     <IPS as Pack<[u32; C]>>::T: Default,
     <IPS as Pack<u32>>::T: Default + fmt::Debug,
     <OPS as Pack<u32>>::T: Default + fmt::Debug,
@@ -2033,7 +1958,7 @@ where
     /// loss of the model
     fn loss(&self, input: &<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I, class: usize) -> u64 {
         let class_acts = self.fused_conv_pool_acts(input);
-        let loss: u64 = class_acts
+        class_acts
             .iter()
             .enumerate()
             .map(|(c, &act)| {
@@ -2041,8 +1966,7 @@ where
                 let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
                 (dist as u64).pow(2)
             })
-            .sum();
-        loss
+            .sum()
     }
     /// loss deltas for all mutations of all weights.
     fn loss_deltas(
@@ -2052,7 +1976,7 @@ where
         class: usize,
     ) -> Vec<(Self::Index, Self::Weight, i64)> {
         match IMPL {
-            3 => {
+            5 => {
                 let chan_acts = <IS as Conv<
                     <IPS as BitPack<bool>>::T,
                     <[[IPS; PY]; PX] as BitPack<bool>>::T,
@@ -2123,12 +2047,11 @@ where
                             .collect::<Vec<_>>()
                     })
                     .flatten()
-                    //.chain(fc_layer.loss_deltas(&null_seg_acts, threshold, class).iter().map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)))
+                    .chain(fc_layer.loss_deltas(&null_seg_acts, threshold, class).iter().map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)))
                     .filter(|(_, _, l)| l.abs() as u64 > threshold)
                     .collect()
             }
-            5 => {
-                let global_init_start = Instant::now();
+            6 => {
                 let null_class_acts = self.fused_conv_pool_acts(input);
                 let null_seg_acts = self.conv_pool_seg_acts(input);
                 let fc_layer: FcMSE<[[OPS; SY]; SX], W, C> = FcMSE { fc: self.fc };
@@ -2144,13 +2067,9 @@ where
                     })
                     .sum();
 
-                dbg!(global_init_start.elapsed());
                 // for each output channel
                 OPS::indices()
                     .map(|o| {
-                        let chan_start = Instant::now();
-                        let chan_init_start = Instant::now();
-
                         // extract the channel of the weights.
                         let weights_channel = OPS::index_get(&self.conv, o);
                         // extract the patches and bma of the input
@@ -2203,111 +2122,541 @@ where
                             }
                             ranges
                         };
-                        //dbg!(&seg_states);
-                        //dbg!(chan_init_start.elapsed());
+                        let all_segs_dead = seg_states.iter().flatten().find(|x| x.is_none()).is_none();
 
-                        //let outer_w_start = Instant::now();
-                        // for each weight
-                        let foo = W::states()
-                            .iter()
-                            .map(|&w| {
-                                let w_start = Instant::now();
+                        if all_segs_dead {
+                            vec![]
+                        } else {
+                            // for each weight
+                            W::states()
+                                .iter()
+                                .map(|&w| {
+                                    let patch_class_acts: [[<IPS as Pack<[u32; C]>>::T; PY]; PX] =
+                                        (0..SX)
+                                            .map(|sx| iter::repeat(sx).zip(0..SY))
+                                            .flatten()
+                                            .fold(<[[<IPS as Pack<[u32; C]>>::T; PY]; PX]>::default(), |class_acts, (sx, sy)| {
+                                                let fc_weights: [W; C] =
+                                                    <[(); C] as Map<[[<OPS as BitPack<W>>::T; SY]; SX], W>>::map(&self.fc, |class_weights| <OPS as PackedIndexSGet<W>>::get(&class_weights[sx][sy], o));
 
-                                let acts_start = Instant::now();
-                                let patch_class_acts: [[<IPS as Pack<[u32; C]>>::T; PY]; PX] =
-                                    (0..SX)
-                                        .map(|sx| iter::repeat(sx).zip(0..SY))
-                                        .flatten()
-                                        .fold(<[[<IPS as Pack<[u32; C]>>::T; PY]; PX]>::default(), |class_acts, (sx, sy)| {
-                                            let seg_start = Instant::now();
-                                            let fc_weights: [W; C] =
-                                                <[(); C] as Map<[[<OPS as BitPack<W>>::T; SY]; SX], W>>::map(&self.fc, |class_weights| <OPS as PackedIndexSGet<W>>::get(&class_weights[sx][sy], o));
+                                                if let Some(act) = seg_states[sx][sy] {
+                                                    <[[IPS; PY]; PX] as Map<[u32; C], [u32; C]>>::map(&class_acts, |class_acts| {
+                                                        <[(); C] as ZipMap<u32, W, u32>>::zip_map(&class_acts, &fc_weights, |sum, class_weight| sum + class_weight.bma(act))
+                                                    })
+                                                } else {
+                                                    let counts = <IS as SegmentedPixelFold<
+                                                        (usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32),
+                                                        ([[<IPS as BitPack<bool>>::T; PY]; PX], u32, Option<bool>, bool),
+                                                        SX,
+                                                        SY,
+                                                        PX,
+                                                        PY,
+                                                    >>::seg_fold(
+                                                        &patches,
+                                                        sx,
+                                                        sy,
+                                                        <(usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32)>::default(),
+                                                        |mut acc, (patch, cur_sum, state, _)| {
+                                                            if let Some(act) = state {
+                                                                <[[IPS; PY]; PX]>::none_option_counted_increment_in_place(*act, &mut acc);
+                                                            } else {
+                                                                let acts = <[[IPS; PY]; PX]>::acts_simple(weights_channel, patch, *cur_sum, w);
+                                                                <[[IPS; PY]; PX]>::some_option_counted_increment_in_place(&acts, &mut acc);
+                                                            }
+                                                            acc
+                                                        },
+                                                    );
+                                                    let (n, seg_counts) = <[[IPS; PY]; PX]>::finalize_option_counted_increment(counts);
+                                                    let threshold = n as u32 / 2;
 
-                                            let foo = if let Some(act) = seg_states[sx][sy] {
-                                                //dbg!("some");
-                                                let some_start = Instant::now();
-                                                let foo = <[[IPS; PY]; PX] as Map<[u32; C], [u32; C]>>::map(&class_acts, |class_acts| {
-                                                    <[(); C] as ZipMap<u32, W, u32>>::zip_map(&class_acts, &fc_weights, |sum, class_weight| sum + class_weight.bma(act))
-                                                });
-                                                dbg!(some_start.elapsed());
-                                                foo
+                                                    <[[IPS; PY]; PX] as ZipMap<[u32; C], u32, [u32; C]>>::zip_map(&class_acts, &seg_counts, |class_acts, &count| {
+                                                        let act = count > threshold;
+                                                        <[(); C] as ZipMap<u32, W, u32>>::zip_map(&class_acts, &fc_weights, |sum, class_weight| sum + class_weight.bma(act))
+                                                    })
+                                                }
+                                            });
+                                    <[[IPS; PY]; PX] as Shape>::indices()
+                                        .map(|i| {
+                                            let mut_loss = <[[IPS; PY]; PX] as IndexGet<[u32; C]>>::index_get(&patch_class_acts, i)
+                                                .iter()
+                                                .zip(target_acts.iter())
+                                                .zip(else_class_acts.iter())
+                                                .map(|((&act, &target_act), else_class_act)| {
+                                                    let act = act + else_class_act;
+                                                    let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
+                                                    (dist as u64).pow(2)
+                                                })
+                                                .sum::<u64>();
+                                            let index = LayerIndex::Head((o, i));
+                                            let loss_delta = mut_loss as i64 - null_loss as i64;
+                                            (index, w, loss_delta)
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .flatten()
+                                .collect::<Vec<_>>()
+                        }
+                    })
+                    .flatten()
+                    .chain(fc_layer.loss_deltas(&null_seg_acts, threshold, class).iter().map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)))
+                    .filter(|(_, _, l)| l.abs() as u64 > threshold)
+                    .collect()
+            }
+            7 => {
+                let null_class_acts = self.fused_conv_pool_acts(input);
+                let null_seg_acts = self.conv_pool_seg_acts(input);
+                let fc_layer: FcMSE<[[OPS; SY]; SX], W, C> = FcMSE { fc: self.fc };
+                let target_acts: Vec<u32> = (0..C)
+                    .map(|c| (c == class) as u32 * <[[OPS; SY]; SX] as WeightArray<W>>::MAX)
+                    .collect();
+                let null_loss: u64 = null_class_acts
+                    .iter()
+                    .zip(target_acts.iter())
+                    .map(|(&act, &target_act)| {
+                        let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
+                        (dist as u64).pow(2)
+                    })
+                    .sum();
+
+                // for each output channel
+                OPS::indices()
+                    .map(|o| {
+                        // extract the channel of the weights.
+                        let weights_channel = OPS::index_get(&self.conv, o);
+                        // extract the patches and bma of the input
+                        let patches = <IS as Conv<<IPS as BitPack<bool>>::T, ([[<IPS as BitPack<bool>>::T; PY]; PX], u32, Option<bool>, bool), PX, PY>>::conv(input, |patch| {
+                            let sum = <[[IPS; PY]; PX] as BMA<W>>::bma(weights_channel, &patch);
+                            let sign = sum > <[[IPS; PY]; PX] as WeightArray<W>>::THRESHOLD;
+                            let state = <[[IPS; PY]; PX] as WeightArray<W>>::mutant_act(sum);
+                            (patch, sum, state, sign)
+                        });
+                        let seg_states: Vec<((usize, usize), [W; C], Option<bool>)> = (0..SX)
+                            .map(|sx| iter::repeat(sx).zip(0..SY))
+                            .flatten()
+                            .map(|(sx, sy)| {
+                                let (n, min, max) = <IS as SegmentedPixelFold<(usize, u32, u32), ([[<IPS as BitPack<bool>>::T; PY]; PX], u32, Option<bool>, bool), SX, SY, PX, PY>>::seg_fold(
+                                    &patches,
+                                    sx,
+                                    sy,
+                                    <(usize, u32, u32)>::default(),
+                                    |(n, min, max), (_, _, state, _)| {
+                                        if let Some(sign) = state {
+                                            if *sign {
+                                                (n + 1, min + 1, max + 1)
                                             } else {
-                                                //dbg!("none");
-                                                //let counts_start = Instant::now();
-                                                let counts = <IS as SegmentedPixelFold<
-                                                    (usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32),
-                                                    ([[<IPS as BitPack<bool>>::T; PY]; PX], u32, Option<bool>, bool),
-                                                    SX,
-                                                    SY,
-                                                    PX,
-                                                    PY,
-                                                >>::seg_fold(
-                                                    &patches,
-                                                    sx,
-                                                    sy,
-                                                    <(usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32)>::default(),
-                                                    |mut acc, (patch, cur_sum, state, null_sign)| {
-                                                        if let Some(act) = state {
-                                                            <[[IPS; PY]; PX]>::none_option_counted_increment_in_place(*act, &mut acc);
-                                                        } else {
-                                                            let acts = <[[IPS; PY]; PX]>::acts_simple(weights_channel, patch, *cur_sum, w);
-                                                            <[[IPS; PY]; PX]>::some_option_counted_increment_in_place(&acts, &mut acc);
-                                                        }
-                                                        acc
-                                                    },
-                                                );
-                                                //dbg!(counts_start.elapsed());
-                                                let (n, seg_counts) = <[[IPS; PY]; PX]>::finalize_option_counted_increment(counts);
-                                                //dbg!(&seg_counts);
-                                                let threshold = n as u32 / 2;
+                                                (n + 1, min, max)
+                                            }
+                                        } else {
+                                            (n + 1, min, max + 1)
+                                        }
+                                    },
+                                );
+                                let threshold = n as u32 / 2;
+                                let state = Some(max > threshold).filter(|_| (min > threshold) | (max <= threshold));
+                                let fc_class_weights: [W; C] =
+                                    <[(); C] as Map<[[<OPS as BitPack<W>>::T; SY]; SX], W>>::map(&self.fc, |class_weights| <OPS as PackedIndexSGet<W>>::get(&class_weights[sx][sy], o));
+                                ((sx, sy), fc_class_weights, state)
+                            })
+                            .collect();
 
-                                                let class_act_start = Instant::now();
-                                                let foo = <[[IPS; PY]; PX] as ZipMap<[u32; C], u32, [u32; C]>>::zip_map(&class_acts, &seg_counts, |class_acts, &count| {
-                                                    let act = count > threshold;
-                                                    //dbg!(&act);
-                                                    <[(); C] as ZipMap<u32, W, u32>>::zip_map(&class_acts, &fc_weights, |sum, class_weight| sum + class_weight.bma(act))
-                                                });
-                                                dbg!(class_act_start.elapsed());
-                                                //dbg!(acts_start.elapsed());
-                                                foo
-                                            };
-                                            //dbg!(seg_start.elapsed());
-                                            foo
-                                        });
-                                //dbg!(acts_start.elapsed());
+                        let n_live = seg_states.iter().filter(|(_, _, state)| state.is_none()).count();
+                        if n_live == 0 {
+                            vec![]
+                        } else {
+                            let dead_class_acts: [u32; C] = seg_states.iter().fold(null_class_acts, |class_acts, &((sx, sy), _, state)| {
+                                let act = <OPS as PackedIndexSGet<bool>>::get(&null_seg_acts[sx][sy], o);
+                                if let Some(act) = state {
+                                    class_acts
+                                } else {
+                                    <[(); C] as ZipMap<u32, [[<OPS as BitPack<W>>::T; SY]; SX], u32>>::zip_map(&class_acts, &self.fc, |sum, weights| {
+                                        sum - <OPS as PackedIndexSGet<W>>::get(&weights[sx][sy], o).bma(act)
+                                    })
+                                }
+                            });
 
-                                //let deltas_start = Instant::now();
-                                let deltas = <[[IPS; PY]; PX] as Shape>::indices()
+                            if n_live == 1 {
+                                let ((sx, sy), class_weights, _) = seg_states.iter().find(|(_, _, state)| state.is_none()).unwrap();
+                                let null_seg_act = <OPS as PackedIndexSGet<bool>>::get(&null_seg_acts[*sx][*sy], o);
+                                let loss_delta: i64 = <[(); C] as ZipMap<u32, W, u32>>::zip_map(&dead_class_acts, &class_weights, |sum, w| sum + w.bma(!null_seg_act))
+                                    .iter()
+                                    .zip(target_acts.iter())
+                                    .map(|(&act, &target_act)| {
+                                        let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
+                                        (dist as u64).pow(2)
+                                    })
+                                    .sum::<u64>() as i64
+                                    - null_loss as i64;
+
+                                // for each weight
+                                W::states()
+                                    .iter()
+                                    .map(|&w: &W| {
+                                        let counts = <IS as SegmentedPixelFold<
+                                            (usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32),
+                                            ([[<IPS as BitPack<bool>>::T; PY]; PX], u32, Option<bool>, bool),
+                                            SX,
+                                            SY,
+                                            PX,
+                                            PY,
+                                        >>::seg_fold(
+                                            &patches,
+                                            *sx,
+                                            *sy,
+                                            <(usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32)>::default(),
+                                            |mut acc, (patch, cur_sum, state, _)| {
+                                                if let Some(act) = state {
+                                                    <[[IPS; PY]; PX]>::none_option_counted_increment_in_place(*act, &mut acc);
+                                                } else {
+                                                    let acts = <[[IPS; PY]; PX]>::acts_simple(weights_channel, patch, *cur_sum, w);
+                                                    <[[IPS; PY]; PX]>::some_option_counted_increment_in_place(&acts, &mut acc);
+                                                }
+                                                acc
+                                            },
+                                        );
+                                        let (n, seg_counts) = <[[IPS; PY]; PX]>::finalize_option_counted_increment(counts);
+                                        let threshold = n as u32 / 2;
+                                        let seg_acts = <[[IPS; PY]; PX] as PackedMap<u32, bool>>::map(&seg_counts, |&count| count > threshold);
+
+                                        <[[IPS; PY]; PX] as Shape>::indices()
+                                            .filter_map(|i| {
+                                                if <[[IPS; PY]; PX] as PackedIndexSGet<W>>::get(&weights_channel, i) == w {
+                                                    None
+                                                } else {
+                                                    let act = <[[IPS; PY]; PX] as PackedIndexSGet<bool>>::get(&seg_acts, i);
+                                                    if act == null_seg_act {
+                                                        None
+                                                    } else {
+                                                        Some((LayerIndex::Head((o, i)), w, loss_delta))
+                                                    }
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .flatten()
+                                    .collect::<Vec<_>>()
+                            // if we have > 1 live segment
+                            } else {
+                                let live_seg_class_acts: Vec<[[u32; C]; 2]> = seg_states
+                                    .iter()
+                                    .filter(|(_, _, state)| state.is_none())
+                                    .map(|(_, class_weights, _)| {
+                                        [
+                                            <[(); C] as Map<W, u32>>::map(&class_weights, |w| w.bma(false)),
+                                            <[(); C] as Map<W, u32>>::map(&class_weights, |w| w.bma(true)),
+                                        ]
+                                    })
+                                    .collect();
+                                let loss_deltas: Vec<i64> = (0..2usize.pow(live_seg_class_acts.len() as u32))
                                     .map(|i| {
-                                        let mut_loss = <[[IPS; PY]; PX] as IndexGet<[u32; C]>>::index_get(&patch_class_acts, i)
+                                        live_seg_class_acts
+                                            .iter()
+                                            .enumerate()
+                                            .fold(dead_class_acts, |class_acts, (seg_index, live_class_acts)| {
+                                                <[(); C] as ZipMap<u32, u32, u32>>::zip_map(&class_acts, &live_class_acts[i.bit(seg_index) as usize], |sum, live_act| sum + live_act)
+                                            })
                                             .iter()
                                             .zip(target_acts.iter())
-                                            .zip(else_class_acts.iter())
-                                            .map(|((&act, &target_act), else_class_act)| {
-                                                let act = act + else_class_act;
+                                            .map(|(&act, &target_act)| {
                                                 let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
                                                 (dist as u64).pow(2)
                                             })
-                                            .sum::<u64>();
-                                        let index = LayerIndex::Head((o, i));
-                                        let loss_delta = mut_loss as i64 - null_loss as i64;
-                                        (index, w, loss_delta)
+                                            .sum::<u64>() as i64
+                                            - null_loss as i64
                                     })
-                                    .collect::<Vec<_>>();
-                                //dbg!(deltas_start.elapsed());
-                                //dbg!(w_start.elapsed());
+                                    .collect();
+                                // for each weight
+                                W::states()
+                                    .iter()
+                                    .map(|&w: &W| {
+                                        let seg_acts: Vec<<[[IPS; PY]; PX] as BitPack<bool>>::T> = seg_states
+                                            .iter()
+                                            .filter_map(|&((sx, sy), _, state)| {
+                                                if let Some(_) = state {
+                                                    None
+                                                } else {
+                                                    let counts = <IS as SegmentedPixelFold<
+                                                        (usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32),
+                                                        ([[<IPS as BitPack<bool>>::T; PY]; PX], u32, Option<bool>, bool),
+                                                        SX,
+                                                        SY,
+                                                        PX,
+                                                        PY,
+                                                    >>::seg_fold(
+                                                        &patches,
+                                                        sx,
+                                                        sy,
+                                                        <(usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32)>::default(),
+                                                        |mut acc, (patch, cur_sum, state, null_sign)| {
+                                                            if let Some(act) = state {
+                                                                <[[IPS; PY]; PX]>::none_option_counted_increment_in_place(*act, &mut acc);
+                                                            } else {
+                                                                let acts = <[[IPS; PY]; PX]>::acts_simple(weights_channel, patch, *cur_sum, w);
+                                                                <[[IPS; PY]; PX]>::some_option_counted_increment_in_place(&acts, &mut acc);
+                                                            }
+                                                            acc
+                                                        },
+                                                    );
+                                                    let (n, seg_counts) = <[[IPS; PY]; PX]>::finalize_option_counted_increment(counts);
+                                                    let threshold = n as u32 / 2;
+                                                    let acts = <[[IPS; PY]; PX] as PackedMap<u32, bool>>::map(&seg_counts, |&count| count > threshold);
+                                                    Some(acts)
+                                                }
+                                            })
+                                            .collect();
 
-                                deltas
-                            })
-                            .flatten()
-                            .collect::<Vec<_>>();
-                        //dbg!(outer_w_start.elapsed());
-                        //dbg!(chan_start.elapsed());
-                        foo
+                                        <[[IPS; PY]; PX] as Shape>::indices()
+                                            .filter_map(|i| {
+                                                if <[[IPS; PY]; PX] as PackedIndexSGet<W>>::get(&weights_channel, i) == w {
+                                                    None
+                                                } else {
+                                                    let loss_index: usize = seg_acts.iter().enumerate().fold(0usize, |loss_index, (bit_index, seg)| {
+                                                        loss_index | ((<[[IPS; PY]; PX] as PackedIndexSGet<bool>>::get(&seg, i) as usize) << bit_index)
+                                                    });
+                                                    Some((LayerIndex::Head((o, i)), w, loss_deltas[loss_index]))
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .flatten()
+                                    .collect::<Vec<_>>()
+                            }
+                        }
                     })
                     .flatten()
-                    //.chain(fc_layer.loss_deltas(&null_seg_acts, threshold, class).iter().map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)))
-                    .filter(|(_, _, l)| l.abs() as u64 > threshold)
+                    .chain(fc_layer.loss_deltas(&null_seg_acts, threshold, class).iter().map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)))
+                    .filter(|(_, _, l): &(_, _, i64)| (l.abs() as u64) > threshold)
+                    .collect()
+            }
+            8 => {
+                let null_class_acts = self.fused_conv_pool_acts(input);
+                let null_seg_acts = self.conv_pool_seg_acts(input);
+                let fc_layer: FcMSE<[[OPS; SY]; SX], W, C> = FcMSE { fc: self.fc };
+                let target_acts: Vec<u32> = (0..C)
+                    .map(|c| (c == class) as u32 * <[[OPS; SY]; SX] as WeightArray<W>>::MAX)
+                    .collect();
+                let null_loss: u64 = null_class_acts
+                    .iter()
+                    .zip(target_acts.iter())
+                    .map(|(&act, &target_act)| {
+                        let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
+                        (dist as u64).pow(2)
+                    })
+                    .sum();
+
+                // for each output channel
+                OPS::indices()
+                    .par_bridge()
+                    .map(|o| {
+                        // extract the channel of the weights.
+                        let weights_channel = OPS::index_get(&self.conv, o);
+
+                        // force alocate on heap to avoid stack overflow
+                        let patches = {
+                            let mut target = Box::<<IS as PixelPack<([[<IPS as BitPack<bool>>::T; PY]; PX], u32, std::option::Option<bool>, bool)>>::I>::default();
+                            <IS as Conv<<IPS as BitPack<bool>>::T, ([[<IPS as BitPack<bool>>::T; PY]; PX], u32, Option<bool>, bool), PX, PY>>::mut_conv(input, &mut target, |patch| {
+                                let sum = <[[IPS; PY]; PX] as BMA<W>>::bma(weights_channel, &patch);
+                                let sign = sum > <[[IPS; PY]; PX] as WeightArray<W>>::THRESHOLD;
+                                let state = <[[IPS; PY]; PX] as WeightArray<W>>::mutant_act(sum);
+                                (patch, sum, state, sign)
+                            });
+                            target
+                        };
+                        let seg_states: Vec<((usize, usize), [W; C], Option<bool>)> = (0..SX)
+                            .map(|sx| iter::repeat(sx).zip(0..SY))
+                            .flatten()
+                            .map(|(sx, sy)| {
+                                let (n, min, max) = <IS as SegmentedPixelFold<(usize, u32, u32), ([[<IPS as BitPack<bool>>::T; PY]; PX], u32, Option<bool>, bool), SX, SY, PX, PY>>::seg_fold(
+                                    &patches,
+                                    sx,
+                                    sy,
+                                    <(usize, u32, u32)>::default(),
+                                    |(n, min, max), (_, _, state, _)| {
+                                        if let Some(sign) = state {
+                                            if *sign {
+                                                (n + 1, min + 1, max + 1)
+                                            } else {
+                                                (n + 1, min, max)
+                                            }
+                                        } else {
+                                            (n + 1, min, max + 1)
+                                        }
+                                    },
+                                );
+                                let threshold = n as u32 / 2;
+                                let state = Some(max > threshold).filter(|_| (min > threshold) | (max <= threshold));
+                                let fc_class_weights: [W; C] =
+                                    <[(); C] as Map<[[<OPS as BitPack<W>>::T; SY]; SX], W>>::map(&self.fc, |class_weights| <OPS as PackedIndexSGet<W>>::get(&class_weights[sx][sy], o));
+                                ((sx, sy), fc_class_weights, state)
+                            })
+                            .collect();
+
+                        let n_live = seg_states.iter().filter(|(_, _, state)| state.is_none()).count();
+                        if n_live > 0 {
+                            let dead_class_acts: [u32; C] = seg_states.iter().fold(null_class_acts, |class_acts, &((sx, sy), _, state)| {
+                                let act = <OPS as PackedIndexSGet<bool>>::get(&null_seg_acts[sx][sy], o);
+                                if let Some(_) = state {
+                                    class_acts
+                                } else {
+                                    <[(); C] as ZipMap<u32, [[<OPS as BitPack<W>>::T; SY]; SX], u32>>::zip_map(&class_acts, &self.fc, |sum, weights| {
+                                        let w: W = OPS::get(&weights[sx][sy], o);
+                                        sum - w.bma(act)
+                                    })
+                                }
+                            });
+
+                            if n_live == 1 {
+                                let ((sx, sy), class_weights, _) = seg_states.iter().find(|(_, _, state)| state.is_none()).unwrap();
+                                let null_seg_act = <OPS as PackedIndexSGet<bool>>::get(&null_seg_acts[*sx][*sy], o);
+                                let mut_loss = <[(); C] as ZipMap<u32, W, u32>>::zip_map(&dead_class_acts, &class_weights, |sum, w| sum + w.bma(!null_seg_act))
+                                    .iter()
+                                    .zip(target_acts.iter())
+                                    .map(|(&act, &target_act)| {
+                                        let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
+                                        (dist as u64).pow(2)
+                                    })
+                                    .sum::<u64>();
+
+                                let loss_delta: i64 = mut_loss as i64 - null_loss as i64;
+
+                                // for each weight
+                                W::states()
+                                    .iter()
+                                    .map(|&w: &W| {
+                                        let counts = <IS as SegmentedPixelFold<
+                                            (usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32),
+                                            ([[<IPS as BitPack<bool>>::T; PY]; PX], u32, Option<bool>, bool),
+                                            SX,
+                                            SY,
+                                            PX,
+                                            PY,
+                                        >>::seg_fold(
+                                            &patches,
+                                            *sx,
+                                            *sy,
+                                            <(usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32)>::default(),
+                                            |mut acc, (patch, cur_sum, state, null_sign)| {
+                                                if let Some(act) = state {
+                                                    <[[IPS; PY]; PX]>::none_option_counted_increment_in_place(*act, &mut acc);
+                                                } else {
+                                                    let acts = <[[IPS; PY]; PX]>::acts_simple(weights_channel, patch, *cur_sum, w);
+                                                    <[[IPS; PY]; PX]>::some_option_counted_increment_in_place(&acts, &mut acc);
+                                                }
+                                                acc
+                                            },
+                                        );
+                                        let (n, seg_counts) = <[[IPS; PY]; PX]>::finalize_option_counted_increment(counts);
+                                        let threshold = n as u32 / 2;
+                                        let seg_acts = <[[IPS; PY]; PX] as PackedMap<u32, bool>>::map(&seg_counts, |&count| count > threshold);
+
+                                        <[[IPS; PY]; PX] as Shape>::indices()
+                                            .filter_map(|i| {
+                                                if <[[IPS; PY]; PX] as PackedIndexSGet<W>>::get(&weights_channel, i) == w {
+                                                    None
+                                                } else {
+                                                    let act = <[[IPS; PY]; PX] as PackedIndexSGet<bool>>::get(&seg_acts, i);
+                                                    if act == null_seg_act {
+                                                        None
+                                                    } else {
+                                                        Some((LayerIndex::Head((o, i)), w, loss_delta))
+                                                    }
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .flatten()
+                                    .collect::<Vec<_>>()
+                            } else {
+                                let live_seg_class_acts: Vec<[[u32; C]; 2]> = seg_states
+                                    .iter()
+                                    .filter(|(_, _, state)| state.is_none())
+                                    .map(|(_, class_weights, _)| {
+                                        [
+                                            <[(); C] as Map<W, u32>>::map(&class_weights, |w| w.bma(false)),
+                                            <[(); C] as Map<W, u32>>::map(&class_weights, |w| w.bma(true)),
+                                        ]
+                                    })
+                                    .collect();
+                                let loss_deltas: Vec<i64> = (0..2usize.pow(live_seg_class_acts.len() as u32))
+                                    .map(|i| {
+                                        live_seg_class_acts
+                                            .iter()
+                                            .enumerate()
+                                            .fold(dead_class_acts, |class_acts, (seg_index, live_class_acts)| {
+                                                <[(); C] as ZipMap<u32, u32, u32>>::zip_map(&class_acts, &live_class_acts[i.bit(seg_index) as usize], |sum, live_act| sum + live_act)
+                                            })
+                                            .iter()
+                                            .zip(target_acts.iter())
+                                            .map(|(&act, &target_act)| {
+                                                let dist = act.saturating_sub(target_act) | target_act.saturating_sub(act);
+                                                (dist as u64).pow(2)
+                                            })
+                                            .sum::<u64>() as i64
+                                            - null_loss as i64
+                                    })
+                                    .collect();
+                                // for each weight
+                                W::states()
+                                    .iter()
+                                    .map(|&w: &W| {
+                                        let seg_acts: Vec<<[[IPS; PY]; PX] as BitPack<bool>>::T> = seg_states
+                                            .iter()
+                                            .filter_map(|&((sx, sy), _, state)| {
+                                                if let Some(_) = state {
+                                                    None
+                                                } else {
+                                                    let counts = <IS as SegmentedPixelFold<
+                                                        (usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32),
+                                                        ([[<IPS as BitPack<bool>>::T; PY]; PX], u32, Option<bool>, bool),
+                                                        SX,
+                                                        SY,
+                                                        PX,
+                                                        PY,
+                                                    >>::seg_fold(
+                                                        &patches,
+                                                        sx,
+                                                        sy,
+                                                        <(usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32)>::default(),
+                                                        |mut acc, (patch, cur_sum, state, _)| {
+                                                            if let Some(act) = state {
+                                                                <[[IPS; PY]; PX]>::none_option_counted_increment_in_place(*act, &mut acc);
+                                                            } else {
+                                                                let acts = <[[IPS; PY]; PX]>::acts_simple(weights_channel, patch, *cur_sum, w);
+                                                                <[[IPS; PY]; PX]>::some_option_counted_increment_in_place(&acts, &mut acc);
+                                                            }
+                                                            acc
+                                                        },
+                                                    );
+                                                    let (n, seg_counts) = <[[IPS; PY]; PX]>::finalize_option_counted_increment(counts);
+                                                    let threshold = n as u32 / 2;
+                                                    let acts = <[[IPS; PY]; PX] as PackedMap<u32, bool>>::map(&seg_counts, |&count| count > threshold);
+                                                    Some(acts)
+                                                }
+                                            })
+                                            .collect();
+
+                                        <[[IPS; PY]; PX] as Shape>::indices()
+                                            .filter_map(|i| {
+                                                if <[[IPS; PY]; PX] as PackedIndexSGet<W>>::get(&weights_channel, i) == w {
+                                                    None
+                                                } else {
+                                                    let loss_index: usize = seg_acts.iter().enumerate().fold(0usize, |loss_index, (bit_index, seg)| {
+                                                        loss_index | ((<[[IPS; PY]; PX] as PackedIndexSGet<bool>>::get(&seg, i) as usize) << bit_index)
+                                                    });
+                                                    Some((LayerIndex::Head((o, i)), w, loss_deltas[loss_index]))
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .flatten()
+                                    .collect::<Vec<_>>()
+                            }
+                        } else {
+                            vec![]
+                        }
+                    })
+                    .flatten()
+                    .chain(fc_layer.loss_deltas(&null_seg_acts, threshold, class).iter().par_bridge().map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)))
+                    .filter(|(_, _, l): &(_, _, i64)| (l.abs() as u64) > threshold)
                     .collect()
             }
             _ => {
@@ -2528,7 +2877,7 @@ mod tests {
             [(); 8],
             [(); 8],
             Option<bool>,
-            5,
+            6,
             2,
             2,
             3,
@@ -2545,7 +2894,7 @@ mod tests {
         b8,
         16,
         16,
-        FusedConvSegmentedAvgPoolFcMSE::<[[(); 16]; 16], [(); 8], [(); 8], bool, 5, 3, 3, 3, 3, 5>,
+        FusedConvSegmentedAvgPoolFcMSE::<[[(); 16]; 16], [(); 8], [(); 8], bool, 6, 3, 3, 3, 3, 5>,
         5,
         500,
         0
@@ -2556,7 +2905,7 @@ mod tests {
         b8,
         16,
         16,
-        FusedConvSegmentedAvgPoolFcMSE::<[[(); 16]; 16], [(); 8], [(); 8], bool, 5, 2, 2, 3, 3, 5>,
+        FusedConvSegmentedAvgPoolFcMSE::<[[(); 16]; 16], [(); 8], [(); 8], bool, 6, 2, 2, 3, 3, 5>,
         5,
         500,
         0
@@ -2567,7 +2916,7 @@ mod tests {
         b8,
         16,
         16,
-        FusedConvSegmentedAvgPoolFcMSE::<[[(); 16]; 16], [(); 8], [(); 8], bool, 5, 1, 1, 3, 3, 5>,
+        FusedConvSegmentedAvgPoolFcMSE::<[[(); 16]; 16], [(); 8], [(); 8], bool, 6, 1, 1, 3, 3, 5>,
         5,
         500,
         0
@@ -2583,7 +2932,7 @@ mod tests {
             [[(); 32]; 2],
             [(); 32],
             bool,
-            5,
+            6,
             2,
             2,
             3,
@@ -2595,18 +2944,6 @@ mod tests {
         0
     );
 
-    type FusedConvPoolModel3 = FusedConvSegmentedAvgPoolFcMSE<
-        [[(); 16]; 16],
-        [[(); 8]; 1],
-        [[(); 8]; 1],
-        bool,
-        3,
-        2,
-        2,
-        3,
-        3,
-        5,
-    >;
     type FusedConvPoolModel5 = FusedConvSegmentedAvgPoolFcMSE<
         [[(); 16]; 16],
         [[(); 8]; 1],
@@ -2619,50 +2956,156 @@ mod tests {
         3,
         5,
     >;
+    type FusedConvPoolModel6 = FusedConvSegmentedAvgPoolFcMSE<
+        [[(); 16]; 16],
+        [[(); 8]; 1],
+        [[(); 8]; 1],
+        bool,
+        6,
+        2,
+        2,
+        3,
+        3,
+        5,
+    >;
+    type FusedConvPoolModel7 = FusedConvSegmentedAvgPoolFcMSE<
+        [[(); 16]; 16],
+        [[(); 8]; 1],
+        [[(); 8]; 1],
+        bool,
+        7,
+        2,
+        2,
+        3,
+        3,
+        5,
+    >;
 
     compare_impl_loss_deltas_conv!(
-        fused_conv_seg_pool_bit_impl_compare_3_5_a,
+        fused_conv_seg_pool_bit_impl_compare_5_6_a,
         [b8; 1],
         16,
         16,
-        FusedConvPoolModel3,
         FusedConvPoolModel5,
+        FusedConvPoolModel6,
         5,
         1000,
         0
     );
     compare_impl_loss_deltas_conv!(
-        fused_conv_seg_pool_bit_impl_compare_3_5_b,
+        fused_conv_seg_pool_bit_impl_compare_5_6_b,
         [b8; 1],
         16,
         16,
-        FusedConvPoolModel3,
         FusedConvPoolModel5,
+        FusedConvPoolModel6,
         5,
         1000,
         1
     );
     compare_impl_loss_deltas_conv!(
-        fused_conv_seg_pool_bit_impl_compare_3_5_c,
+        fused_conv_seg_pool_bit_impl_compare_5_6_c,
         [b8; 1],
         16,
         16,
-        FusedConvPoolModel3,
         FusedConvPoolModel5,
+        FusedConvPoolModel6,
         5,
         1000,
         2
     );
     compare_impl_loss_deltas_conv!(
-        fused_conv_seg_pool_bit_impl_compare_3_5_d,
+        fused_conv_seg_pool_bit_impl_compare_5_6_d,
         [b8; 1],
         16,
         16,
-        FusedConvPoolModel3,
         FusedConvPoolModel5,
+        FusedConvPoolModel6,
         5,
         1000,
         3
+    );
+
+    compare_impl_loss_deltas_conv!(
+        fused_conv_seg_pool_bit_impl_compare_5_7_a,
+        [b8; 1],
+        16,
+        16,
+        FusedConvPoolModel5,
+        FusedConvPoolModel7,
+        5,
+        1000,
+        0
+    );
+    compare_impl_loss_deltas_conv!(
+        fused_conv_seg_pool_bit_impl_compare_5_7_b,
+        [b8; 1],
+        16,
+        16,
+        FusedConvPoolModel5,
+        FusedConvPoolModel7,
+        5,
+        1000,
+        1
+    );
+    compare_impl_loss_deltas_conv!(
+        fused_conv_seg_pool_bit_impl_compare_5_7_c,
+        [b8; 1],
+        16,
+        16,
+        FusedConvPoolModel5,
+        FusedConvPoolModel7,
+        5,
+        1000,
+        2
+    );
+    compare_impl_loss_deltas_conv!(
+        fused_conv_seg_pool_bit_impl_compare_5_7_d,
+        [b8; 1],
+        16,
+        16,
+        FusedConvPoolModel5,
+        FusedConvPoolModel7,
+        5,
+        1000,
+        3
+    );
+
+    type FusedConvPoolModel5Large = FusedConvSegmentedAvgPoolFcMSE<
+        [[(); 32]; 32],
+        [[(); 32]; 1],
+        [[(); 32]; 1],
+        Option<bool>,
+        5,
+        3,
+        3,
+        3,
+        3,
+        10,
+    >;
+    type FusedConvPoolModel7Large = FusedConvSegmentedAvgPoolFcMSE<
+        [[(); 32]; 32],
+        [[(); 32]; 1],
+        [[(); 32]; 1],
+        Option<bool>,
+        7,
+        3,
+        3,
+        3,
+        3,
+        10,
+    >;
+
+    compare_impl_loss_deltas_conv!(
+        fused_conv_seg_pool_trit_impl_compare_5_7_large,
+        [b32; 1],
+        32,
+        32,
+        FusedConvPoolModel5Large,
+        FusedConvPoolModel7Large,
+        10,
+        100,
+        0
     );
 
     type ConvPoolModel0 = Conv2D<

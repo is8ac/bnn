@@ -302,6 +302,11 @@ where
     Self: ImageShape + PixelPack<I> + PixelPack<O>,
 {
     fn indices() -> Iter2D;
+    fn mut_conv<F: Fn([[I; PY]; PX]) -> O>(
+        input: &<Self as PixelPack<I>>::I,
+        target: &mut <Self as PixelPack<O>>::I,
+        map_fn: F,
+    );
     fn conv<F: Fn([[I; PY]; PX]) -> O>(
         input: &<Self as PixelPack<I>>::I,
         map_fn: F,
@@ -322,6 +327,23 @@ where
             0 + PY / 2,
             (Y - (PY / 2) * 2) + PY / 2,
         )
+    }
+    fn mut_conv<F: Fn([[I; PY]; PX]) -> O>(
+        input: &[[I; Y]; X],
+        target: &mut [[O; Y]; X],
+        map_fn: F,
+    ) {
+        for x in 0..(X - (PX / 2) * 2) {
+            for y in 0..(Y - (PY / 2) * 2) {
+                let mut patch = <[[I; PY]; PX]>::default();
+                for px in 0..PX {
+                    for py in 0..PY {
+                        patch[px][py] = input[x + px][y + py];
+                    }
+                }
+                target[x + PX / 2][y + PY / 2] = map_fn(patch);
+            }
+        }
     }
     fn conv<F: Fn([[I; PY]; PX]) -> O>(input: &[[I; Y]; X], map_fn: F) -> [[O; Y]; X] {
         let mut target = <[[O; Y]; X]>::default();
