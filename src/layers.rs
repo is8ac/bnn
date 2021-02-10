@@ -88,6 +88,12 @@ impl<H: Copy, T: IndexDepth + Copy> IndexDepth for LayerIndex<H, T> {
     }
 }
 
+impl<I: IndexDepth, const X: usize, const Y: usize> IndexDepth for SegmentedAvgPoolIndex<I, X, Y> {
+    fn depth(&self) -> usize {
+        self.index.depth()
+    }
+}
+
 impl<I> IndexDepth for (usize, I) {
     fn depth(&self) -> usize {
         0
@@ -1242,6 +1248,26 @@ pub struct SegmentedAvgPool<
     pub tail: H,
 }
 
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct SegmentedAvgPoolIndex<I, const X: usize, const Y: usize> {
+    pub index: I,
+}
+
+pub struct SegmentedAvgPoolIndexIterator<I, const X: usize, const Y: usize> {
+    iterator: I,
+}
+
+impl<I: Iterator, const X: usize, const Y: usize> Iterator
+    for SegmentedAvgPoolIndexIterator<I, X, Y>
+{
+    type Item = SegmentedAvgPoolIndex<I::Item, X, Y>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iterator
+            .next()
+            .map(|x| SegmentedAvgPoolIndex { index: x })
+    }
+}
+
 impl<I, P, H, const SX: usize, const SY: usize, const PX: usize, const PY: usize>
     SegmentedAvgPool<I, P, H, SY, SX, PX, PY>
 where
@@ -1315,9 +1341,9 @@ where
         + Pack<(u32, <P as BitPack<bool>>::T), T = [[(u32, <P as BitPack<bool>>::T); SY]; SX]>,
     <P as BitPack<bool>>::T: Copy,
 {
-    type Index = H::Index;
+    type Index = SegmentedAvgPoolIndex<H::Index, SX, SY>;
     type Weight = H::Weight;
-    type IndexIter = H::IndexIter;
+    type IndexIter = SegmentedAvgPoolIndexIterator<H::IndexIter, SX, SY>;
     type Output = [[<P as BitPack<bool>>::T; SY]; SX];
     const N_PARAMS: usize = H::N_PARAMS;
     fn rand<R: Rng>(rng: &mut R) -> Self {
@@ -1336,11 +1362,17 @@ where
             |&(_, avgs)| avgs,
         )
     }
-    fn indices() -> H::IndexIter {
-        H::indices()
+    fn indices() -> SegmentedAvgPoolIndexIterator<H::IndexIter, SX, SY> {
+        SegmentedAvgPoolIndexIterator {
+            iterator: H::indices(),
+        }
     }
-    fn mutate_in_place(&mut self, index: H::Index, weight: H::Weight) {
-        self.tail.mutate_in_place(index, weight)
+    fn mutate_in_place(
+        &mut self,
+        index: SegmentedAvgPoolIndex<H::Index, SX, SY>,
+        weight: H::Weight,
+    ) {
+        self.tail.mutate_in_place(index.index, weight)
     }
     fn top_act(&self, input: &<I as PixelPack<<P as BitPack<bool>>::T>>::I) -> usize {
         self.tail.top_act(&self.apply(input))
@@ -1354,7 +1386,11 @@ where
         threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, Self::Weight, i64)> {
-        self.tail.loss_deltas(&self.apply(input), threshold, class)
+        self.tail
+            .loss_deltas(&self.apply(input), threshold, class)
+            .iter()
+            .map(|&(i, w, l)| (SegmentedAvgPoolIndex { index: i }, w, l))
+            .collect()
     }
 }
 
@@ -1906,10 +1942,14 @@ where
 {
     type Index = LayerIndex<
         (<OPS as Shape>::Index, <[[IPS; PY]; PX] as Shape>::Index),
-        (usize, <[[OPS; SY]; SX] as Shape>::Index),
+        SegmentedAvgPoolIndex<(usize, <[[OPS; SY]; SX] as Shape>::Index), SX, SY>,
     >;
     type Weight = W;
-    type IndexIter = LayerIter<[[IPS; PY]; PX], OPS, FcMSEindexIter<[[OPS; SY]; SX], C>>;
+    type IndexIter = LayerIter<
+        [[IPS; PY]; PX],
+        OPS,
+        SegmentedAvgPoolIndexIterator<FcMSEindexIter<[[OPS; SY]; SX], C>, SX, SY>,
+    >;
     type Output = <IS as PixelPack<<OPS as BitPack<bool>>::T>>::I;
     const N_PARAMS: usize = <<OPS as Pack<[[IPS; PY]; PX]>>::T as Shape>::N;
     //const N_PARAMS: usize = <<OPS as Pack<[[IPS; PY]; PX]>>::T as Shape>::N + <[[[OPS; SY]; SX]; C] as Shape>::N;
@@ -1934,9 +1974,11 @@ where
     }
     /// iter of all weight indices
     fn indices() -> Self::IndexIter {
-        LayerIter::new(FcMSEindexIter {
-            class_index: 0,
-            input_iter: <[[OPS; SY]; SX]>::indices(),
+        LayerIter::new(SegmentedAvgPoolIndexIterator {
+            iterator: FcMSEindexIter {
+                class_index: 0,
+                input_iter: <[[OPS; SY]; SX]>::indices(),
+            },
         })
     }
     fn mutate_in_place(&mut self, index: Self::Index, weight: Self::Weight) {
@@ -1944,7 +1986,9 @@ where
             LayerIndex::Head((o, i)) => {
                 <[[IPS; PY]; PX]>::set_in_place(OPS::index_get_mut(&mut self.conv, o), i, weight)
             }
-            LayerIndex::Tail((c, i)) => <[[OPS; SY]; SX]>::set_in_place(&mut self.fc[c], i, weight),
+            LayerIndex::Tail(SegmentedAvgPoolIndex { index: (c, i) }) => {
+                <[[OPS; SY]; SX]>::set_in_place(&mut self.fc[c], i, weight)
+            }
         }
     }
     fn top_act(&self, input: &<IS as PixelPack<<IPS as BitPack<bool>>::T>>::I) -> usize {
@@ -2047,7 +2091,12 @@ where
                             .collect::<Vec<_>>()
                     })
                     .flatten()
-                    .chain(fc_layer.loss_deltas(&null_seg_acts, threshold, class).iter().map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)))
+                    .chain(
+                        fc_layer
+                            .loss_deltas(&null_seg_acts, threshold, class)
+                            .iter()
+                            .map(|&(i, w, l)| (LayerIndex::Tail(SegmentedAvgPoolIndex { index: i }), w, l)),
+                    )
                     .filter(|(_, _, l)| l.abs() as u64 > threshold)
                     .collect()
             }
@@ -2198,7 +2247,12 @@ where
                         }
                     })
                     .flatten()
-                    .chain(fc_layer.loss_deltas(&null_seg_acts, threshold, class).iter().map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)))
+                    .chain(
+                        fc_layer
+                            .loss_deltas(&null_seg_acts, threshold, class)
+                            .iter()
+                            .map(|&(i, w, l)| (LayerIndex::Tail(SegmentedAvgPoolIndex { index: i }), w, l)),
+                    )
                     .filter(|(_, _, l)| l.abs() as u64 > threshold)
                     .collect()
             }
@@ -2386,7 +2440,7 @@ where
                                                         sx,
                                                         sy,
                                                         <(usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32)>::default(),
-                                                        |mut acc, (patch, cur_sum, state, null_sign)| {
+                                                        |mut acc, (patch, cur_sum, state, _)| {
                                                             if let Some(act) = state {
                                                                 <[[IPS; PY]; PX]>::none_option_counted_increment_in_place(*act, &mut acc);
                                                             } else {
@@ -2423,7 +2477,12 @@ where
                         }
                     })
                     .flatten()
-                    .chain(fc_layer.loss_deltas(&null_seg_acts, threshold, class).iter().map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)))
+                    .chain(
+                        fc_layer
+                            .loss_deltas(&null_seg_acts, threshold, class)
+                            .iter()
+                            .map(|&(i, w, l)| (LayerIndex::Tail(SegmentedAvgPoolIndex { index: i }), w, l)),
+                    )
                     .filter(|(_, _, l): &(_, _, i64)| (l.abs() as u64) > threshold)
                     .collect()
             }
@@ -2534,7 +2593,7 @@ where
                                             *sx,
                                             *sy,
                                             <(usize, [[<IPS as Pack<u32>>::T; PY]; PX], u32)>::default(),
-                                            |mut acc, (patch, cur_sum, state, null_sign)| {
+                                            |mut acc, (patch, cur_sum, state, _)| {
                                                 if let Some(act) = state {
                                                     <[[IPS; PY]; PX]>::none_option_counted_increment_in_place(*act, &mut acc);
                                                 } else {
@@ -2655,7 +2714,13 @@ where
                         }
                     })
                     .flatten()
-                    .chain(fc_layer.loss_deltas(&null_seg_acts, threshold, class).iter().par_bridge().map(|&(i, w, l)| (LayerIndex::Tail(i), w, l)))
+                    .chain(
+                        fc_layer
+                            .loss_deltas(&null_seg_acts, threshold, class)
+                            .iter()
+                            .par_bridge()
+                            .map(|&(i, w, l)| (LayerIndex::Tail(SegmentedAvgPoolIndex { index: i }), w, l)),
+                    )
                     .filter(|(_, _, l): &(_, _, i64)| (l.abs() as u64) > threshold)
                     .collect()
             }
