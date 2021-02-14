@@ -69,6 +69,7 @@ where
         self,
         loss_deltas: Vec<(Self::Index, Self::Weight, i64)>,
         n: usize,
+        max_n: usize,
     ) -> (Self, Vec<(Self::Index, Self::Weight, i64)>, usize);
     fn updates(
         &self,
@@ -77,12 +78,7 @@ where
         example_truncation: usize,
         n_updates: usize,
     ) -> Vec<(Self::Index, Self::Weight)>;
-    fn updates_simple(
-        &self,
-        examples: &[(I, usize)],
-        threshold: u64,
-        example_truncation: usize,
-    ) -> Vec<(Self::Index, Self::Weight, i64)>;
+    fn updates_simple(&self, examples: &[(I, usize)]) -> Vec<(Self::Index, Self::Weight, i64)>;
     fn evaluate_update_combinations(
         &self,
         examples: &[(I, usize)],
@@ -91,9 +87,7 @@ where
     fn train(
         self,
         examples: &Vec<(I, usize)>,
-        threshold: u64,
-        example_truncation: usize,
-        n_updates: usize,
+        max_n: usize,
         minibatch_size: usize,
     ) -> (Self, usize);
     fn recursively_train(
@@ -109,8 +103,6 @@ where
     fn train_n_epochs(
         self,
         examples: &Vec<(I, usize)>,
-        threshold: u64,
-        example_truncation: usize,
         n_updates: usize,
         n_epochs: usize,
         starting_minibatch_size: usize,
@@ -134,10 +126,12 @@ where
         self,
         loss_deltas: Vec<(Self::Index, Self::Weight, i64)>,
         n: usize,
+        max_n: usize,
     ) -> (Self, Vec<(Self::Index, Self::Weight, i64)>, usize) {
         loss_deltas
             .iter()
             .min_by_key(|&(_, _, l)| l)
+            .filter(|_| n < max_n)
             .map(|&(index, weight, l)| {
                 self.mutate(index, weight).apply_top_nocollide(
                     loss_deltas
@@ -146,6 +140,7 @@ where
                         .cloned()
                         .collect(),
                     n + 1,
+                    max_n,
                 )
             })
             .unwrap_or_else(|| (self, loss_deltas, n))
@@ -201,55 +196,17 @@ where
             .take(n_updates)
             .collect()
     }
-    fn updates_simple(
-        &self,
-        examples: &[(I, usize)],
-        threshold: u64,
-        example_truncation: usize,
-    ) -> Vec<(Self::Index, Self::Weight, i64)> {
-        let mut_map = examples
-            .par_iter()
-            .fold(
-                || HashMap::<(Self::Index, Self::Weight), i64>::new(),
-                |acc, (image, class)| {
-                    let mut deltas = self.loss_deltas(image, threshold, *class);
-                    //dbg!(deltas.len());
-                    deltas.sort_by(|a, b| b.2.abs().cmp(&a.2.abs()));
-                    deltas
-                        .iter()
-                        .filter(|&(_, _, l)| *l < 0)
-                        .take(example_truncation)
-                        .chain(
-                            deltas
-                                .iter()
-                                .filter(|&(_, _, l)| *l > 0)
-                                .take(example_truncation),
-                        )
-                        .fold(acc, |mut acc, &(i, m, l)| {
-                            *acc.entry((i, m)).or_insert(0) += l;
-                            acc
-                        })
-                },
-            )
-            .reduce_with(|mut a, b| {
-                b.iter().for_each(|(k, v)| {
-                    *a.entry(*k).or_insert(0) += v;
-                });
-                a
-            })
-            .unwrap();
-        mut_map
-            .iter()
-            .filter(|(_, d)| **d < 0)
-            .map(|(&(i, m), &d)| (i, m, d))
-            .collect::<Vec<(Self::Index, Self::Weight, i64)>>()
-
-        /*
+    fn updates_simple(&self, examples: &[(I, usize)]) -> Vec<(Self::Index, Self::Weight, i64)> {
         examples
             .par_iter()
             .fold(
                 || HashMap::<(Self::Index, Self::Weight), i64>::new(),
-                |acc, (image, class)| self.loss_deltas(image, 0, *class).iter().map(|&(i, w, l)| ((i, w), l)).collect(),
+                |acc, (image, class)| {
+                    self.loss_deltas(image, 0, *class)
+                        .iter()
+                        .map(|&(i, w, l)| ((i, w), l))
+                        .collect()
+                },
             )
             .reduce_with(|mut a, b| {
                 b.iter().for_each(|(k, v)| {
@@ -262,7 +219,6 @@ where
             .filter(|(_, &l)| l < 0)
             .map(|(&(i, w), &l)| (i, w, l))
             .collect()
-            */
     }
     /// This runs in time exponential with candidate_mutations.len()
     fn evaluate_update_combinations(
@@ -305,23 +261,17 @@ where
             .map(|(_, &m)| m)
             .collect()
     }
-    fn train(
-        self,
-        examples: &Vec<(I, usize)>,
-        threshold: u64,
-        example_truncation: usize,
-        n_updates: usize,
-        minibatch_size: usize,
-    ) -> (T, usize) {
+    fn train(self, examples: &Vec<(I, usize)>, max_n: usize, minibatch_size: usize) -> (T, usize) {
         //println!("{} {} {} {}", threshold, example_truncation, n_updates, minibatch_size);
         examples.chunks_exact(minibatch_size).enumerate().fold(
             (self, 0usize),
             |(weights, n), (i, examples)| {
                 let grads_start = Instant::now();
-                let updates = weights.updates_simple(&examples, threshold, example_truncation);
-                let (weights, empty_vec, n_updates) = weights.apply_top_nocollide(updates, 0);
+                let updates = weights.updates_simple(&examples);
+                let (weights, empty_vec, n_updates) =
+                    weights.apply_top_nocollide(updates, 0, max_n);
                 //dbg!(n_updates);
-                assert_eq!(empty_vec.len(), 0);
+                //assert_eq!(empty_vec.len(), 0);
                 (weights, n + n_updates)
             },
         )
@@ -373,20 +323,12 @@ where
             (self, 0, 0)
         };
         //dbg!(minibatch_size);
-        let (model, n) = model.train(
-            &examples,
-            threshold,
-            example_truncation,
-            n_updates,
-            minibatch_size,
-        );
+        let (model, n) = model.train(&examples, n_updates, minibatch_size);
         (model, n_epochs + 1, s + n)
     }
     fn train_n_epochs(
         self,
         examples: &Vec<(I, usize)>,
-        threshold: u64,
-        example_truncation: usize,
         n_updates: usize,
         n_epochs: usize,
         starting_minibatch_size: usize,
@@ -395,13 +337,7 @@ where
         (0..n_epochs).fold(
             (self, starting_minibatch_size, 0),
             |(model, minibatch_size, updates_sum), _| {
-                let (model, updates) = model.train(
-                    &examples,
-                    threshold,
-                    example_truncation,
-                    n_updates,
-                    minibatch_size,
-                );
+                let (model, updates) = model.train(&examples, n_updates, minibatch_size);
                 //let updates = 0;
                 println!(
                     "minibatch_size: {}, train acc: {:.3}% {}",

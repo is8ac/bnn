@@ -9,6 +9,12 @@ This project makes extensive use of const generics. You must therefore use rust 
 https://rustup.rs/
 ```
 
+Until a [bug](https://github.com/rust-lang/rust/issues/80807) is fixed, you must pin an older `rustc`.
+```
+rustup default nightly-2020-12-20
+```
+
+
 To run:
 ```
 cargo run --release --bin mnist_one_layer_fc -- mnist
@@ -30,6 +36,7 @@ Use `--release` to make tests run faster.
 - [FINN: A Framework for Fast, Scalable Binarized Neural Network Inference](https://arxiv.org/abs/1612.07119)
 - [Probabilistic Binary Neural Networks](https://arxiv.org/abs/1809.03368)
 - [A Review of Binarized Neural Networks](https://www.mdpi.com/2079-9292/8/6/661/pdf)
+- [Binary Neural Networks: A Survey](https://arxiv.org/abs/2004.03333)
 
 https://openreview.net/pdf?id=ryxfHnCctX
 

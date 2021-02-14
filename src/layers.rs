@@ -161,7 +161,6 @@ where
         threshold: u64,
         class: usize,
     ) -> Vec<(Self::Index, Self::Weight, i64)> {
-        let n_indicis = Self::indices().count();
         let null_loss = self.loss(input, class) as i64;
         <Self::Weight as BitScaler>::states()
             .iter()

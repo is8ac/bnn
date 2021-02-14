@@ -295,6 +295,12 @@ pub trait LongDefault {
     fn long_default() -> Self;
 }
 
+impl LongDefault for f32 {
+    fn long_default() -> Self {
+        0f32
+    }
+}
+
 impl<T: LongDefault> LongDefault for (T, u32) {
     fn long_default() -> Self {
         (T::long_default(), 0)
