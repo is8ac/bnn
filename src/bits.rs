@@ -61,9 +61,12 @@ pub struct pent(pub Option<(bool, bool)>);
 pub trait BitScaler
 where
     Self: Sized + Copy,
+    Self::ValuesShape: Pack<Self>,
 {
     const RANGE: u32;
     const N: usize;
+    type ValuesShape;
+    const STATES: <Self::ValuesShape as Pack<Self>>::T;
     fn states() -> Vec<Self>;
     fn bma(self, input: bool) -> u32;
 }
@@ -71,6 +74,8 @@ where
 impl BitScaler for bool {
     const RANGE: u32 = 2;
     const N: usize = 2;
+    type ValuesShape = [(); 2];
+    const STATES: <Self::ValuesShape as Pack<Self>>::T = [true, false];
     fn states() -> Vec<bool> {
         vec![true, false]
     }
@@ -82,6 +87,8 @@ impl BitScaler for bool {
 impl BitScaler for Option<bool> {
     const RANGE: u32 = 3;
     const N: usize = 3;
+    type ValuesShape = [(); 3];
+    const STATES: <Self::ValuesShape as Pack<Self>>::T = [Some(true), None, Some(false)];
     fn states() -> Vec<Option<bool>> {
         vec![Some(true), None, Some(false)]
     }
@@ -97,6 +104,9 @@ impl BitScaler for Option<bool> {
 impl BitScaler for (bool, bool) {
     const RANGE: u32 = 4;
     const N: usize = 4;
+    type ValuesShape = [(); 4];
+    const STATES: <Self::ValuesShape as Pack<Self>>::T =
+        [(true, true), (true, false), (false, false), (false, true)];
     fn states() -> Vec<(bool, bool)> {
         vec![(true, true), (true, false), (false, false), (false, true)]
     }
@@ -120,6 +130,14 @@ impl BitScaler for (bool, bool) {
 impl BitScaler for Option<(bool, bool)> {
     const RANGE: u32 = 5;
     const N: usize = 5;
+    type ValuesShape = [(); 5];
+    const STATES: <Self::ValuesShape as Pack<Self>>::T = [
+        Some((true, true)),
+        Some((true, false)),
+        None,
+        Some((false, false)),
+        Some((false, true)),
+    ];
     fn states() -> Vec<Option<(bool, bool)>> {
         vec![
             Some((true, true)),
@@ -170,10 +188,11 @@ where
         <Self as BMA<W>>::bma(weights, input) > <Self as WeightArray<W>>::THRESHOLD
     }
     fn mutant_act(cur_sum: u32) -> Option<bool> {
-        let low = (cur_sum <= (<Self as WeightArray<W>>::THRESHOLD - (W::RANGE - 1)));
-        let high = (cur_sum >= (<Self as WeightArray<W>>::THRESHOLD + W::RANGE));
+        let low = cur_sum <= (<Self as WeightArray<W>>::THRESHOLD - (W::RANGE - 1));
+        let high = cur_sum >= (<Self as WeightArray<W>>::THRESHOLD + W::RANGE);
         Some(high).filter(|_| high | low)
     }
+    //fn increment_dense_loss_deltas(weights: &<Self as BitPack<W>>::T, deltas: &mut <Self as Pack<i32>>::T);
     /// loss delta if we were to set each of the elements to each different value. Is permited to prune null deltas.
     fn loss_deltas<F: Fn(u32) -> i64>(
         weights: &<Self as BitPack<W>>::T,
@@ -627,6 +646,61 @@ where
     }
 }
 
+pub trait ZipBitFold<B, X, Y>
+where
+    Self: Shape + Pack<X> + BitPack<Y>,
+{
+    fn zip_fold<F: Fn(B, &X, Y) -> B>(
+        acc: B,
+        a: &<Self as Pack<X>>::T,
+        bits: &<Self as BitPack<Y>>::T,
+        fold_fn: F,
+    ) -> B;
+}
+
+impl<B, X, Y, S, const L: usize> ZipBitFold<B, X, Y> for [S; L]
+where
+    S: ZipBitFold<B, X, Y> + Pack<X> + BitPack<Y>,
+{
+    fn zip_fold<F: Fn(B, &X, Y) -> B>(
+        mut acc: B,
+        a: &[<S as Pack<X>>::T; L],
+        bits: &[<S as BitPack<Y>>::T; L],
+        map_fn: F,
+    ) -> B {
+        for i in 0..L {
+            acc = <S as ZipBitFold<B, X, Y>>::zip_fold(acc, &a[i], &bits[i], &map_fn);
+        }
+        acc
+    }
+}
+
+pub trait BitMap<I, O>
+where
+    Self: Shape + BitPack<I> + Pack<O>,
+{
+    fn map_mut<F: Fn(I, &mut O)>(
+        bits: &<Self as BitPack<I>>::T,
+        target: &mut <Self as Pack<O>>::T,
+        map_fn: F,
+    );
+}
+
+impl<I, O, S, const L: usize> BitMap<I, O> for [S; L]
+where
+    S: Shape + BitPack<I> + Pack<O> + BitMap<I, O>,
+{
+    fn map_mut<F: Fn(I, &mut O)>(
+        bits: &[<S as BitPack<I>>::T; L],
+        target: &mut [<S as Pack<O>>::T; L],
+        map_fn: F,
+    ) {
+        for i in 0..L {
+            <S as BitMap<I, O>>::map_mut(&bits[i], &mut target[i], &map_fn)
+        }
+    }
+}
+
 pub trait BitWord {
     type Word;
     fn sign(self) -> Self::Word;
@@ -774,7 +848,7 @@ macro_rules! impl_long_default_for_type {
 
 impl_long_default_for_type!(bool);
 impl_long_default_for_type!(Option<bool>);
-impl_long_default_for_type!((bool, bool));
+//impl_long_default_for_type!((bool, bool));
 impl_long_default_for_type!(Option<(bool, bool)>);
 
 macro_rules! for_uints {
@@ -800,6 +874,7 @@ macro_rules! for_uints {
         impl_long_default_for_type!($q_type);
 
         impl $b_type {
+            pub const ZEROS: $b_type = $b_type(0);
             #[inline(always)]
             pub fn count_ones(self) -> u32 {
                 self.0.count_ones()
@@ -970,6 +1045,27 @@ macro_rules! for_uints {
                 map_fn: F,
             ) -> $b_type {
                 $b_type(map_fn(*weights, rhs.0))
+            }
+        }
+
+        impl<B, X> ZipBitFold<B, X, bool> for [(); $len] {
+            fn zip_fold<F: Fn(B, &X, bool) -> B>(
+                mut acc: B,
+                a: &[X; $len],
+                bits: &$b_type,
+                fold_fn: F,
+            ) -> B {
+                for i in 0..$len {
+                    acc = fold_fn(acc, &a[i], bits.get_bit(i));
+                }
+                acc
+            }
+        }
+        impl<O> BitMap<bool, O> for [(); $len] {
+            fn map_mut<F: Fn(bool, &mut O)>(bits: &$b_type, target: &mut [O; $len], map_fn: F) {
+                for i in 0..$len {
+                    map_fn(bits.get_bit(i), &mut target[i]);
+                }
             }
         }
 

@@ -122,11 +122,23 @@ where
     Self: Shape + Sized + Pack<I> + Pack<O>,
 {
     fn map<F: Fn(&I) -> O>(input: &<Self as Pack<I>>::T, map_fn: F) -> <Self as Pack<O>>::T;
+    fn map_mut<F: Fn(&I, &mut O)>(
+        input: &<Self as Pack<I>>::T,
+        target: &mut <Self as Pack<O>>::T,
+        map_fn: F,
+    );
 }
 
 impl<I, O> Map<I, O> for () {
     fn map<F: Fn(&I) -> O>(input: &I, map_fn: F) -> O {
         map_fn(input)
+    }
+    fn map_mut<F: Fn(&I, &mut O)>(
+        input: &<Self as Pack<I>>::T,
+        target: &mut <Self as Pack<O>>::T,
+        map_fn: F,
+    ) {
+        map_fn(input, target);
     }
 }
 
@@ -141,6 +153,15 @@ where
             target[i] = <S as Map<I, O>>::map(&input[i], &map_fn);
         }
         target
+    }
+    fn map_mut<F: Fn(&I, &mut O)>(
+        input: &[<S as Pack<I>>::T; L],
+        target: &mut [<S as Pack<O>>::T; L],
+        map_fn: F,
+    ) {
+        for i in 0..L {
+            <S as Map<I, O>>::map_mut(&input[i], &mut target[i], &map_fn);
+        }
     }
 }
 
@@ -265,11 +286,20 @@ where
         b: &<Self as Pack<B>>::T,
         map_fn: F,
     ) -> <Self as Pack<O>>::T;
+    fn zip_map_mut<F: Fn(&A, &B, &mut O)>(
+        a: &<Self as Pack<A>>::T,
+        b: &<Self as Pack<B>>::T,
+        target: &mut <Self as Pack<O>>::T,
+        map_fn: F,
+    );
 }
 
 impl<A, B, O> ZipMap<A, B, O> for () {
     fn zip_map<F: Fn(&A, &B) -> O>(a: &A, b: &B, map_fn: F) -> O {
         map_fn(a, b)
+    }
+    fn zip_map_mut<F: Fn(&A, &B, &mut O)>(a: &A, b: &B, target: &mut O, map_fn: F) {
+        map_fn(a, b, target)
     }
 }
 
@@ -289,6 +319,16 @@ where
         }
         target
     }
+    fn zip_map_mut<F: Fn(&A, &B, &mut O)>(
+        a: &[<S as Pack<A>>::T; L],
+        b: &[<S as Pack<B>>::T; L],
+        target: &mut [<S as Pack<O>>::T; L],
+        map_fn: F,
+    ) {
+        for i in 0..L {
+            S::zip_map_mut(&a[i], &b[i], &mut target[i], &map_fn);
+        }
+    }
 }
 
 pub trait LongDefault {
@@ -301,9 +341,15 @@ impl LongDefault for f32 {
     }
 }
 
-impl<T: LongDefault> LongDefault for (T, u32) {
+impl LongDefault for i32 {
     fn long_default() -> Self {
-        (T::long_default(), 0)
+        0i32
+    }
+}
+
+impl<A: LongDefault, B: LongDefault> LongDefault for (A, B) {
+    fn long_default() -> Self {
+        (A::long_default(), B::long_default())
     }
 }
 
