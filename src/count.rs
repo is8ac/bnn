@@ -75,6 +75,22 @@ impl ElementwiseAdd for u32 {
         *self += other * weight;
     }
 }
+impl ElementwiseAdd for u16 {
+    fn elementwise_add(&mut self, other: &u16) {
+        *self += other;
+    }
+    fn weighted_elementwise_add(&mut self, other: &Self, weight: u32) {
+        *self += other * weight as u16;
+    }
+}
+impl ElementwiseAdd for u8 {
+    fn elementwise_add(&mut self, other: &u8) {
+        *self += other;
+    }
+    fn weighted_elementwise_add(&mut self, other: &Self, weight: u32) {
+        *self += other * weight as u8;
+    }
+}
 
 impl ElementwiseAdd for usize {
     fn elementwise_add(&mut self, other: &usize) {

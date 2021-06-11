@@ -17,15 +17,17 @@ num_cpus = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 bincode = { version = "1.2", features = ["i128"] }
 criterion = "0.3"
+image = "0.23"
+lazy_static = "1.4"
 
 [[bench]]
 name = "bit_perf"
 harness = false
 
 [profile.bench]
-#codegen-units = 1
+codegen-units = 1
 lto = "thin"
 
 [profile.release]
-#codegen-units = 1
+codegen-units = 1
 lto = "thin"

@@ -8,6 +8,7 @@ use std::fmt;
 use std::iter;
 use std::num::Wrapping;
 use std::ops;
+use std::ops::AddAssign;
 
 pub trait BitPack<E> {
     type Word;
@@ -79,6 +80,7 @@ impl BitScaler for bool {
     fn states() -> Vec<bool> {
         vec![true, false]
     }
+    #[inline(always)]
     fn bma(self, input: bool) -> u32 {
         (self ^ input) as u32
     }
@@ -92,6 +94,7 @@ impl BitScaler for Option<bool> {
     fn states() -> Vec<Option<bool>> {
         vec![Some(true), None, Some(false)]
     }
+    #[inline(always)]
     fn bma(self, input: bool) -> u32 {
         if let Some(sign) = self {
             (sign ^ input) as u32 * 2
@@ -718,75 +721,71 @@ pub trait QuatWord {
     fn magn(self) -> Self::Word;
 }
 
-pub trait IncrementCounters
+pub trait IncrementCounters<T>
 where
-    Self: Shape + Sized + Pack<u32> + BitPack<bool>,
+    Self: Shape + Sized + Pack<T> + BitPack<bool>,
 {
-    fn some_option_counted_increment(
-        bits: &<Self as BitPack<bool>>::T,
-        mut counters: (usize, <Self as Pack<u32>>::T, u32),
-    ) -> (usize, <Self as Pack<u32>>::T, u32) {
+    /*
+    fn some_option_counted_increment(bits: &<Self as BitPack<bool>>::T, mut counters: (usize, <Self as Pack<T>>::T, u32)) -> (usize, <Self as Pack<T>>::T, u32) {
         counters.0 += 1;
         Self::increment_in_place(bits, &mut counters.1);
         counters
     }
-    fn some_option_counted_increment_in_place(
-        bits: &<Self as BitPack<bool>>::T,
-        counters: &mut (usize, <Self as Pack<u32>>::T, u32),
-    ) {
+    fn some_option_counted_increment_in_place(bits: &<Self as BitPack<bool>>::T, counters: &mut (usize, <Self as Pack<T>>::T, u32)) {
         counters.0 += 1;
         Self::increment_in_place(bits, &mut counters.1);
     }
-    fn none_option_counted_increment(
-        bit: bool,
-        mut counters: (usize, <Self as Pack<u32>>::T, u32),
-    ) -> (usize, <Self as Pack<u32>>::T, u32) {
+    fn none_option_counted_increment(bit: bool, mut counters: (usize, <Self as Pack<T>>::T, u32)) -> (usize, <Self as Pack<T>>::T, u32) {
         counters.0 += 1;
         counters.2 += bit as u32;
         counters
     }
-    fn none_option_counted_increment_in_place(
-        bit: bool,
-        counters: &mut (usize, <Self as Pack<u32>>::T, u32),
-    ) {
+    fn none_option_counted_increment_in_place(bit: bool, counters: &mut (usize, <Self as Pack<T>>::T, u32)) {
         counters.0 += 1;
         counters.2 += bit as u32;
     }
-    fn finalize_option_counted_increment(
-        mut counters: (usize, <Self as Pack<u32>>::T, u32),
-    ) -> (usize, <Self as Pack<u32>>::T) {
+    fn finalize_option_counted_increment(mut counters: (usize, <Self as Pack<u32>>::T, u32)) -> (usize, <Self as Pack<T>>::T) {
         Self::add_in_place(counters.2, &mut counters.1);
         (counters.0, counters.1)
     }
+    */
+    fn counted_increment_in_place(
+        bits: &<Self as BitPack<bool>>::T,
+        counters: &mut (usize, <Self as Pack<T>>::T),
+    ) {
+        counters.0 += 1;
+        Self::increment_in_place(bits, &mut counters.1);
+    }
     fn counted_increment(
         bits: &<Self as BitPack<bool>>::T,
-        counters: (usize, <Self as Pack<u32>>::T),
-    ) -> (usize, <Self as Pack<u32>>::T) {
+        counters: (usize, <Self as Pack<T>>::T),
+    ) -> (usize, <Self as Pack<T>>::T) {
         (counters.0 + 1, Self::increment(bits, counters.1))
     }
     fn increment(
         bits: &<Self as BitPack<bool>>::T,
-        mut counters: <Self as Pack<u32>>::T,
-    ) -> <Self as Pack<u32>>::T {
+        mut counters: <Self as Pack<T>>::T,
+    ) -> <Self as Pack<T>>::T {
         Self::increment_in_place(bits, &mut counters);
         counters
     }
-    fn add_in_place(val: u32, counters: &mut <Self as Pack<u32>>::T);
-    fn increment_in_place(bits: &<Self as BitPack<bool>>::T, counters: &mut <Self as Pack<u32>>::T);
+    fn add_in_place(val: T, counters: &mut <Self as Pack<T>>::T);
+    fn increment_in_place(bits: &<Self as BitPack<bool>>::T, counters: &mut <Self as Pack<T>>::T);
 }
 
-impl<S: IncrementCounters, const L: usize> IncrementCounters for [S; L]
+impl<S: IncrementCounters<T>, T: FromBool + Copy, const L: usize> IncrementCounters<T> for [S; L]
 where
-    S: Pack<u32> + BitPack<bool>,
+    S: Pack<T> + BitPack<bool>,
 {
-    fn add_in_place(val: u32, counters: &mut <Self as Pack<u32>>::T) {
+    fn add_in_place(val: T, counters: &mut <Self as Pack<T>>::T) {
         for i in 0..L {
             S::add_in_place(val, &mut counters[i]);
         }
     }
+    #[inline(always)]
     fn increment_in_place(
         bits: &[<S as BitPack<bool>>::T; L],
-        counters: &mut [<S as Pack<u32>>::T; L],
+        counters: &mut [<S as Pack<T>>::T; L],
     ) {
         for i in 0..L {
             S::increment_in_place(&bits[i], &mut counters[i]);
@@ -805,6 +804,7 @@ impl<S, W, const L: usize> BMA<W> for [S; L]
 where
     S: BMA<W> + BitPack<bool> + BitPack<W>,
 {
+    #[inline(always)]
     fn bma(weights: &[<S as BitPack<W>>::T; L], bits: &[<S as BitPack<bool>>::T; L]) -> u32 {
         let mut sum = 0_u32;
         for i in 0..L {
@@ -836,6 +836,23 @@ impl<W, S: PackedIndexSGet<W>, const L: usize> PackedIndexSGet<W> for [S; L] {
     }
 }
 
+pub trait RandInit {
+    fn rand_bits<R: Rng, const FREQ: usize>(rng: &mut R) -> Self;
+}
+
+impl<T: RandInit, const L: usize> RandInit for [T; L]
+where
+    [T; L]: Default,
+{
+    fn rand_bits<R: Rng, const FREQ: usize>(rng: &mut R) -> [T; L] {
+        let mut target = <[T; L]>::default();
+        for i in 0..L {
+            target[i] = <T as RandInit>::rand_bits::<R, FREQ>(rng);
+        }
+        target
+    }
+}
+
 macro_rules! impl_long_default_for_type {
     ($type:ty) => {
         impl LongDefault for $type {
@@ -851,8 +868,32 @@ impl_long_default_for_type!(Option<bool>);
 //impl_long_default_for_type!((bool, bool));
 impl_long_default_for_type!(Option<(bool, bool)>);
 
+pub trait FromBool {
+    fn from_bool(b: bool) -> Self;
+    fn from_u8(b: u8) -> Self;
+    fn to_u64(self) -> u64;
+    const ONE: Self;
+    const MAX: usize;
+}
+
 macro_rules! for_uints {
     ($q_type:ident, $t_type:ident, $b_type:ident, $u_type:ty, $len:expr, $format_string:expr) => {
+        impl FromBool for $u_type {
+            #[inline(always)]
+            fn from_bool(b: bool) -> $u_type {
+                b as $u_type
+            }
+            #[inline(always)]
+            fn from_u8(b: u8) -> $u_type {
+                b as $u_type
+            }
+            fn to_u64(self) -> u64 {
+                self as u64
+            }
+            const ONE: $u_type = 1;
+            const MAX: usize = <$u_type>::MAX as usize;
+        }
+
         impl_long_default_for_type!($u_type);
 
         #[allow(non_camel_case_types)]
@@ -882,6 +923,10 @@ macro_rules! for_uints {
             #[inline(always)]
             pub fn get_bit(self, index: usize) -> bool {
                 ((self.0 >> index) & 1) == 1
+            }
+            #[inline(always)]
+            pub fn get_bit_u8(self, index: usize) -> u8 {
+                ((self.0 >> index) & 1) as u8
             }
             #[inline(always)]
             pub fn set_bit_in_place(&mut self, index: usize, value: bool) {
@@ -1068,7 +1113,15 @@ macro_rules! for_uints {
                 }
             }
         }
-
+        impl RandInit for $b_type {
+            fn rand_bits<R: Rng, const FREQ: usize>(rng: &mut R) -> $b_type {
+                let mut target: $u_type = rng.gen();
+                for _ in 0..FREQ {
+                    target &= rng.gen::<$u_type>();
+                }
+                $b_type(target)
+            }
+        }
         impl PackedIndexSGet<bool> for [(); $len] {
             #[inline(always)]
             fn get(&array: &$b_type, (i, _): (u8, ())) -> bool {
@@ -1090,15 +1143,17 @@ macro_rules! for_uints {
             }
         }
 
-        impl IncrementCounters for [(); $len] {
-            fn add_in_place(val: u32, counters: &mut [u32; $len]) {
+        impl<T: Copy + AddAssign<T> + FromBool> IncrementCounters<T> for [(); $len] {
+            fn add_in_place(val: T, counters: &mut [T; $len]) {
                 for i in 0..$len {
                     counters[i] += val;
                 }
             }
-            fn increment_in_place(&bits: &$b_type, counters: &mut [u32; $len]) {
+            #[inline(always)]
+            fn increment_in_place(&bits: &$b_type, counters: &mut [T; $len]) {
                 for i in 0..$len {
-                    counters[i] += bits.get_bit(i) as u32;
+                    //counters[i] += T::from_bool(bits.get_bit(i));
+                    counters[i] += T::from_u8(bits.get_bit_u8(i));
                 }
             }
         }

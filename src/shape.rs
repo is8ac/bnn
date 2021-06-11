@@ -346,6 +346,11 @@ impl LongDefault for i32 {
         0i32
     }
 }
+impl LongDefault for usize {
+    fn long_default() -> Self {
+        0usize
+    }
+}
 
 impl<A: LongDefault, B: LongDefault> LongDefault for (A, B) {
     fn long_default() -> Self {

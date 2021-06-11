@@ -37,6 +37,7 @@ Use `--release` to make tests run faster.
 - [Probabilistic Binary Neural Networks](https://arxiv.org/abs/1809.03368)
 - [A Review of Binarized Neural Networks](https://www.mdpi.com/2079-9292/8/6/661/pdf)
 - [Binary Neural Networks: A Survey](https://arxiv.org/abs/2004.03333)
+- [Enabling Binary Neural Network Training on the Edge](https://arxiv.org/abs/2102.04270)
 
 https://openreview.net/pdf?id=ryxfHnCctX
 
