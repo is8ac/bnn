@@ -1,4 +1,4 @@
-use bnn::bits::{b32, BitMap, BitPack, FromBool, IncrementCounters, PackedMap, BMA};
+use bnn::bits::{b32, t32, BitMap, BitPack, FromBool, IncrementCounters, PackedMap, BMA};
 use bnn::count::ElementwiseAdd;
 use bnn::ecc;
 use bnn::shape::{LongDefault, Map, Pack, Shape, ZipMap};
@@ -29,38 +29,44 @@ where
         })
 }
 
-fn split<I, O, T>(
+fn split<I, O, T, B, F: Fn(T, T, u64, u64) -> B>(
     examples: &Vec<(<I as BitPack<bool>>::T, <O as BitPack<bool>>::T)>,
-) -> <O as Pack<<I as BitPack<bool>>::T>>::T
+    pack_fn: F,
+) -> <O as Pack<<I as BitPack<B>>::T>>::T
 where
-    T: Copy + PartialOrd + Add<Output = T>,
-    I: BitPack<bool>
+    B: Copy,
+    T: Copy + PartialOrd + Add<Output = T> + std::fmt::Display + FromBool,
+    I: BitPack<B>
+        + BitPack<bool>
         + Pack<T>
-        + PackedMap<bool, bool>
-        + ZipMap<T, T, bool>
+        + PackedMap<B, B>
+        + ZipMap<T, T, B>
         + IncrementCounters<T>
         + ZipMap<T, T, T>,
     O: BitPack<bool>
-        + Pack<<I as BitPack<bool>>::T>
-        + Pack<[(usize, <I as Pack<T>>::T); 2]>
-        + Map<[(usize, <I as Pack<T>>::T); 2], <I as BitPack<bool>>::T>
+        + Pack<<I as BitPack<B>>::T>
+        + Pack<[(u64, <I as Pack<T>>::T); 2]>
+        + Map<[(u64, <I as Pack<T>>::T); 2], <I as BitPack<B>>::T>
         + ZipMap<
-            [(usize, <I as Pack<T>>::T); 2],
-            [(usize, <I as Pack<T>>::T); 2],
-            [(usize, <I as Pack<T>>::T); 2],
-        > + BitMap<bool, [(usize, <I as Pack<T>>::T); 2]>,
-    <O as Pack<[(usize, <I as Pack<T>>::T); 2]>>::T: LongDefault + Sync + Send,
+            [(u64, <I as Pack<T>>::T); 2],
+            [(u64, <I as Pack<T>>::T); 2],
+            [(u64, <I as Pack<T>>::T); 2],
+        > + BitMap<bool, [(u64, <I as Pack<T>>::T); 2]>,
+    <O as Pack<[(u64, <I as Pack<T>>::T); 2]>>::T: LongDefault + Sync + Send,
     <I as BitPack<bool>>::T: Sync,
     <O as BitPack<bool>>::T: Sync,
-    [(); 2]: ZipMap<(usize, <I as Pack<T>>::T), (usize, <I as Pack<T>>::T), (usize, <I as Pack<T>>::T)>
-        + Pack<(usize, <I as Pack<T>>::T), T = [(usize, <I as Pack<T>>::T); 2]>,
+    [(); 2]: ZipMap<(u64, <I as Pack<T>>::T), (u64, <I as Pack<T>>::T), (u64, <I as Pack<T>>::T)>
+        + Pack<(u64, <I as Pack<T>>::T), T = [(u64, <I as Pack<T>>::T); 2]>,
 {
+    dbg!(std::mem::size_of::<
+        <O as Pack<[(u64, <I as Pack<T>>::T); 2]>>::T,
+    >());
     let counts = examples
         .par_iter()
         .fold(
-            || <O as Pack<[(usize, <I as Pack<T>>::T); 2]>>::T::long_default(),
+            || <O as Pack<[(u64, <I as Pack<T>>::T); 2]>>::T::long_default(),
             |mut acc, (input, target)| {
-                <O as BitMap<bool, [(usize, <I as Pack<T>>::T); 2]>>::map_mut(
+                <O as BitMap<bool, [(u64, <I as Pack<T>>::T); 2]>>::map_mut(
                     target,
                     &mut acc,
                     |sign, counters| {
@@ -75,14 +81,14 @@ where
         )
         .reduce_with(|a, b| {
             <O as ZipMap<
-                [(usize, <I as Pack<T>>::T); 2],
-                [(usize, <I as Pack<T>>::T); 2],
-                [(usize, <I as Pack<T>>::T); 2],
+                [(u64, <I as Pack<T>>::T); 2],
+                [(u64, <I as Pack<T>>::T); 2],
+                [(u64, <I as Pack<T>>::T); 2],
             >>::zip_map(&a, &b, |a, b| {
                 <[(); 2] as ZipMap<
-                    (usize, <I as Pack<T>>::T),
-                    (usize, <I as Pack<T>>::T),
-                    (usize, <I as Pack<T>>::T),
+                    (u64, <I as Pack<T>>::T),
+                    (u64, <I as Pack<T>>::T),
+                    (u64, <I as Pack<T>>::T),
                 >>::zip_map(a, b, |a, b| {
                     (
                         a.0 + b.0,
@@ -93,16 +99,17 @@ where
         })
         .unwrap();
 
-    <O as Map<[(usize, <I as Pack<T>>::T); 2], <I as BitPack<bool>>::T>>::map(&counts, |counts| {
-        let bools = <I as ZipMap<T, T, bool>>::zip_map(&counts[0].1, &counts[1].1, |&a, &b| a < b);
-        <I as PackedMap<bool, bool>>::map(&bools, |&sign| sign)
+    <O as Map<[(u64, <I as Pack<T>>::T); 2], <I as BitPack<B>>::T>>::map(&counts, |counts| {
+        //println!("c: {} {}", counts[0].0, counts[1].0);
+        let bools = <I as ZipMap<T, T, B>>::zip_map(&counts[0].1, &counts[1].1, |&b0, &b1| {
+            pack_fn(b0, b1, counts[0].0, counts[1].0)
+        });
+        <I as PackedMap<B, B>>::map(&bools, |&sign| sign)
     })
 }
 
-fn lloyds<S, T: FromBool + Copy>(
-    strings: &Vec<<S as BitPack<bool>>::T>,
-    centers: Vec<<S as BitPack<bool>>::T>,
-) -> Vec<<S as BitPack<bool>>::T>
+/*
+fn lloyds<S, T: FromBool + Copy>(strings: &Vec<<S as BitPack<bool>>::T>, centers: Vec<<S as BitPack<bool>>::T>) -> Vec<<S as BitPack<bool>>::T>
 where
     S: BitPack<bool> + Pack<T> + BMA<bool> + IncrementCounters<T> + PackedMap<T, bool>,
     <S as Pack<T>>::T: LongDefault + Send + Sync + ElementwiseAdd + std::fmt::Debug,
@@ -112,23 +119,10 @@ where
     let counts: Vec<(usize, <S as Pack<T>>::T)> = strings
         .par_iter()
         .fold(
-            || {
-                centers
-                    .iter()
-                    .map(|_| (0, <S as Pack<T>>::T::long_default()))
-                    .collect::<Vec<_>>()
-            },
+            || centers.iter().map(|_| (0, <S as Pack<T>>::T::long_default())).collect::<Vec<_>>(),
             |mut acc, string| {
-                let closest_center = centers
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, center)| <S as BMA<bool>>::bma(center, string))
-                    .unwrap()
-                    .0;
-                <S as IncrementCounters<T>>::counted_increment_in_place(
-                    string,
-                    &mut acc[closest_center],
-                );
+                let closest_center = centers.iter().enumerate().min_by_key(|(_, center)| <S as BMA<bool>>::bma(center, string)).unwrap().0;
+                <S as IncrementCounters<T>>::counted_increment_in_place(string, &mut acc[closest_center]);
                 acc
             },
         )
@@ -156,10 +150,7 @@ where
     Standard: Distribution<<S as BitPack<bool>>::T>,
 {
     compiler_fence(Ordering::SeqCst);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(t)
-        .build()
-        .unwrap();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(t).build().unwrap();
     //rayon::ThreadPoolBuilder::new().num_threads(t).build_global().unwrap();
     let mut rng = Hc128Rng::seed_from_u64(0);
     let bits: Vec<_> = (0..n)
@@ -189,12 +180,10 @@ where
             })
             .collect::<Vec<_>>()
     });
-    let bar = results
-        .iter()
-        .fold(<S as Pack<T>>::T::long_default(), |mut a, b| {
-            a.elementwise_add(&b);
-            a
-        });
+    let bar = results.iter().fold(<S as Pack<T>>::T::long_default(), |mut a, b| {
+        a.elementwise_add(&b);
+        a
+    });
 
     compiler_fence(Ordering::SeqCst);
     let elapsed_b = start.elapsed();
@@ -215,59 +204,130 @@ where
     );
     compiler_fence(Ordering::SeqCst);
 }
+*/
 
-type InputShape = [[[(); 32]; 8]; 2];
+#[inline(always)]
+fn trit_pack(ba0: u32, ba1: u32, a0: u64, a1: u64, t: f64) -> Option<bool> {
+    let n = a0 + a1;
+    let pba0 = ba0 as f64 / n as f64;
+    let pba1 = ba1 as f64 / n as f64;
+    if pba0 - pba1 > t {
+        Some(false)
+    } else if pba1 - pba0 > t {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+fn bit_pack(a: u32, b: u32) -> bool {
+    a < b
+}
+
+type InputShape = [[[(); 32]; 8]; 4];
 type OutputShape = [[(); 32]; 8];
+type WeightType = Option<bool>;
 
 fn main() {
+    println!(
+        "{}",
+        std::mem::size_of::<
+            <OutputShape as Pack<[(u64, <[[[(); 32]; 8]; 1] as Pack<u32>>::T); 2]>>::T,
+        >()
+    );
+    println!(
+        "{}",
+        std::mem::size_of::<
+            <OutputShape as Pack<[(u64, <[[[(); 32]; 8]; 2] as Pack<u32>>::T); 2]>>::T,
+        >()
+    );
+    println!(
+        "{}",
+        std::mem::size_of::<
+            <OutputShape as Pack<[(u64, <[[[(); 32]; 8]; 3] as Pack<u32>>::T); 2]>>::T,
+        >()
+    );
+    println!(
+        "{}",
+        std::mem::size_of::<
+            <OutputShape as Pack<[(u64, <[[[(); 32]; 8]; 4] as Pack<u32>>::T); 2]>>::T,
+        >()
+    );
+    println!(
+        "{}",
+        std::mem::size_of::<
+            <OutputShape as Pack<[(u64, <[[[(); 32]; 8]; 5] as Pack<u32>>::T); 2]>>::T,
+        >()
+    );
+    println!(
+        "{}",
+        std::mem::size_of::<
+            <OutputShape as Pack<[(u64, <[[[(); 32]; 8]; 6] as Pack<u32>>::T); 2]>>::T,
+        >()
+    );
+    println!(
+        "{}",
+        std::mem::size_of::<
+            <OutputShape as Pack<[(u64, <[[[(); 32]; 8]; 7] as Pack<u32>>::T); 2]>>::T,
+        >()
+    );
+    println!(
+        "{}",
+        std::mem::size_of::<
+            <OutputShape as Pack<[(u64, <[[[(); 32]; 8]; 8] as Pack<u32>>::T); 2]>>::T,
+        >()
+    );
+
     rayon::ThreadPoolBuilder::new()
-        .num_threads(16)
+        .num_threads(9)
         .stack_size(2usize.pow(31))
         .build_global()
         .unwrap();
 
-    let file = File::open("tiny-shakespeare.txt").unwrap();
-    //let file = File::open("target/release/count_bench").unwrap();
+    //let file = File::open("tiny-shakespeare.txt").unwrap();
+    let file = File::open("target/release/count_bench").unwrap();
     let mut buf_reader = BufReader::new(file);
     let bytes: Vec<[b32; 8]> = buf_reader
         .bytes()
-        .take(2usize.pow(20))
+        .take(2usize.pow(16))
         .map(|x| {
             let x = x.unwrap();
             ecc::encode_byte(x)
         })
         .collect();
-
     /*
-    let bytes: Vec<[b32; 8]> = (0..2000_u32)
-        .map(|x| (x % 210) as u8)
-        .chain((0..255))
-        .map(|x| ecc::encode_byte(x))
-        .collect();
+    let bytes: Vec<[b32; 8]> = (0..5000_u32).map(|x| (x % 60) as u8).chain((0..255)).map(|x| ecc::encode_byte(x)).collect();
     */
 
-    let examples: Vec<_> = bytes.windows(3).map(|w| ([w[0], w[1]], w[2])).collect();
+    let examples: Vec<_> = bytes
+        .windows(9)
+        .map(|w| ([w[0], w[1], w[2], w[3]], w[8]))
+        .collect();
 
     let start = Instant::now();
-    let weights: [[<InputShape as BitPack<bool>>::T; 32]; 8] =
-        split::<InputShape, OutputShape, u32>(&examples);
-    dbg!(&weights);
+    let weights: [[<InputShape as BitPack<WeightType>>::T; 32]; 8] =
+        split::<InputShape, OutputShape, u32, WeightType, _>(&examples, |ba0, ba1, a0, a1| {
+            trit_pack(ba0, ba1, a0, a1, 0.25f64)
+        });
+    //dbg!(&weights);
     dbg!(start.elapsed());
 
     let n_correct: u64 = examples
         .iter()
         .map(|(input, target)| {
-            let output = <OutputShape as PackedMap<<InputShape as BitPack<bool>>::T, bool>>::map(
-                &weights,
-                |weights| {
-                    <InputShape as BMA<bool>>::bma(weights, input) < (InputShape::N / 2) as u32
-                },
-            );
+            let output =
+                <OutputShape as PackedMap<<InputShape as BitPack<WeightType>>::T, bool>>::map(
+                    &weights,
+                    |weights| {
+                        <InputShape as BMA<WeightType>>::bma(weights, input)
+                            < <InputShape as BMA<WeightType>>::THRESHOLD
+                    },
+                );
             //dbg!(&output);
             let byte = ecc::decode_byte(&output);
             let target_byte = ecc::decode_byte(&target);
             //dbg!(byte);
-            //dbg!(target);
+            //dbg!(target_byte);
             (byte == target_byte) as u64
         })
         .sum();

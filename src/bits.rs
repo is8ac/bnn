@@ -751,15 +751,15 @@ where
     */
     fn counted_increment_in_place(
         bits: &<Self as BitPack<bool>>::T,
-        counters: &mut (usize, <Self as Pack<T>>::T),
+        counters: &mut (u64, <Self as Pack<T>>::T),
     ) {
         counters.0 += 1;
         Self::increment_in_place(bits, &mut counters.1);
     }
     fn counted_increment(
         bits: &<Self as BitPack<bool>>::T,
-        counters: (usize, <Self as Pack<T>>::T),
-    ) -> (usize, <Self as Pack<T>>::T) {
+        counters: (u64, <Self as Pack<T>>::T),
+    ) -> (u64, <Self as Pack<T>>::T) {
         (counters.0 + 1, Self::increment(bits, counters.1))
     }
     fn increment(
@@ -798,6 +798,7 @@ where
     Self: BitPack<W> + BitPack<bool>,
 {
     fn bma(weights: &<Self as BitPack<W>>::T, bits: &<Self as BitPack<bool>>::T) -> u32;
+    const THRESHOLD: u32;
 }
 
 impl<S, W, const L: usize> BMA<W> for [S; L]
@@ -812,6 +813,7 @@ where
         }
         sum
     }
+    const THRESHOLD: u32 = <S as BMA<W>>::THRESHOLD * L as u32;
 }
 
 /// Packed Index Set/Get
@@ -1054,12 +1056,14 @@ macro_rules! for_uints {
             fn bma(&weights: &$b_type, &rhs: &$b_type) -> u32 {
                 (weights.0 ^ rhs.0).count_ones()
             }
+            const THRESHOLD: u32 = $len / 2;
         }
         impl BMA<Option<bool>> for [(); $len] {
             #[inline(always)]
             fn bma(&weights: &$t_type, &rhs: &$b_type) -> u32 {
                 weights.1.count_zeros() + ((weights.0 ^ rhs.0) & weights.1).count_ones() * 2
             }
+            const THRESHOLD: u32 = $len;
         }
 
         impl WBBZM<bool> for [(); $len] {
@@ -1183,6 +1187,15 @@ macro_rules! for_uints {
                 let mut target = <$b_type>::default();
                 for i in 0..$len {
                     target.set_bit_in_place(i, map_fn(&input[i]));
+                }
+                target
+            }
+        }
+        impl<I> PackedMap<I, Option<bool>> for [(); $len] {
+            fn map<F: Fn(&I) -> Option<bool>>(input: &[I; $len], map_fn: F) -> $t_type {
+                let mut target = <$t_type>::default();
+                for i in 0..$len {
+                    target.set_trit_in_place(i, map_fn(&input[i]));
                 }
                 target
             }

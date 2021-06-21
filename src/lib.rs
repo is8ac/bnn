@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![forbid(unreachable_pub)]
-#![feature(test)]
+//#![feature(test)]
 
 #[macro_use]
 extern crate lazy_static;
