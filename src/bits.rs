@@ -3,8 +3,8 @@
 use crate::shape::{LongDefault, Pack, Shape, Wrap};
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::{
-    uint8x16_t, vaddq_u8, vandq_u8, vceqzq_u8, vld1q_dup_u32, vld1q_dup_u8, vld1q_u8, vqtbl1q_u8,
-    vreinterpretq_u8_u32, vst1q_u8,
+    uint8x16_t, vaddq_u8, vandq_u8, vceqzq_u8, vld1q_dup_u32, vld1q_dup_u8, vld1q_s8, vld1q_u8,
+    vmvnq_u8, vqshlq_u8, vqtbl1q_u8, vreinterpretq_u8_u32, vst1q_s8, vst1q_u8,
 };
 #[cfg(target_feature = "avx2")]
 use core::arch::x86_64::{
@@ -916,7 +916,10 @@ const BYTE_BIT_MASK: [u8; 32] = [
 #[cfg(target_arch = "aarch64")]
 const NEON_BYTE_BIT_MASK: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
 
-trait SIMDincrementCounters
+#[cfg(target_arch = "aarch64")]
+const NEON_BYTE_SHIFTS: [i8; 16] = [0, -1, -2, -3, -4, -5, -6, -7, 0, -1, -2, -3, -4, -5, -6, -7];
+
+pub trait SIMDincrementCounters
 where
     Self: Pack<u32> + BitPack<bool>,
     Self::SIMDbyts: Sized,
@@ -924,7 +927,7 @@ where
     type SIMDbyts;
     /// This function must not be called more then 256 times!!
     fn simd_increment_in_place(bools: &Self::SIMDbyts, counters: &mut Self::SIMDbyts);
-    fn add_to_u32s(byte_counters: Self::SIMDbyts, counters: &mut <Self as Pack<u32>>::T);
+    fn add_to_u32s(byte_counters: &Self::SIMDbyts, counters: &mut <Self as Pack<u32>>::T);
     fn expand_bits(bits: &<Self as BitPack<bool>>::T) -> Self::SIMDbyts;
     fn init_counters() -> Self::SIMDbyts;
 }
@@ -940,9 +943,9 @@ where
             T::simd_increment_in_place(&bits[i], &mut counters[i]);
         }
     }
-    fn add_to_u32s(byte_counters: Self::SIMDbyts, counters: &mut <Self as Pack<u32>>::T) {
+    fn add_to_u32s(byte_counters: &Self::SIMDbyts, counters: &mut <Self as Pack<u32>>::T) {
         for i in 0..L {
-            T::add_to_u32s(byte_counters[i], &mut counters[i]);
+            T::add_to_u32s(&byte_counters[i], &mut counters[i]);
         }
     }
     fn expand_bits(bits: &<Self as BitPack<bool>>::T) -> Self::SIMDbyts {
@@ -960,6 +963,23 @@ where
             target[i] = MaybeUninit::new(T::init_counters());
         }
         unsafe { target.as_ptr().cast::<[T::SIMDbyts; L]>().read() }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl LongDefault for __m256i {
+    #[cfg(target_feature = "avx2")]
+    fn long_default() -> __m256i {
+        unsafe { _mm256_setzero_si256() }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl LongDefault for [uint8x16_t; 2] {
+    #[cfg(target_arch = "aarch64")]
+    fn long_default() -> [uint8x16_t; 2] {
+        let dummy_data = [0u8; 32];
+        unsafe { [vld1q_u8(&dummy_data[0]), vld1q_u8(&dummy_data[0])] }
     }
 }
 
@@ -995,7 +1015,7 @@ impl SIMDincrementCounters for [(); 32] {
     }
     #[cfg(target_feature = "avx2")]
     #[inline(always)]
-    fn add_to_u32s(byte_counters: __m256i, counters: &mut [u32; 32]) {
+    fn add_to_u32s(&byte_counters: &__m256i, counters: &mut [u32; 32]) {
         let mut target = [0u8; 32];
         unsafe {
             _mm256_storeu_si256(
@@ -1010,25 +1030,19 @@ impl SIMDincrementCounters for [(); 32] {
     }
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
-    fn add_to_u32s(byte_counters: [uint8x16_t; 2], counters: &mut [u32; 32]) {
-        let mut target = [0u8; 16];
+    fn add_to_u32s(byte_counters: &[uint8x16_t; 2], counters: &mut [u32; 32]) {
+        let mut target = [0u8; 32];
         unsafe {
             vst1q_u8(&mut target[0], byte_counters[0]);
+            vst1q_u8(&mut target[16], byte_counters[1]);
         }
-        for i in 0..16 {
-            counters[i] += target[i] as u32;
-        }
-
-        unsafe {
-            vst1q_u8(&mut target[0], byte_counters[1]);
-        }
-        for i in 16..32 {
+        for i in 0..32 {
             counters[i] += target[i] as u32;
         }
     }
     #[cfg(not(any(target_arch = "aarch64", target_feature = "avx2")))]
     #[inline(always)]
-    fn add_to_u32s(byte_counters: [u8; 32], counters: &mut [u32; 32]) {
+    fn add_to_u32s(byte_counters: &[u8; 32], counters: &mut [u32; 32]) {
         for i in 0..32 {
             counters[i] += byte_counters[i] as u32;
         }
@@ -1103,10 +1117,11 @@ impl SIMDincrementCounters for [(); 32] {
 fn neon_extract_bits(expanded: uint8x16_t, mask1: uint8x16_t, mask2: uint8x16_t) -> uint8x16_t {
     unsafe {
         let ones = vld1q_dup_u8(&1u8);
+        let bit_shifts = vld1q_s8(&NEON_BYTE_SHIFTS[0]);
+
         let shuffled = vqtbl1q_u8(expanded, mask1);
-        let masked = vandq_u8(shuffled, mask2);
-        let is_zero = vceqzq_u8(masked);
-        vandq_u8(is_zero, ones)
+        let shifted = vqshlq_u8(shuffled, bit_shifts);
+        vandq_u8(shifted, ones)
     }
 }
 
@@ -1527,7 +1542,9 @@ impl GetBit for usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{b128, b16, b32, b8, t128, t16, t32, t8, BitScaler, WeightArray};
+    use super::{
+        b128, b16, b32, b8, t128, t16, t32, t8, BitScaler, SIMDincrementCounters, WeightArray,
+    };
     use rand::Rng;
     use rand::SeedableRng;
     use rand_hc::Hc128Rng;
@@ -1739,4 +1756,24 @@ mod tests {
     weight_group!(test_bit, bool);
     weight_group!(test_trit, Option<bool>);
     //weight_group!(test_trit, (bool, bool));
+
+    #[test]
+    fn simd_expand_bits() {
+        let mut rng = Hc128Rng::seed_from_u64(0);
+
+        //let mut simd_counter = <[(); 32] as SIMDincrementCounters>::init_counters();
+
+        (0..10_000).for_each(|_| {
+            let word: b32 = rng.gen();
+            let mut test_counter = [0u32; 32];
+            for i in 0..32 {
+                test_counter[i] += word.get_bit_u8(i) as u32;
+            }
+            let mut simd_counter = [0u32; 32];
+
+            let expanded = <[(); 32] as SIMDincrementCounters>::expand_bits(&word);
+            <[(); 32] as SIMDincrementCounters>::add_to_u32s(expanded, &mut simd_counter);
+            assert_eq!(simd_counter, test_counter);
+        });
+    }
 }
