@@ -1,11 +1,23 @@
-// the bits mod contains traits to manipulate words of bits
+/// the bits mod contains traits to manipulate words of bits
 /// and arrays of bits.
 use crate::shape::{LongDefault, Pack, Shape, Wrap};
+#[cfg(target_arch = "aarch64")]
+use core::arch::aarch64::{
+    uint8x16_t, vaddq_u8, vandq_u8, vceqzq_u8, vld1q_dup_u32, vld1q_dup_u8, vld1q_u8, vqtbl1q_u8,
+    vreinterpretq_u8_u32, vst1q_u8,
+};
+#[cfg(target_feature = "avx2")]
+use core::arch::x86_64::{
+    __m256i, _mm256_add_epi8, _mm256_and_si256, _mm256_andnot_si256, _mm256_cmpeq_epi8,
+    _mm256_loadu_si256, _mm256_set1_epi32, _mm256_set1_epi8, _mm256_setzero_si256,
+    _mm256_shuffle_epi8, _mm256_storeu_si256,
+};
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::iter;
+use std::mem::{transmute, MaybeUninit};
 use std::num::Wrapping;
 use std::ops;
 use std::ops::AddAssign;
@@ -852,6 +864,249 @@ where
             target[i] = <T as RandInit>::rand_bits::<R, FREQ>(rng);
         }
         target
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+const PSHUF_BYTE_MASK: [u8; 32] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+];
+
+#[cfg(target_arch = "aarch64")]
+const TBL_BYTE_MASK_LOW: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1];
+#[cfg(target_arch = "aarch64")]
+const TBL_BYTE_MASK_HIGH: [u8; 16] = [2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3];
+
+#[cfg(target_feature = "avx2")]
+const BYTE_BIT_MASK: [u8; 32] = [
+    1 << 0,
+    1 << 1,
+    1 << 2,
+    1 << 3,
+    1 << 4,
+    1 << 5,
+    1 << 6,
+    1 << 7,
+    1 << 0,
+    1 << 1,
+    1 << 2,
+    1 << 3,
+    1 << 4,
+    1 << 5,
+    1 << 6,
+    1 << 7,
+    1 << 0,
+    1 << 1,
+    1 << 2,
+    1 << 3,
+    1 << 4,
+    1 << 5,
+    1 << 6,
+    1 << 7,
+    1 << 0,
+    1 << 1,
+    1 << 2,
+    1 << 3,
+    1 << 4,
+    1 << 5,
+    1 << 6,
+    1 << 7,
+];
+
+#[cfg(target_arch = "aarch64")]
+const NEON_BYTE_BIT_MASK: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
+
+trait SIMDincrementCounters
+where
+    Self: Pack<u32> + BitPack<bool>,
+    Self::SIMDbyts: Sized,
+{
+    type SIMDbyts;
+    /// This function must not be called more then 256 times!!
+    fn simd_increment_in_place(bools: &Self::SIMDbyts, counters: &mut Self::SIMDbyts);
+    fn add_to_u32s(byte_counters: Self::SIMDbyts, counters: &mut <Self as Pack<u32>>::T);
+    fn expand_bits(bits: &<Self as BitPack<bool>>::T) -> Self::SIMDbyts;
+    fn init_counters() -> Self::SIMDbyts;
+}
+
+impl<T: SIMDincrementCounters, const L: usize> SIMDincrementCounters for [T; L]
+where
+    T::SIMDbyts: Sized + Copy,
+{
+    type SIMDbyts = [T::SIMDbyts; L];
+    #[inline(always)]
+    fn simd_increment_in_place(bits: &[T::SIMDbyts; L], counters: &mut [T::SIMDbyts; L]) {
+        for i in 0..L {
+            T::simd_increment_in_place(&bits[i], &mut counters[i]);
+        }
+    }
+    fn add_to_u32s(byte_counters: Self::SIMDbyts, counters: &mut <Self as Pack<u32>>::T) {
+        for i in 0..L {
+            T::add_to_u32s(byte_counters[i], &mut counters[i]);
+        }
+    }
+    fn expand_bits(bits: &<Self as BitPack<bool>>::T) -> Self::SIMDbyts {
+        let mut target: [MaybeUninit<T::SIMDbyts>; L] =
+            unsafe { MaybeUninit::uninit().assume_init() };
+        for i in 0..L {
+            target[i] = MaybeUninit::new(T::expand_bits(&bits[i]));
+        }
+        unsafe { target.as_ptr().cast::<[T::SIMDbyts; L]>().read() }
+    }
+    fn init_counters() -> [T::SIMDbyts; L] {
+        let mut target: [MaybeUninit<T::SIMDbyts>; L] =
+            unsafe { MaybeUninit::uninit().assume_init() };
+        for i in 0..L {
+            target[i] = MaybeUninit::new(T::init_counters());
+        }
+        unsafe { target.as_ptr().cast::<[T::SIMDbyts; L]>().read() }
+    }
+}
+
+impl SIMDincrementCounters for [(); 32] {
+    #[cfg(target_feature = "avx2")]
+    type SIMDbyts = __m256i;
+    #[cfg(target_arch = "aarch64")]
+    type SIMDbyts = [uint8x16_t; 2];
+    #[cfg(not(any(target_arch = "aarch64", target_feature = "avx2")))]
+    type SIMDbyts = [u8; 32];
+
+    #[cfg(target_feature = "avx2")]
+    #[inline(always)]
+    fn simd_increment_in_place(word: &__m256i, counters: &mut __m256i) {
+        unsafe {
+            *counters = _mm256_add_epi8(*counters, *word);
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    fn simd_increment_in_place(word: &[uint8x16_t; 2], counters: &mut [uint8x16_t; 2]) {
+        unsafe {
+            counters[0] = vaddq_u8(counters[0], word[0]);
+            counters[1] = vaddq_u8(counters[1], word[1]);
+        }
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_feature = "avx2")))]
+    #[inline(always)]
+    fn simd_increment_in_place(word: &[u8; 32], counters: &mut [u8; 32]) {
+        for i in 0..32 {
+            counters[i] += word[i];
+        }
+    }
+    #[cfg(target_feature = "avx2")]
+    #[inline(always)]
+    fn add_to_u32s(byte_counters: __m256i, counters: &mut [u32; 32]) {
+        let mut target = [0u8; 32];
+        unsafe {
+            _mm256_storeu_si256(
+                transmute::<&mut [u8; 32], &mut __m256i>(&mut target),
+                byte_counters,
+            );
+        }
+
+        for i in 0..32 {
+            counters[i] += target[i] as u32;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    fn add_to_u32s(byte_counters: [uint8x16_t; 2], counters: &mut [u32; 32]) {
+        let mut target = [0u8; 16];
+        unsafe {
+            vst1q_u8(&mut target[0], byte_counters[0]);
+        }
+        for i in 0..16 {
+            counters[i] += target[i] as u32;
+        }
+
+        unsafe {
+            vst1q_u8(&mut target[0], byte_counters[1]);
+        }
+        for i in 16..32 {
+            counters[i] += target[i] as u32;
+        }
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_feature = "avx2")))]
+    #[inline(always)]
+    fn add_to_u32s(byte_counters: [u8; 32], counters: &mut [u32; 32]) {
+        for i in 0..32 {
+            counters[i] += byte_counters[i] as u32;
+        }
+    }
+    #[cfg(target_feature = "avx2")]
+    #[inline(always)]
+    fn expand_bits(word: &b32) -> __m256i {
+        unsafe {
+            let mask1 = _mm256_loadu_si256(transmute::<&[u8; 32], &__m256i>(&PSHUF_BYTE_MASK));
+            let mask2 = _mm256_loadu_si256(transmute::<&[u8; 32], &__m256i>(&BYTE_BIT_MASK));
+
+            let zeros = _mm256_setzero_si256();
+            let ones = _mm256_set1_epi8(0b_1);
+
+            let word: i32 = transmute::<u32, i32>(word.0);
+
+            let expanded = _mm256_set1_epi32(word);
+            let shuffled = _mm256_shuffle_epi8(expanded, mask1);
+            let masked = _mm256_and_si256(shuffled, mask2);
+            let is_zero = _mm256_cmpeq_epi8(masked, zeros);
+            let bools = _mm256_andnot_si256(is_zero, ones);
+            bools
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    fn expand_bits(word: &b32) -> [uint8x16_t; 2] {
+        unsafe {
+            let mask1_low = vld1q_u8(&TBL_BYTE_MASK_LOW[0]);
+            let mask1_high = vld1q_u8(&TBL_BYTE_MASK_HIGH[0]);
+            let mask2 = vld1q_u8(&NEON_BYTE_BIT_MASK[0]);
+
+            let expanded = vld1q_dup_u32(&word.0);
+            let expanded = vreinterpretq_u8_u32(expanded);
+
+            [
+                neon_extract_bits(expanded, mask1_low, mask2),
+                neon_extract_bits(expanded, mask1_high, mask2),
+            ]
+        }
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_feature = "avx2")))]
+    #[inline(always)]
+    fn expand_bits(word: &b32) -> [u8; 32] {
+        let mut target = [0u8; 32];
+        for i in 0..32 {
+            target[i] = word.get_bit_u8(i);
+        }
+        target
+    }
+
+    #[cfg(target_feature = "avx2")]
+    #[inline(always)]
+    fn init_counters() -> __m256i {
+        unsafe { _mm256_setzero_si256() }
+    }
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    fn init_counters() -> [uint8x16_t; 2] {
+        let dummy_data = [0u8; 32];
+        unsafe { [vld1q_u8(&dummy_data[0]), vld1q_u8(&dummy_data[0])] }
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_feature = "avx2")))]
+    #[inline(always)]
+    fn init_counters() -> [u8; 32] {
+        [0u8; 32]
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn neon_extract_bits(expanded: uint8x16_t, mask1: uint8x16_t, mask2: uint8x16_t) -> uint8x16_t {
+    unsafe {
+        let ones = vld1q_dup_u8(&1u8);
+        let shuffled = vqtbl1q_u8(expanded, mask1);
+        let masked = vandq_u8(shuffled, mask2);
+        let is_zero = vceqzq_u8(masked);
+        vandq_u8(is_zero, ones)
     }
 }
 

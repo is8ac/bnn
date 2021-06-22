@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![feature(stdsimd)]
 #![forbid(unreachable_pub)]
 //#![feature(test)]
 
