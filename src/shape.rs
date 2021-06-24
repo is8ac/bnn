@@ -165,9 +165,9 @@ where
     }
 }
 
-pub trait IndexMap<O, W: Shape>
+pub trait IndexMap<O, W>
 where
-    Self: Shape + Sized + Pack<O>,
+    Self: Sized + Pack<O>,
     W: Pack<Self>,
     <W as Pack<Self>>::T: Shape,
 {
@@ -179,37 +179,30 @@ where
 
 impl<O, W> IndexMap<O, W> for ()
 where
-    W: Shape + Pack<(), T = W>,
+    W: Pack<(), T = W>,
 {
     fn index_map<F: Fn(W::Index) -> O>(outer_index: W::Index, map_fn: F) -> O {
         map_fn(outer_index)
     }
 }
 
-/*
-impl<
-        O: Element<S>,
-        W: Shape,
-        S: Shape + IndexMap<O, <[(); L] as Element<W>>::Array>,
-        const L: usize,
-    > IndexMap<O, W> for [S; L]
+impl<W, S, O, const L: usize> IndexMap<O, W> for [S; L]
 where
-    [S; L]: Element<W, Array = <S as Element<<[(); L] as Element<W>>::Array>>::Array>,
-    <[S; L] as Element<W>>::Array: Shape,
-    [(); L]: Element<W>,
-    <[(); L] as Element<W>>::Array: Shape,
-    <S as Element<<[(); L] as Element<W>>::Array>>::Array: Shape,
-    [<O as Element<S>>::Array; L]: Default,
-    (u8, ()): Wrap<W::Index, Wrapped = <<[(); L] as Element<W>>::Array as Shape>::Index>,
-    W::Index: Copy,
+    W: Pack<[S; L], T = <<W as Pack<[(); L]>>::T as Pack<S>>::T> + Pack<[(); L]>,
+    <W as Pack<[(); L]>>::T: Pack<S>,
+    S: Pack<O> + IndexMap<O, <W as Pack<[(); L]>>::T>,
+    <<W as Pack<[(); L]>>::T as Pack<S>>::T: Shape,
+    <W as Pack<[S; L]>>::T: Shape,
+    [<S as Pack<O>>::T; L]: LongDefault,
+    (u8, ()): Wrap<W::Index, Wrapped = <<W as Pack<[(); L]>>::T as Shape>::Index>,
 {
-    fn index_map<F: Fn(<<[S; L] as Element<W>>::Array as Shape>::Index) -> O>(
+    fn index_map<F: Fn(<<W as Pack<[S; L]>>::T as Shape>::Index) -> O>(
         outer_index: W::Index,
         map_fn: F,
-    ) -> [<O as Element<S>>::Array; L] {
-        let mut target = <[<O as Element<S>>::Array; L]>::default();
+    ) -> [<S as Pack<O>>::T; L] {
+        let mut target = <[<S as Pack<O>>::T; L]>::long_default();
         for i in 0..L {
-            target[i] = <S as IndexMap<O, <[(); L] as Element<W>>::Array>>::index_map(
+            target[i] = <S as IndexMap<O, <W as Pack<[(); L]>>::T>>::index_map(
                 (i as u8, ()).wrap(outer_index),
                 &map_fn,
             );
@@ -217,7 +210,6 @@ where
         target
     }
 }
-*/
 
 pub trait IndexGet<E>
 where

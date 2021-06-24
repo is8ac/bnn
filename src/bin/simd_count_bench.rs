@@ -3,7 +3,7 @@ use bnn::bits::{
 };
 use bnn::count::ElementwiseAdd;
 use bnn::ecc;
-use bnn::shape::{LongDefault, Map, Pack, Shape, ZipMap};
+use bnn::shape::{IndexGet, IndexMap, LongDefault, Map, Pack, Shape, ZipMap};
 use rand::distributions::{Distribution, Standard};
 use rand::{Rng, SeedableRng};
 use rand_hc::Hc128Rng;
@@ -16,6 +16,47 @@ use std::ops::{Add, AddAssign};
 use std::path::Path;
 use std::sync::atomic::{compiler_fence, Ordering};
 use std::time::Instant;
+
+fn word_transpose_weights_matrix<IWS, OS, IW>(
+    input: &<IWS as Pack<<OS as Pack<[[u32; 32]; 2]>>::T>>::T,
+    counts: &<OS as Pack<[u64; 2]>>::T,
+) -> <OS as Pack<[(u64, <IWS as Pack<[u32; 32]>>::T); 2]>>::T
+where
+    OS: IndexGet<u64>
+        + Pack<[u32; 2]>
+        + Pack<[u64; 2]>
+        + IndexGet<[u64; 2]>
+        + IndexGet<[[u32; 32]; 2]>
+        + Pack<[[u32; 32]; 2]>
+        + Pack<[(u64, <IWS as Pack<[u32; 32]>>::T); 2]>
+        + IndexMap<[(u64, <IWS as Pack<[u32; 32]>>::T); 2], ()>,
+    IWS: Pack<<OS as Pack<[[u32; 32]; 2]>>::T>
+        + Pack<[u32; 32]>
+        + IndexMap<[u32; 32], ()>
+        + IndexGet<<OS as Pack<[[u32; 32]; 2]>>::T>,
+{
+    <OS as IndexMap<[(u64, <IWS as Pack<[u32; 32]>>::T); 2], ()>>::index_map((), |o| {
+        let counts = <OS as IndexGet<[u64; 2]>>::index_get(counts, o);
+        [
+            (
+                counts[0],
+                <IWS as IndexMap<[u32; 32], ()>>::index_map((), |iw| {
+                    let slice =
+                        <IWS as IndexGet<<OS as Pack<[[u32; 32]; 2]>>::T>>::index_get(input, iw);
+                    <OS as IndexGet<[[u32; 32]; 2]>>::index_get(&slice, o)[0]
+                }),
+            ),
+            (
+                counts[1],
+                <IWS as IndexMap<[u32; 32], ()>>::index_map((), |iw| {
+                    let slice =
+                        <IWS as IndexGet<<OS as Pack<[[u32; 32]; 2]>>::T>>::index_get(input, iw);
+                    <OS as IndexGet<[[u32; 32]; 2]>>::index_get(&slice, o)[1]
+                }),
+            ),
+        ]
+    })
+}
 
 fn count_matrix_par<I, O>(
     examples: &[(<I as BitPack<bool>>::T, <O as BitPack<bool>>::T)],
@@ -100,31 +141,33 @@ fn count_matrix_batch<I, O>(
 {
     assert!(examples.len() < 256);
     //dbg!(std::mem::size_of::<<O as Pack<[(u64, <I as Pack<T>>::T); 2]>>::T>());
-    let expanded_input = I::expand_bits(&examples[0].0);
+    //let expanded_input = I::expand_bits(&examples[0].0);
 
     let simd_counts = examples.iter().fold(
         <O as Pack<[(u64, I::SIMDbyts); 2]>>::T::long_default(),
         |mut acc, (input, target)| {
-            //let expanded_input = I::expand_bits(&input);
+            let expanded_input = I::expand_bits(&input);
             <O as BitMap<bool, [(u64, I::SIMDbyts); 2]>>::map_mut(
                 target,
                 &mut acc,
                 |sign, counters| {
-                    //counters[sign as usize].0 += 1;
+                    counters[sign as usize].0 += 1;
                     I::simd_increment_in_place(&expanded_input, &mut counters[sign as usize].1);
                 },
             );
             acc
         },
     );
-    /*
-    <O as Map<[(u64, I::SIMDbyts); 2], [(u64, <I as Pack<u32>>::T); 2]>>::map_mut(&simd_counts, u32_acc, |simd_counts, u32_counts| {
-        u32_counts[0].0 += simd_counts[0].0;
-        u32_counts[1].0 += simd_counts[1].0;
-        I::add_to_u32s(&simd_counts[0].1, &mut u32_counts[0].1);
-        I::add_to_u32s(&simd_counts[1].1, &mut u32_counts[1].1);
-    });
-     */
+    <O as Map<[(u64, I::SIMDbyts); 2], [(u64, <I as Pack<u32>>::T); 2]>>::map_mut(
+        &simd_counts,
+        u32_acc,
+        |simd_counts, u32_counts| {
+            u32_counts[0].0 += simd_counts[0].0;
+            u32_counts[1].0 += simd_counts[1].0;
+            I::add_to_u32s(&simd_counts[0].1, &mut u32_counts[0].1);
+            I::add_to_u32s(&simd_counts[1].1, &mut u32_counts[1].1);
+        },
+    );
 }
 
 type InputShape = [[[(); 32]; 8]; 4];

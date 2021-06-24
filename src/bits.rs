@@ -925,6 +925,7 @@ where
     Self::SIMDbyts: Sized,
 {
     type SIMDbyts;
+    type WordShape;
     /// This function must not be called more then 256 times!!
     fn simd_increment_in_place(bools: &Self::SIMDbyts, counters: &mut Self::SIMDbyts);
     fn add_to_u32s(byte_counters: &Self::SIMDbyts, counters: &mut <Self as Pack<u32>>::T);
@@ -937,6 +938,7 @@ where
     T::SIMDbyts: Sized + Copy,
 {
     type SIMDbyts = [T::SIMDbyts; L];
+    type WordShape = [T::WordShape; L];
     #[inline(always)]
     fn simd_increment_in_place(bits: &[T::SIMDbyts; L], counters: &mut [T::SIMDbyts; L]) {
         for i in 0..L {
@@ -990,6 +992,8 @@ impl SIMDincrementCounters for [(); 32] {
     type SIMDbyts = [uint8x16_t; 2];
     #[cfg(not(any(target_arch = "aarch64", target_feature = "avx2")))]
     type SIMDbyts = [u8; 32];
+
+    type WordShape = ();
 
     #[cfg(target_feature = "avx2")]
     #[inline(always)]
