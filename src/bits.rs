@@ -923,6 +923,7 @@ pub trait SIMDincrementCounters
 where
     Self: Pack<u32> + BitPack<bool>,
     Self::SIMDbyts: Sized,
+    Self::WordShape: Pack<SIMDword32, T = Self::SIMDbyts>,
 {
     type SIMDbyts;
     type WordShape;
@@ -984,6 +985,13 @@ impl LongDefault for [uint8x16_t; 2] {
         unsafe { [vld1q_u8(&dummy_data[0]), vld1q_u8(&dummy_data[0])] }
     }
 }
+
+#[cfg(target_feature = "avx2")]
+pub type SIMDword32 = __m256i;
+#[cfg(target_arch = "aarch64")]
+pub type SIMDword32 = [uint8x16_t; 2];
+#[cfg(not(any(target_arch = "aarch64", target_feature = "avx2")))]
+pub type SIMDword32 = [u8; 32];
 
 impl SIMDincrementCounters for [(); 32] {
     #[cfg(target_feature = "avx2")]
