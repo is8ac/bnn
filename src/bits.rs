@@ -20,7 +20,7 @@ use std::iter;
 use std::mem::{transmute, MaybeUninit};
 use std::num::Wrapping;
 use std::ops;
-use std::ops::AddAssign;
+use std::ops::{Add, AddAssign};
 
 pub trait BitPack<E> {
     type Word;
@@ -736,6 +736,7 @@ pub trait QuatWord {
 pub trait IncrementCounters<T>
 where
     Self: Shape + Sized + Pack<T> + BitPack<bool>,
+    T: AddAssign + Add<Output = T> + FromBool,
 {
     /*
     fn some_option_counted_increment(bits: &<Self as BitPack<bool>>::T, mut counters: (usize, <Self as Pack<T>>::T, u32)) -> (usize, <Self as Pack<T>>::T, u32) {
@@ -763,16 +764,19 @@ where
     */
     fn counted_increment_in_place(
         bits: &<Self as BitPack<bool>>::T,
-        counters: &mut (u64, <Self as Pack<T>>::T),
+        counters: &mut (T, <Self as Pack<T>>::T),
     ) {
-        counters.0 += 1;
+        counters.0 += T::from_u8(1);
         Self::increment_in_place(bits, &mut counters.1);
     }
     fn counted_increment(
         bits: &<Self as BitPack<bool>>::T,
-        counters: (u64, <Self as Pack<T>>::T),
-    ) -> (u64, <Self as Pack<T>>::T) {
-        (counters.0 + 1, Self::increment(bits, counters.1))
+        counters: (T, <Self as Pack<T>>::T),
+    ) -> (T, <Self as Pack<T>>::T) {
+        (
+            counters.0 + T::from_u8(1),
+            Self::increment(bits, counters.1),
+        )
     }
     fn increment(
         bits: &<Self as BitPack<bool>>::T,
@@ -785,7 +789,8 @@ where
     fn increment_in_place(bits: &<Self as BitPack<bool>>::T, counters: &mut <Self as Pack<T>>::T);
 }
 
-impl<S: IncrementCounters<T>, T: FromBool + Copy, const L: usize> IncrementCounters<T> for [S; L]
+impl<S: IncrementCounters<T>, T: FromBool + Copy + Add<Output = T> + AddAssign, const L: usize>
+    IncrementCounters<T> for [S; L]
 where
     S: Pack<T> + BitPack<bool>,
 {
@@ -924,6 +929,7 @@ where
     Self: Pack<u32> + BitPack<bool>,
     Self::SIMDbyts: Sized,
     Self::WordShape: Pack<SIMDword32, T = Self::SIMDbyts>,
+    Self::WordShape: Pack<[(); 32], T = Self>,
 {
     type SIMDbyts;
     type WordShape;
@@ -1429,7 +1435,9 @@ macro_rules! for_uints {
             }
         }
 
-        impl<T: Copy + AddAssign<T> + FromBool> IncrementCounters<T> for [(); $len] {
+        impl<T: Add<Output = T> + AddAssign + Copy + AddAssign<T> + FromBool> IncrementCounters<T>
+            for [(); $len]
+        {
             fn add_in_place(val: T, counters: &mut [T; $len]) {
                 for i in 0..$len {
                     counters[i] += val;
@@ -1784,7 +1792,7 @@ mod tests {
             let mut simd_counter = [0u32; 32];
 
             let expanded = <[(); 32] as SIMDincrementCounters>::expand_bits(&word);
-            <[(); 32] as SIMDincrementCounters>::add_to_u32s(expanded, &mut simd_counter);
+            <[(); 32] as SIMDincrementCounters>::add_to_u32s(&expanded, &mut simd_counter);
             assert_eq!(simd_counter, test_counter);
         });
     }

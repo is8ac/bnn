@@ -327,6 +327,12 @@ pub trait LongDefault {
     fn long_default() -> Self;
 }
 
+impl<T: LongDefault> LongDefault for Box<T> {
+    fn long_default() -> Self {
+        Box::new(T::long_default())
+    }
+}
+
 impl LongDefault for f32 {
     fn long_default() -> Self {
         0f32
@@ -347,6 +353,12 @@ impl LongDefault for usize {
 impl<A: LongDefault, B: LongDefault> LongDefault for (A, B) {
     fn long_default() -> Self {
         (A::long_default(), B::long_default())
+    }
+}
+
+impl<A: LongDefault, B: LongDefault, C: LongDefault> LongDefault for (A, B, C) {
+    fn long_default() -> Self {
+        (A::long_default(), B::long_default(), C::long_default())
     }
 }
 

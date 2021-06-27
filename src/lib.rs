@@ -12,5 +12,6 @@ pub mod datasets;
 //pub mod image2d;
 //pub mod layers;
 pub mod ecc;
+pub mod matrix;
 pub mod shape;
 pub mod unary;
