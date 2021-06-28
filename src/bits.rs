@@ -928,8 +928,7 @@ pub trait SIMDincrementCounters
 where
     Self: Pack<u32> + BitPack<bool>,
     Self::SIMDbyts: Sized,
-    Self::WordShape: Pack<SIMDword32, T = Self::SIMDbyts>,
-    Self::WordShape: Pack<[(); 32], T = Self>,
+    Self::WordShape: Pack<SIMDword32, T = Self::SIMDbyts> + Pack<[(); 32], T = Self>,
 {
     type SIMDbyts;
     type WordShape;
