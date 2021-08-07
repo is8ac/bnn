@@ -333,6 +333,12 @@ impl<T: LongDefault> LongDefault for Box<T> {
     }
 }
 
+impl<T: LongDefault> LongDefault for Vec<T> {
+    fn long_default() -> Self {
+        Vec::new()
+    }
+}
+
 impl LongDefault for f32 {
     fn long_default() -> Self {
         0f32

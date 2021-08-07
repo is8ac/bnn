@@ -17,7 +17,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::iter;
-use std::mem::{transmute, MaybeUninit};
+use std::mem::{self, transmute, MaybeUninit};
 use std::num::Wrapping;
 use std::ops;
 use std::ops::{Add, AddAssign};
@@ -1142,6 +1142,122 @@ fn neon_extract_bits(expanded: uint8x16_t, mask1: uint8x16_t, mask2: uint8x16_t)
     }
 }
 
+pub trait Counter: Add + AddAssign + Sized + std::iter::Sum + Copy {
+    const ZERO: Self;
+    const ONE: Self;
+}
+
+impl Counter for u8 {
+    const ZERO: u8 = 0;
+    const ONE: u8 = 1;
+}
+
+impl Counter for u16 {
+    const ZERO: u16 = 0;
+    const ONE: u16 = 1;
+}
+
+impl Counter for u32 {
+    const ZERO: u32 = 0;
+    const ONE: u32 = 1;
+}
+
+impl Counter for u64 {
+    const ZERO: u64 = 0;
+    const ONE: u64 = 1;
+}
+
+pub trait ExpIncrement<T>
+where
+    Self: BitPack<bool> + Pack<T>,
+{
+    type Acc;
+    fn init_acc() -> Self::Acc;
+    fn increment_acc(acc: &mut Self::Acc, bits: &<Self as BitPack<bool>>::T);
+    fn count(acc: &Self::Acc) -> <Self as Pack<T>>::T;
+}
+
+impl<C: Counter, T: ExpIncrement<C>, const L: usize> ExpIncrement<C> for [T; L]
+where
+    [T::Acc; L]: LongDefault,
+    [<T as Pack<C>>::T; L]: LongDefault,
+    T: BitPack<bool>,
+{
+    type Acc = [T::Acc; L];
+    fn init_acc() -> [T::Acc; L] {
+        <[T::Acc; L]>::long_default()
+    }
+    #[inline(always)]
+    fn increment_acc(acc: &mut [T::Acc; L], bits: &[<T as BitPack<bool>>::T; L]) {
+        for i in 0..L {
+            T::increment_acc(&mut acc[i], &bits[i])
+        }
+    }
+    fn count(acc: &[T::Acc; L]) -> [<T as Pack<C>>::T; L] {
+        let mut target = <[<T as Pack<C>>::T; L]>::long_default();
+        for i in 0..L {
+            target[i] = T::count(&acc[i]);
+        }
+        target
+    }
+}
+
+impl<T: Counter> ExpIncrement<T> for [(); 32] {
+    type Acc = [[T; 256]; 4];
+    fn init_acc() -> [[T; 256]; 4] {
+        [[T::ZERO; 256]; 4]
+    }
+    #[inline(always)]
+    fn increment_acc(acc: &mut [[T; 256]; 4], bits: &b32) {
+        let words = unsafe { mem::transmute::<b32, [u8; 4]>(*bits) };
+        for i in 0..4 {
+            acc[i][words[i] as usize] += T::ONE;
+        }
+    }
+    fn count(acc: &[[T; 256]; 4]) -> [T; 32] {
+        let mut target = [T::ZERO; 32];
+        for w in 0..4 {
+            for b in 0..8 {
+                target[w * 8 + b] = acc[w]
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| i.bit(b))
+                    .map(|(_, n)| *n)
+                    .sum();
+            }
+        }
+        target
+    }
+}
+
+impl<T: Counter> ExpIncrement<T> for [(); 64] {
+    type Acc = [[T; 256]; 8];
+    fn init_acc() -> [[T; 256]; 8] {
+        [[T::ZERO; 256]; 8]
+    }
+    #[inline(always)]
+    fn increment_acc(acc: &mut [[T; 256]; 8], bits: &b64) {
+        let words = unsafe { mem::transmute::<b64, [u8; 8]>(*bits) };
+        for i in 0..8 {
+            acc[i][words[i] as usize] += T::ONE;
+        }
+    }
+    fn count(acc: &[[T; 256]; 8]) -> [T; 64] {
+        let mut target = [T::ZERO; 64];
+        for w in 0..8 {
+            for b in 0..8 {
+                target[w * 8 + b] = acc[w]
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| i.bit(b))
+                    .map(|(_, n)| *n)
+                    .sum();
+            }
+        }
+        target
+    }
+}
+
 macro_rules! impl_long_default_for_type {
     ($type:ty) => {
         impl LongDefault for $type {
@@ -1554,6 +1670,7 @@ pub trait GetBit {
 }
 
 impl GetBit for usize {
+    #[inline(always)]
     fn bit(self, i: usize) -> bool {
         ((self >> i) & 1) == 1
     }
