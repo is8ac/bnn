@@ -20,13 +20,13 @@ criterion = "0.3"
 image = "0.23"
 lazy_static = "1.4"
 
-[[bench]]
-name = "bit_perf"
-harness = false
+#[[bench]]
+#name = "bit_perf"
+#harness = false
 
-[profile.bench]
-codegen-units = 1
-lto = "thin"
+#[profile.bench]
+#codegen-units = 1
+#lto = "thin"
 
 [profile.release]
 codegen-units = 1

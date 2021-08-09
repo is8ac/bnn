@@ -131,5 +131,5 @@ fn main() {
     dbg!(o_counts[0][0]);
     dbg!(i_counts[0][0]);
     dbg!(N_EXAMPLES / 4);
-    dbg!(cv_counts);
+    //dbg!(cv_counts);
 }
