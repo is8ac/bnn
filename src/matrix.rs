@@ -1,323 +1,259 @@
-use crate::bits::{
-    b32, t32, BitMap, BitPack, FromBool, IncrementCounters, PackedMap, SIMDincrementCounters,
-    SIMDword32, BMA,
-};
+use crate::bits::{b64, t64};
 use crate::count::ElementwiseAdd;
-use crate::ecc;
-use crate::shape::{IndexGet, IndexMap, LongDefault, Map, Pack, Shape, ZipMap};
-use rayon::prelude::*;
-use std::ops::{Add, AddAssign};
-use std::time::Instant;
+use std::convert::TryFrom;
+use std::convert::TryInto;
 
-pub trait CacheLocalMatrixBatch<I>
-where
-    Self: BitPack<bool>
-        + Pack<u8>
-        + Pack<u32>
-        + Pack<[(u32, <I as Pack<u32>>::T); 2]>
-        + Pack<
-            [(
-                u32,
-                <<I as SIMDincrementCounters>::WordShape as Pack<[u32; 32]>>::T,
-            ); 2],
-        > + Pack<[[u32; 32]; 2]>
-        + Pack<[(u32, <I as Pack<[u32; 32]>>::T); 2]>,
-    I: SIMDincrementCounters + Pack<[u32; 32]>,
-    <I as SIMDincrementCounters>::WordShape:
-        Pack<<Self as Pack<[[u32; 32]; 2]>>::T> + Pack<[u32; 32]>,
-{
-    fn safe_increment_counters_batch(
-        example: &[(<I as BitPack<bool>>::T, <Self as BitPack<bool>>::T)],
-        acc: &mut <Self as Pack<[(u32, <I as Pack<u32>>::T); 2]>>::T,
-    );
-    fn allocate_acc() -> Box<(
-        <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-        <Self as Pack<u32>>::T,
-        u32,
-    )>;
-    fn cache_local_count_matrix_batch(
-        examples: &[(<I as BitPack<bool>>::T, <Self as BitPack<bool>>::T)],
-        acc: &mut (
-            <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-            <Self as Pack<u32>>::T,
-            u32,
-        ),
-    );
-    fn merge(
-        a: &mut (
-            <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-            <Self as Pack<u32>>::T,
-            u32,
-        ),
-        b: &(
-            <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-            <Self as Pack<u32>>::T,
-            u32,
-        ),
-    );
-    fn word_transpose_weights_matrix(
-        acc: &(
-            <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-            <Self as Pack<u32>>::T,
-            u32,
-        ),
-    ) -> <Self as Pack<[(u32, <I as Pack<u32>>::T); 2]>>::T;
+#[inline(always)]
+fn transpose_64_slow(input: &mut [u64; 64]) {
+    let mut target = [0u64; 64];
+
+    for y in 0..64 {
+        for x in 0..64 {
+            let bit = (input[x] >> y) & 0b_1u64;
+            target[-(y as isize - 63) as usize] |= bit << (-(x as isize - 63) as usize);
+        }
+    }
+    *input = target;
 }
 
-impl<I, T> CacheLocalMatrixBatch<I> for T
+// Hacker's Delight 7-7
+#[inline(always)]
+fn transpose_64(a: &mut [u64; 64]) {
+    let mut m: u64 = !0u64 >> 32;
+    let mut j: usize = 32;
+    while j != 0 {
+        let mut k: usize = 0;
+        let mut t: u64;
+        while k < 64 {
+            t = (a[k] ^ a[k | j] >> j) & m;
+            a[k] ^= t;
+            a[k | j] ^= t << j;
+            k = (k | j) + 1 & !j
+        }
+        j >>= 1;
+        m ^= m << j
+    }
+}
+
+#[inline(never)]
+pub fn transpose<const L: usize, const N: usize>(
+    input: &[[b64; L]; N * 64],
+) -> [[[b64; N]; 64]; L] {
+    let mut target: [[[b64; N]; 64]; L] = (0..L)
+        .map(|_| {
+            (0..64)
+                .map(|_| {
+                    (0..N)
+                        .map(|_| b64(0u64))
+                        .collect::<Vec<b64>>()
+                        .try_into()
+                        .unwrap()
+                })
+                .collect::<Vec<[b64; N]>>()
+                .try_into()
+                .unwrap()
+        })
+        .collect::<Vec<[[b64; N]; 64]>>()
+        .try_into()
+        .unwrap();
+    input.chunks(64).enumerate().for_each(|(i, chunk)| {
+        let chunk: &[[b64; L]; 64] = <&[[b64; L]; 64]>::try_from(chunk).unwrap();
+        for l in 0..L {
+            let mut block: [u64; 64] = [0u64; 64];
+            for i in 0..64 {
+                block[i] = chunk[i][l].0;
+            }
+            transpose_64(&mut block);
+            for w in 0..64 {
+                target[l][w][i] = b64(block[w]);
+            }
+        }
+    });
+
+    target
+}
+
+#[derive(Debug)]
+pub struct Counters<const I: usize, const T: usize> {
+    pub n: u64,
+    pub cv: [[[[u64; 64]; I]; 64]; I],
+    pub counts: [[[[u64; 64]; I]; 64]; T],
+    pub input: [[u64; 64]; I],
+    pub target: [[u64; 64]; T],
+}
+
+impl<const I: usize, const T: usize> Counters<I, T>
 where
-    T: IndexGet<u32>
-        + BitPack<bool>
-        + Pack<u8>
-        + Map<u32, u32>
-        + Pack<u32>
-        + Map<u8, u32>
-        + Pack<[(u32, <I as Pack<[u32; 32]>>::T); 2]>
-        + Map<[SIMDword32; 2], [[u32; 32]; 2]>
-        + Map<[[u32; 32]; 2], [[u32; 32]; 2]>
-        + BitMap<bool, [(u32, <I as Pack<u32>>::T); 2]>
-        + IndexGet<[[u32; 32]; 2]>
-        + IndexMap<
-            [(
-                u32,
-                <<I as SIMDincrementCounters>::WordShape as Pack<[u32; 32]>>::T,
-            ); 2],
-            (),
-        > + BitMap<bool, [SIMDword32; 2]>
-        + IncrementCounters<u8>,
-    I: SIMDincrementCounters + Pack<[u32; 32]> + IncrementCounters<u32>,
-    <T as Pack<u8>>::T: LongDefault,
-    <T as Pack<[SIMDword32; 2]>>::T: LongDefault,
-    Box<(
-        <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-        <Self as Pack<u32>>::T,
-        u32,
-    )>: LongDefault,
-    <I as SIMDincrementCounters>::WordShape: IndexGet<b32>
-        + Pack<b32, T = <I as BitPack<bool>>::T>
-        + Pack<[u32; 32], T = <I as Pack<u32>>::T>
-        + IndexMap<[u32; 32], ()>
-        + IndexGet<<Self as Pack<[[u32; 32]; 2]>>::T>
-        + Map<<Self as Pack<[[u32; 32]; 2]>>::T, <Self as Pack<[[u32; 32]; 2]>>::T>,
+    [u64; I * 64]: TryFrom<Vec<u64>>,
+    [u64; T * 64]: TryFrom<Vec<u64>>,
 {
-    fn safe_increment_counters_batch(
-        examples: &[(<I as BitPack<bool>>::T, <Self as BitPack<bool>>::T)],
-        acc: &mut <Self as Pack<[(u32, <I as Pack<u32>>::T); 2]>>::T,
-    ) {
-        examples.iter().for_each(|(input, target)| {
-            <Self as BitMap<bool, [(u32, <I as Pack<u32>>::T); 2]>>::map_mut(
-                target,
-                acc,
-                |sign, counters| {
-                    <I as IncrementCounters<u32>>::counted_increment_in_place(
-                        input,
-                        &mut counters[sign as usize],
-                    );
-                },
-            );
-        });
-    }
-    fn allocate_acc() -> Box<(
-        <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-        <Self as Pack<u32>>::T,
-        u32,
-    )> {
-        Box::<(
-            <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-            <Self as Pack<u32>>::T,
-            u32,
-        )>::long_default()
-    }
-    fn word_transpose_weights_matrix(
-        acc: &(
-            <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-            <Self as Pack<u32>>::T,
-            u32,
-        ),
-    ) -> <Self as Pack<[(u32, <I as Pack<u32>>::T); 2]>>::T {
-        <Self as IndexMap<
-            [(
-                u32,
-                <<I as SIMDincrementCounters>::WordShape as Pack<[u32; 32]>>::T,
-            ); 2],
-            (),
-        >>::index_map((), |o| {
-            let count = <Self as IndexGet<u32>>::index_get(&acc.1, o);
-            [
-                (
-                    acc.2 - *count,
-                    <<I as SIMDincrementCounters>::WordShape as IndexMap<[u32; 32], ()>>::index_map(
-                        (),
-                        |iw| {
-                            let slice = <<I as SIMDincrementCounters>::WordShape as IndexGet<
-                                <Self as Pack<[[u32; 32]; 2]>>::T,
-                            >>::index_get(&acc.0, iw);
-                            <Self as IndexGet<[[u32; 32]; 2]>>::index_get(&slice, o)[0]
-                        },
-                    ),
-                ),
-                (
-                    *count,
-                    <<I as SIMDincrementCounters>::WordShape as IndexMap<[u32; 32], ()>>::index_map(
-                        (),
-                        |iw| {
-                            let slice = <<I as SIMDincrementCounters>::WordShape as IndexGet<
-                                <Self as Pack<[[u32; 32]; 2]>>::T,
-                            >>::index_get(&acc.0, iw);
-                            <Self as IndexGet<[[u32; 32]; 2]>>::index_get(&slice, o)[1]
-                        },
-                    ),
-                ),
-            ]
+    pub fn new_box() -> Box<Self> {
+        Box::new(Counters {
+            n: 0u64,
+            cv: [[[[0u64; 64]; I]; 64]; I],
+            counts: [[[[0u64; 64]; I]; 64]; T],
+            input: [[0u64; 64]; I],
+            target: [[0u64; 64]; T],
         })
     }
-
-    fn cache_local_count_matrix_batch(
-        examples: &[(<I as BitPack<bool>>::T, <Self as BitPack<bool>>::T)],
-        acc: &mut (
-            <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-            <Self as Pack<u32>>::T,
-            u32,
-        ),
-    ) {
-        assert!(examples.len() < 256);
-        //dbg!(std::mem::size_of::<<O as Pack<[(u64, <I as Pack<T>>::T); 2]>>::T>());
-        //let expanded_input = I::expand_bits(&examples[0].0);
-
-        <I as SIMDincrementCounters>::WordShape::indices().for_each(|iw| {
-            let mut simd_counters_row = <Self as Pack<[SIMDword32; 2]>>::T::long_default();
-            examples.iter().for_each(|(input, target)| {
-                let input_word: &b32 =
-                    <<I as SIMDincrementCounters>::WordShape as IndexGet<b32>>::index_get(
-                        input, iw,
-                    );
-                let simd_input_word = <[(); 32] as SIMDincrementCounters>::expand_bits(input_word);
-                <Self as BitMap<bool, [SIMDword32; 2]>>::map_mut(
-                    target,
-                    &mut simd_counters_row,
-                    |sign, counters| {
-                        <[(); 32] as SIMDincrementCounters>::simd_increment_in_place(
-                            &simd_input_word,
-                            &mut counters[sign as usize],
-                        );
-                    },
-                )
-            });
-
-            let acc_row = <<I as SIMDincrementCounters>::WordShape as IndexGet<
-                <Self as Pack<[[u32; 32]; 2]>>::T,
-            >>::index_get_mut(&mut acc.0, iw);
-            <Self as Map<[SIMDword32; 2], [[u32; 32]; 2]>>::map_mut(
-                &simd_counters_row,
-                acc_row,
-                |simd_word, u32_word| {
-                    <[(); 32] as SIMDincrementCounters>::add_to_u32s(
-                        &simd_word[0],
-                        &mut u32_word[0],
-                    );
-                    <[(); 32] as SIMDincrementCounters>::add_to_u32s(
-                        &simd_word[1],
-                        &mut u32_word[1],
-                    );
-                },
-            );
-        });
-
-        let target_counters: <Self as Pack<u8>>::T = examples.iter().fold(
-            <Self as Pack<u8>>::T::long_default(),
-            |mut acc, (_, target)| {
-                <Self as IncrementCounters<u8>>::increment_in_place(target, &mut acc);
-                acc
-            },
-        );
-        <Self as Map<u8, u32>>::map_mut(&target_counters, &mut acc.1, |&u8_count, u32_count| {
-            *u32_count += u8_count as u32;
-        });
-        acc.2 += examples.len() as u32;
+    pub fn merge(a: &mut Box<Counters<I, T>>, b: Box<Counters<I, T>>) {
+        a.n += b.n;
+        a.cv.elementwise_add(&b.cv);
+        a.counts.elementwise_add(&b.counts);
+        a.input.elementwise_add(&b.input);
+        a.target.elementwise_add(&b.target);
     }
-    fn merge(
-        a: &mut (
-            <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-            <Self as Pack<u32>>::T,
-            u32,
-        ),
-        b: &(
-            <<I as SIMDincrementCounters>::WordShape as Pack<<Self as Pack<[[u32; 32]; 2]>>::T>>::T,
-            <Self as Pack<u32>>::T,
-            u32,
-        ),
+    pub fn increment<const L: usize>(
+        &mut self,
+        input: &[[[b64; L]; 64]; I],
+        target: &[[[b64; L]; 64]; T],
     ) {
-        a.2 += b.2;
-        <Self as Map<u32, u32>>::map_mut(&b.1, &mut a.1, |b, a| {
-            *a += b;
-        });
-        <<I as SIMDincrementCounters>::WordShape as Map<
-            <Self as Pack<[[u32; 32]; 2]>>::T,
-            <Self as Pack<[[u32; 32]; 2]>>::T,
-        >>::map_mut(&b.0, &mut a.0, |b, a| {
-            <Self as Map<[[u32; 32]; 2], [[u32; 32]; 2]>>::map_mut(b, a, |b, a| {
-                <[[(); 32]; 2] as Map<u32, u32>>::map_mut(b, a, |b, a| {
-                    *a += b;
-                });
-            });
-        });
+        self.n += (L * 64) as u64;
+        for i in 0..I {
+            for o in 0..T {
+                for iw in 0..64 {
+                    for ow in 0..64 {
+                        self.counts[o][ow][i][iw] += input[i][iw]
+                            .iter()
+                            .zip(target[o][ow].iter())
+                            .map(|(a, b)| (*a ^ *b).count_ones())
+                            .sum::<u32>()
+                            as u64;
+                    }
+                }
+            }
+        }
+        for i in 0..I {
+            for o in 0..I {
+                for iw in 0..64 {
+                    for ow in 0..64 {
+                        self.cv[o][ow][i][iw] += input[i][iw]
+                            .iter()
+                            .zip(input[o][ow].iter())
+                            .map(|(a, b)| (*a ^ *b).count_ones())
+                            .sum::<u32>() as u64;
+                    }
+                }
+            }
+        }
+        for i in 0..I {
+            for iw in 0..64 {
+                self.input[i][iw] +=
+                    input[i][iw].iter().map(|x| x.count_ones()).sum::<u32>() as u64;
+            }
+        }
+        for o in 0..T {
+            for ow in 0..64 {
+                self.target[o][ow] +=
+                    target[o][ow].iter().map(|x| x.count_ones()).sum::<u32>() as u64;
+            }
+        }
     }
+    pub fn to_trits(&self) -> [[([t64; I], u32); 64]; T] {
+        let input = self.input.iter().flatten().cloned().collect::<Vec<u64>>();
+        let input = <&[u64; I * 64]>::try_from(&input[0..]).unwrap();
+
+        let cv = {
+            let mut targ = Box::new([[0u64; I * 64]; I * 64]);
+            for x in 0..I * 64 {
+                for y in 0..I * 64 {
+                    targ[x][y] = self.cv[x / 64][x % 64][y / 64][y % 64];
+                }
+            }
+            targ
+        };
+
+        let mut target = [[([t64(0, 0); I], 0u32); 64]; T];
+        for t in 0..T {
+            for b in 0..64 {
+                let mut i_xor_t = [0u64; I * 64];
+                for i in 0..I * 64 {
+                    i_xor_t[i] = self.counts[t][b][i / 64][i % 64];
+                }
+                let trits =
+                    quantize::<{ I * 64 }>(self.n, self.target[t][b], &input, &i_xor_t, &cv);
+                for i in 0..I * 64 {
+                    target[t][b].0[i / 64].set_trit_in_place(i % 64, trits[i]);
+                }
+                let n_set: u32 = trits.iter().map(|trit| trit.is_some() as u32).sum();
+                target[t][b].1 = n_set;
+            }
+        }
+        target
+    }
+}
+
+fn quantize<const I: usize>(
+    n: u64,
+    t: u64,
+    i: &[u64; I],
+    i_xor_t: &[u64; I],
+    i_cv: &[[u64; I]; I],
+) -> [Option<bool>; I] {
+    let cv_probs: [[f64; I]; I] = i_cv
+        .iter()
+        .map(|x| {
+            x.iter()
+                .map(|&c| -((c as f64 / n as f64) * 2f64 - 1f64).abs())
+                .collect::<Vec<f64>>()
+                .try_into()
+                .unwrap()
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let mut targ_magns: Vec<f64> = i_xor_t
+        .iter()
+        .map(|&x| ((x as f64 / n as f64) * 2f64 - 1f64).abs())
+        .collect();
+    let mut indices: Vec<usize> = Vec::new();
+    let mut cost = 0f64;
+    while cost < 3.34f64 {
+        let mut values: Vec<(usize, f64)> = cv_probs
+            .iter()
+            .zip(targ_magns.iter())
+            .map(|(cv, p)| indices.iter().map(|&index| cv[index]).product::<f64>() * p)
+            .enumerate()
+            .collect();
+        //dbg!(&values);
+        values.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        let (i, weight) = values.pop().unwrap();
+        //dbg!(i);
+        indices.push(i);
+        cost += targ_magns[i];
+        //dbg!(cost);
+    }
+    //dbg!(&indices);
+    let mut target = [None; I];
+    indices.iter().for_each(|&i| {
+        let sign = (i_xor_t[i] as f64 / n as f64) > 0.5;
+        target[i] = Some(sign);
+    });
+    target
 }
 
 #[cfg(test)]
 mod test {
-    use crate::bits::{
-        b128, b16, b32, b8, t128, t16, t32, t8, BitMap, BitPack, BitScaler, IncrementCounters,
-        SIMDincrementCounters, SIMDword32, WeightArray,
-    };
-    use crate::matrix::CacheLocalMatrixBatch;
-    use crate::shape::{LongDefault, Pack};
+    use crate::matrix::{transpose_64, transpose_64_slow};
     use rand::Rng;
     use rand::SeedableRng;
     use rand_hc::Hc128Rng;
-
-    type InputShape = [[[(); 32]; 8]; 2];
-    type TargetShape = [[(); 32]; 4];
+    use std::convert::TryInto;
 
     #[test]
-    fn cache_local_count() {
+    fn transpose_64_test() {
         let mut rng = Hc128Rng::seed_from_u64(0);
-
-        let acc = Box::<(
-            <<InputShape as SIMDincrementCounters>::WordShape as Pack<
-                <TargetShape as Pack<[[u32; 32]; 2]>>::T,
-            >>::T,
-            <TargetShape as Pack<u32>>::T,
-            u32,
-        )>::long_default();
-
-        let examples: Vec<_> = (0..1000)
-            .map(|_| {
-                let input: <InputShape as BitPack<bool>>::T = rng.gen();
-                let target: <TargetShape as BitPack<bool>>::T = rng.gen();
-                (input, target)
-            })
-            .collect();
-
-        let acc = examples.chunks(255).fold(acc, |mut acc, chunk| {
-            <TargetShape as CacheLocalMatrixBatch<InputShape>>::cache_local_count_matrix_batch(
-                chunk, &mut acc,
-            );
-            acc
+        (0..1000).for_each(|_| {
+            let input: [u64; 64] = (0..64)
+                .map(|_| rng.gen())
+                .collect::<Vec<u64>>()
+                .try_into()
+                .unwrap();
+            let mut fast = input;
+            transpose_64(&mut fast);
+            let mut slow = input;
+            transpose_64_slow(&mut slow);
+            assert_eq!(fast, slow);
         });
-        let transposed_acc =
-            <TargetShape as CacheLocalMatrixBatch<InputShape>>::word_transpose_weights_matrix(&acc);
-
-        let test_acc = examples.iter().fold(
-            Box::<<TargetShape as Pack<[(u32, <InputShape as Pack<u32>>::T); 2]>>::T>::long_default(
-            ),
-            |mut acc, example| {
-                <TargetShape as CacheLocalMatrixBatch<InputShape>>::safe_increment_counters(
-                    example, &mut acc,
-                );
-                acc
-            },
-        );
-        assert_eq!(*test_acc, transposed_acc);
     }
 }

@@ -20,7 +20,7 @@ use std::iter;
 use std::mem::{self, transmute, MaybeUninit};
 use std::num::Wrapping;
 use std::ops;
-use std::ops::{Add, AddAssign};
+use std::ops::{Add, AddAssign, BitAnd, BitXor};
 
 pub trait BitPack<E> {
     type Word;
@@ -1347,7 +1347,7 @@ macro_rules! for_uints {
                 Some(sign).filter(|_| magn)
             }
             #[inline(always)]
-            fn set_trit_in_place(&mut self, index: usize, val: Option<bool>) {
+            pub fn set_trit_in_place(&mut self, index: usize, val: Option<bool>) {
                 self.0 &= !(1 << index);
                 self.0 |= ((val.unwrap_or(false) as $u_type) << index);
 
@@ -1640,6 +1640,21 @@ macro_rules! for_uints {
             fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> $t_type {
                 $t_type(rng.gen(), rng.gen())
                 //$t_type(rng.gen(), !0)
+            }
+        }
+
+        impl BitAnd for $b_type {
+            type Output = Self;
+
+            fn bitand(self, rhs: Self) -> Self::Output {
+                Self(self.0 & rhs.0)
+            }
+        }
+        impl BitXor for $b_type {
+            type Output = Self;
+
+            fn bitxor(self, rhs: Self) -> Self::Output {
+                Self(self.0 ^ rhs.0)
             }
         }
 

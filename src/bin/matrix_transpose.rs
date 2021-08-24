@@ -1,135 +1,153 @@
+use bnn::bits::{b64, t64};
+use bnn::count::ElementwiseAdd;
+use bnn::ecc::{decode_byte_64, encode_byte_u64};
+use bnn::matrix::{transpose, Counters};
 use rand::{Rng, SeedableRng};
 use rand_hc::Hc128Rng;
+use rayon::prelude::*;
 use std::convert::TryFrom;
+use std::convert::TryInto;
+use std::fs::File;
+use std::io::prelude::*;
+use std::io::BufReader;
+use std::mem;
+use std::path::Path;
 use std::time::Instant;
 
-#[inline(always)]
-fn transpose_64_slow(input: &mut [u64; 64]) {
-    let mut target = [0u64; 64];
-
-    for y in 0..64 {
-        for x in 0..64 {
-            let bit = (input[x] >> y) & 0b_1u64;
-            target[y] |= bit << x;
-        }
-    }
-    *input = target;
-}
-
-// Hacker's Delight 7-7
-#[inline(always)]
-fn transpose_64(a: &mut [u64; 64]) {
-    let mut m: u64 = !0u64 >> 32;
-    let mut j: usize = 32;
-    while j != 0 {
-        let mut k: usize = 0;
-        let mut t: u64;
-        while k < 64 {
-            t = (a[k] ^ a[k | j] >> j) & m;
-            a[k] ^= t;
-            a[k | j] ^= t << j;
-            k = (k | j) + 1 & !j
-        }
-        j >>= 1;
-        m ^= m << j
-    }
-}
-
-fn transpose<const L: usize>(input: &[[u64; L]]) -> [[Vec<u64>; 64]; L] {
-    let len = input.len() / 64;
-    let target: Vec<[Vec<u64>; 64]> = (0..L)
-        .map(|_| {
-            let target: Vec<Vec<u64>> = (0..64).map(|_| (0..len).map(|_| 0u64).collect()).collect();
-            <[Vec<u64>; 64]>::try_from(target).unwrap()
-        })
-        .collect();
-    let mut target = <[[Vec<u64>; 64]; L]>::try_from(target).unwrap();
-
-    input.chunks(64).enumerate().for_each(|(i, chunk)| {
-        let chunk: &[[u64; L]; 64] = <&[[u64; L]; 64]>::try_from(chunk).unwrap();
-        for l in 0..L {
-            let mut block: [u64; 64] = [0u64; 64];
-            for i in 0..64 {
-                block[i] = chunk[i][l];
-            }
-            transpose_64(&mut block);
-            for w in 0..64 {
-                target[l][w][i] = block[w];
-            }
-        }
-    });
-
-    target
-}
-
-const N_EXAMPLES_EXP: u32 = 18;
-const N_EXAMPLES: usize = 2usize.pow(N_EXAMPLES_EXP);
+//const N_EXAMPLES_EXP: u32 = 20;
+//const N_EXAMPLES: usize = 2usize.pow(N_EXAMPLES_EXP);
+const CHUNK_EXP: u32 = 12;
+const CHUNK_SIZE: usize = 2usize.pow(CHUNK_EXP);
 const INPUT_LEN: usize = 16;
 const TARGET_LEN: usize = 4;
 
+const N_WORKERS: usize = 16;
+
+fn bma(trits: t64, bits: b64) -> u32 {
+    ((trits.0 ^ bits.0) & trits.1).count_ones() * 2
+}
+
+fn thd<const L: usize>(trits: &[t64; L], bits: &[b64; L]) -> u32 {
+    let mut target = 0u32;
+    for i in 0..L {
+        target += bma(trits[i], bits[i]);
+    }
+    target
+}
+
+fn tvmm<const I: usize, const T: usize>(
+    weights: &[[([t64; I], u32); 64]; T],
+    input: &[b64; I],
+) -> [b64; T] {
+    let mut target = [b64::ZEROS; T];
+    for t in 0..T {
+        for b in 0..64 {
+            let act = thd(&weights[t][b].0, input);
+            let bit = act > weights[t][b].1;
+            target[t].0 |= (bit as u64) << b;
+        }
+    }
+    target
+}
+
 fn main() {
+    // ulimit -S -s 1073741824
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(N_WORKERS)
+        .stack_size(2usize.pow(28))
+        .build_global()
+        .unwrap();
+
     let mut rng = Hc128Rng::seed_from_u64(0);
 
-    let input: Vec<[u64; INPUT_LEN]> = (0..N_EXAMPLES).map(|_| rng.gen()).collect();
-    let target: Vec<[u64; TARGET_LEN]> = (0..N_EXAMPLES).map(|_| rng.gen()).collect();
+    let load_start = Instant::now();
+    //let bytes = std::fs::read("tiny-shakespeare.txt").unwrap();
+    let bytes = std::fs::read("/big/temp/books_txt/Delphi Complete Works of Charles Dickens (Illustrated) - Charles Dickens.txt").unwrap();
+    //let bytes: Vec<u8> = (0..2usize.pow(18)).map(|i| (i % 3) as u8).collect();
+    dbg!();
+    let expanded: Vec<[b64; 4]> = bytes[0..2usize.pow(18)]
+        .par_iter()
+        .map(|&b| encode_byte_u64(b))
+        .collect();
+    dbg!();
+    let ngrams: Vec<([b64; 16], [b64; 4])> = expanded
+        .par_windows(5)
+        .map(|w| {
+            let mut input = <[b64; 16]>::default();
+            for i in 0..16 {
+                input[i] = w[i / 4][i % 4];
+            }
+            (input, w[4])
+        })
+        .collect();
+    dbg!(load_start.elapsed());
 
-    let transpose_start = Instant::now();
-    let t_input = transpose(&input);
-    let t_target = transpose(&target);
+    let start = Instant::now();
+    let count = ngrams
+        .par_chunks_exact(CHUNK_SIZE)
+        .fold(
+            || Counters::<INPUT_LEN, TARGET_LEN>::new_box(),
+            |mut acc, chunk| {
+                let (input_chunk, target_chunk): (Vec<[b64; 16]>, Vec<[b64; 4]>) =
+                    chunk.iter().cloned().unzip();
+
+                let input: &[[b64; 16]; CHUNK_SIZE] =
+                    <&[[b64; 16]; CHUNK_SIZE]>::try_from(&input_chunk[0..]).unwrap();
+                let target: &[[b64; 4]; CHUNK_SIZE] =
+                    <&[[b64; 4]; CHUNK_SIZE]>::try_from(&target_chunk[0..]).unwrap();
+                let t_input = transpose::<INPUT_LEN, { CHUNK_SIZE / 64 }>(input);
+                let t_target = transpose::<TARGET_LEN, { CHUNK_SIZE / 64 }>(target);
+                acc.increment::<{ CHUNK_SIZE / 64 }>(&t_input, &t_target);
+                acc
+            },
+        )
+        .reduce_with(|mut a, b| {
+            Counters::merge(&mut a, b);
+            a
+        })
+        .unwrap();
+
+    dbg!(count.n);
+    let duration = start.elapsed();
+    dbg!(duration);
     println!(
-        "transpose: {:.3} ns/example",
-        transpose_start.elapsed().as_nanos() as f64 / N_EXAMPLES as f64
+        "Count: {:.3} ns/example",
+        (duration.as_nanos() as f64 * N_WORKERS as f64) / count.n as f64
     );
+    //dbg!(&count);
+    dbg!(mem::size_of::<Counters::<INPUT_LEN, TARGET_LEN>>());
+
+    let trits_start = Instant::now();
+    let trits = count.to_trits();
+    dbg!(trits_start.elapsed());
+    dbg!(trits[0][0]);
+
+    let n_correct: u64 = expanded
+        .par_windows(5)
+        .map(|w| {
+            let mut input = <[b64; 16]>::default();
+            for i in 0..16 {
+                input[i] = w[i / 4][i % 4];
+            }
+            let target_byte = decode_byte_64(&w[4]);
+            let predicted_target = tvmm(&trits, &input);
+            //dbg!(&predicted_target);
+            let predicted_target_byte = decode_byte_64(&predicted_target);
+            (target_byte == predicted_target_byte) as u64
+        })
+        .sum();
+    dbg!(n_correct as f64 / expanded.len() as f64);
+
+    /*
     assert_eq!(t_input[0][0].len(), N_EXAMPLES / 64);
 
-    let popcnt_start = Instant::now();
-    let mut counts = Box::new([[[[0u32; 64]; INPUT_LEN]; 64]; TARGET_LEN]);
-    for i in 0..INPUT_LEN {
-        for o in 0..TARGET_LEN {
-            for iw in 0..64 {
-                for ow in 0..64 {
-                    counts[o][ow][i][iw] = t_input[i][iw]
-                        .iter()
-                        .zip(t_target[o][ow].iter())
-                        .map(|(a, b)| (a & b).count_ones())
-                        .sum();
-                }
-            }
-        }
-    }
-    let mut cv_counts = Box::new([[[[0u32; 64]; INPUT_LEN]; 64]; INPUT_LEN]);
-    for i in 0..INPUT_LEN {
-        for o in 0..INPUT_LEN {
-            for iw in 0..64 {
-                for ow in 0..64 {
-                    cv_counts[o][ow][i][iw] = t_input[i][iw]
-                        .iter()
-                        .zip(t_input[o][ow].iter())
-                        .map(|(a, b)| (a & b).count_ones())
-                        .sum();
-                }
-            }
-        }
-    }
-    let mut i_counts = Box::new([[0u32; 64]; INPUT_LEN]);
-    for i in 0..INPUT_LEN {
-        for iw in 0..64 {
-            i_counts[i][iw] = t_input[i][iw].iter().map(|x| x.count_ones()).sum();
-        }
-    }
-    let mut o_counts = Box::new([[0u32; 64]; TARGET_LEN]);
-    for o in 0..TARGET_LEN {
-        for ow in 0..64 {
-            o_counts[o][ow] = t_target[o][ow].iter().map(|x| x.count_ones()).sum();
-        }
-    }
-    println!(
-        "popcnt: {:.3} ns/example",
-        popcnt_start.elapsed().as_nanos() as f64 / N_EXAMPLES as f64
-    );
+    println!("popcnt: {:.3} ns/example", popcnt_start.elapsed().as_nanos() as f64 / N_EXAMPLES as f64);
     dbg!(counts[0][0][0][0]);
     dbg!(o_counts[0][0]);
     dbg!(i_counts[0][0]);
     dbg!(N_EXAMPLES / 4);
     //dbg!(cv_counts);
+    dbg!(mem::size_of::<[[[[u32; 64]; INPUT_LEN]; 64]; INPUT_LEN]>());
+    dbg!(mem::size_of::<[[u64; INPUT_LEN]; N_EXAMPLES]>());
+    */
 }

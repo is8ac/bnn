@@ -8,7 +8,7 @@ keywords = ["convolutional neural networks", "neural networks", "bitnets", "tern
 
 [dependencies]
 time = "0.2"
-rand = "0.8.0"
+rand = { version = "0.8.0", features = ["min_const_gen"]}
 rand_hc = "0.3"
 rand_distr = "0.4"
 rand_core = "0.6"
