@@ -401,3 +401,9 @@ impl_long_default_for_array!(128);
 impl_long_default_for_array!(256);
 impl_long_default_for_array!(512);
 impl_long_default_for_array!(1024);
+
+pub fn flatten_2d<'a, T: Copy + Sized, const A: usize, const B: usize>(
+    input: &'a [[T; B]; A],
+) -> &'a [T; A * B] {
+    unsafe { std::mem::transmute::<&[[T; B]; A], &[T; A * B]>(input) }
+}

@@ -40,11 +40,14 @@ macro_rules! time_loss_deltas {
         let pool = rayon::ThreadPoolBuilder::new().num_threads($n_threads).stack_size(2usize.pow(30)).build().unwrap();
 
         let mut rng = Hc128Rng::seed_from_u64(0);
-        let unary_examples: Vec<([[<$input_shape as BitPack<bool>>::T; $image_dim]; $image_dim], usize)> = (0..$n_examples).map(|_| (rng.gen(), rng.gen_range(0, 10))).collect();
+        let unary_examples: Vec<([[<$input_shape as BitPack<bool>>::T; $image_dim]; $image_dim], usize)> =
+            (0..$n_examples).map(|_| (rng.gen(), rng.gen_range(0, 10))).collect();
 
         let mut rng = Hc128Rng::seed_from_u64(0);
-        let model =
-            <model_type!($image_dim, $input_shape, $output_shape, $segs, $version) as Model<<[[(); $image_dim]; $image_dim] as PixelPack<<$input_shape as BitPack<bool>>::T>>::I, 10>>::rand(&mut rng);
+        let model = <model_type!($image_dim, $input_shape, $output_shape, $segs, $version) as Model<
+            <[[(); $image_dim]; $image_dim] as PixelPack<<$input_shape as BitPack<bool>>::T>>::I,
+            10,
+        >>::rand(&mut rng);
         let start = Instant::now();
         let sum: usize = pool.install(|| {
             //let sum: usize = unary_examples
@@ -68,8 +71,8 @@ macro_rules! time_loss_deltas {
             <$input_shape>::N,
             <$output_shape>::N,
             <model_type!($image_dim, $input_shape, $output_shape, $segs, $version)>::N_PARAMS,
-            (elapsed.as_millis()) as f64 / $n_examples as f64,
-            //(elapsed.as_millis() * $n_threads as u128) as f64 / $n_examples as f64,
+            //(elapsed.as_millis()) as f64 / $n_examples as f64,
+            (elapsed.as_millis() * $n_threads as u128) as f64 / $n_examples as f64,
             (elapsed.as_nanos() * $n_threads as u128) as f64 / ($n_examples * <$output_shape>::N) as f64,
             (elapsed.as_nanos() * $n_threads as u128) as f64 / ($n_examples * <model_type!($image_dim, $input_shape, $output_shape, $segs, $version)>::N_PARAMS) as f64,
             //(sum as f64 / $n_examples as f64) / <model_type!($image_dim, $input_shape, $output_shape, $segs, $version)>::N_PARAMS as f64,
@@ -85,26 +88,24 @@ fn main() {
     println!("| version | segs | threads | input pixel size | output pixel size | n params | ms per example | ns per channel | ns per parameter |");
     println!("| - | - | - | - | - | - | - | - | - |");
 
-    //time_loss_deltas!(32, [[(); 32]; 4], [[(); 32]; 1], 8, 2, 25, 1);
-    //time_loss_deltas!(32, [[(); 32]; 4], [[(); 32]; 2], 8, 2, 25, 1);
-    //time_loss_deltas!(32, [[(); 32]; 4], [[(); 32]; 4], 8, 2, 25, 1);
-    //time_loss_deltas!(32, [[(); 32]; 4], [[(); 32]; 8], 8, 2, 12, 1);
-    //time_loss_deltas!(32, [[(); 32]; 4], [[(); 32]; 16], 8, 2, 16, 1);
-    //time_loss_deltas!(32, [[(); 32]; 4], [[(); 32]; 32], 8, 2, 13, 1);
-    //time_loss_deltas!(32, [[(); 32]; 1], [[(); 32]; 4], 8, 2, 25, 1);
-    //time_loss_deltas!(32, [[(); 32]; 2], [[(); 32]; 4], 8, 2, 25, 1);
-    //time_loss_deltas!(32, [[(); 32]; 4], [[(); 32]; 4], 8, 2, 25, 1);
-    //time_loss_deltas!(32, [[(); 32]; 8], [[(); 32]; 4], 8, 2, 12, 1);
-    //time_loss_deltas!(32, [[(); 32]; 16], [[(); 32]; 4], 8, 2, 16, 1);
-    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 4], 8, 2, 13, 1);
-    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 8, 1, 15, 1);
-    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 8, 2, 15, 1);
-    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 8, 3, 15, 1);
-    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 8, 4, 15, 1);
+    //time_loss_deltas!(32, [[(); 32]; 1], [[(); 32]; 1], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 2], [[(); 32]; 1], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 4], [[(); 32]; 1], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 8], [[(); 32]; 1], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 16], [[(); 32]; 1], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 1], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 1], [[(); 32]; 1], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 1], [[(); 32]; 2], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 1], [[(); 32]; 4], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 1], [[(); 32]; 8], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 1], [[(); 32]; 16], 7, 2, 3, 1);
+    //time_loss_deltas!(32, [[(); 32]; 1], [[(); 32]; 32], 7, 2, 3, 1);
 
-    time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 7, 2, 15, 1);
-    time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 7, 2, 15, 2);
-    time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 7, 2, 15, 4);
-    time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 7, 2, 15, 8);
-    time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 7, 2, 15, 16);
+    time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 5, 2, 3, 1);
+
+    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 6, 2, 4, 1);
+    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 6, 2, 8, 2);
+    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 6, 2, 16, 4);
+    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 6, 2, 32, 8);
+    //time_loss_deltas!(32, [[(); 32]; 32], [[(); 32]; 32], 6, 2, 64, 16);
 }

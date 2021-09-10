@@ -6,10 +6,10 @@ use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 
 fn main() {
-    //<[b64; 8]>::bruteforce_table();
+    <[b64; 4]>::bruteforce_table();
     //dbg!(Hc128Rng::seed_from_u64(17246404).gen::<[u64; 256]>());
     //dbg!(Hc128Rng::seed_from_u64(629745).gen::<[[u64; 2]; 256]>());
-    dbg!(Hc128Rng::seed_from_u64(1902564).gen::<[[u64; 4]; 256]>());
+    //dbg!(Hc128Rng::seed_from_u64(1902564).gen::<[[u64; 4]; 256]>());
     //dbg!(Hc128Rng::seed_from_u64(1446115).gen::<[[b64; 8]; 256]>());
 }
 

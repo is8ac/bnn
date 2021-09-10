@@ -1,73 +1,138 @@
 use crate::bits::{b32, b64, GetBit, PackedIndexSGet, BMA};
-use crate::random_tables::{RANDOM_TABLE_128, RANDOM_TABLE_256, RANDOM_TABLE_64};
 use crate::shape::Shape;
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use rand::SeedableRng;
 use rand_hc::Hc128Rng;
 use rayon::prelude::*;
+use std::convert::TryInto;
 use std::num::Wrapping;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-pub trait ExpandByte: Sized + Default + Copy
-where
-    Standard: Distribution<Self>,
-    Standard: Distribution<[Self; 256]>,
-{
-    const N: usize;
-    const SEED: u64;
-    const MIN_DIST: u32;
-    fn count(&self) -> u32;
-    fn gen_table() -> [Self; 256] {
-        Hc128Rng::seed_from_u64(Self::SEED).gen()
-        //[Self::default(); 256]
+pub trait BitString {
+    const WIDTH: usize;
+    fn new_from_int(i: usize) -> Self;
+    fn get_bit(&self, i: usize) -> bool;
+    fn set_bit(&mut self, i: usize, b: bool);
+    fn hamming_dist(&self, rhs: &Self) -> u32;
+    fn masked_hamming_dist(&self, rhs: &Self, mask: &Self) -> u32;
+    fn gen_mask(i: usize) -> Self;
+    fn print_bits(&self);
+}
+
+impl<const L: usize> BitString for [b64; L] {
+    const WIDTH: usize = 64 * L;
+    fn new_from_int(i: usize) -> Self {
+        let mut target = [b64(0); L];
+        target[0].0 = i as u64;
+        target
     }
-    fn bruteforce_table() {
-        let mut cur_min_dist = AtomicU32::new(0);
-        (0u64..).par_bridge().for_each(|seed| {
-            let table: [Self; 256] = Hc128Rng::seed_from_u64(seed).gen();
-
-            let counts: Vec<u32> = table.iter().map(|x| x.count()).collect();
-            let max: u32 = *counts.iter().max().unwrap();
-            let min: u32 = *counts.iter().min().unwrap();
-
-            let low = ((Self::N / 2) as f64 * 0.7) as u32;
-            let high = ((Self::N / 2) as f64 * 1.3) as u32;
-
-            if (max < high) & (min > low) {
-                let mut counts = [0u32; 1024];
-
-                for x in 0..256 {
-                    for y in 0..256 {
-                        if x != y {
-                            let dist = table[x].distance(&table[y]);
-                            counts[dist as usize] += 1;
-                        }
-                    }
+    fn get_bit(&self, i: usize) -> bool {
+        ((self[i / 64].0 >> (i % 64)) & 1) == 1
+    }
+    fn set_bit(&mut self, i: usize, b: bool) {
+        self[i / 64].0 |= (b as u64) << (i % 64);
+    }
+    fn hamming_dist(&self, rhs: &Self) -> u32 {
+        self.iter()
+            .zip(rhs.iter())
+            .map(|(a, b)| (a.0 ^ b.0).count_ones())
+            .sum()
+    }
+    fn masked_hamming_dist(&self, rhs: &Self, mask: &Self) -> u32 {
+        self.iter()
+            .zip(rhs.iter())
+            .zip(mask.iter())
+            .map(|((a, b), m)| ((a.0 ^ b.0) & m.0).count_ones())
+            .sum()
+    }
+    fn gen_mask(i: usize) -> Self {
+        let tw = i / 64;
+        (0..L)
+            .map(|w| {
+                if w < tw {
+                    b64(!0)
+                } else if w > tw {
+                    b64(0)
+                } else {
+                    b64(!((!0) << (i % 64)))
                 }
-                let new_min_dist = counts.iter().enumerate().find(|(i, c)| **c > 0).unwrap().0;
-                if new_min_dist as u32 > cur_min_dist.load(Ordering::Relaxed) {
-                    println!("{} {}", seed, new_min_dist);
-                    cur_min_dist.store(new_min_dist as u32, Ordering::Relaxed);
-                }
+            })
+            .collect::<Vec<b64>>()
+            .try_into()
+            .unwrap()
+    }
+    fn print_bits(&self) {
+        for i in 0..L {
+            print!("{:064b}", self[i].0);
+        }
+        print!("\n",);
+    }
+}
+
+trait EccTable {
+    fn gen_table() -> Self;
+    fn min_dist(&self) -> u32;
+}
+
+impl<S: BitString + std::fmt::Debug, const L: usize> EccTable for [S; L] {
+    fn gen_table() -> [S; L] {
+        let mut table: [S; L] = (0..L)
+            .map(|i| S::new_from_int(i))
+            .collect::<Vec<S>>()
+            .try_into()
+            .unwrap();
+        for b in 0..S::WIDTH {
+            let mask = S::gen_mask(b);
+            for w in 0..L {
+                let index = table
+                    .iter()
+                    .enumerate()
+                    .filter(|&(w2, _)| w2 != w)
+                    .min_by_key(|&(_, word)| word.masked_hamming_dist(&table[w], &mask))
+                    .unwrap()
+                    .0;
+                table[w].set_bit(b, !table[index].get_bit(b));
             }
-        })
+        }
+        table
     }
-    fn distance(&self, rhs: &Self) -> u32;
+    fn min_dist(&self) -> u32 {
+        (0..L)
+            .map(|x| {
+                (0..L)
+                    .filter(|&y| y != x)
+                    .map(|y| self[x].hamming_dist(&self[y]))
+                    .min()
+                    .unwrap()
+            })
+            .min()
+            .unwrap()
+    }
+}
+
+lazy_static! {
+    static ref RANDOM_TABLE_64: [[b64; 1]; 256] = <[[b64; 1]; 256]>::gen_table();
+}
+
+lazy_static! {
+    static ref RANDOM_TABLE_128: [[b64; 2]; 256] = <[[b64; 2]; 256]>::gen_table();
+}
+
+lazy_static! {
+    static ref RANDOM_TABLE_256: [[b64; 4]; 256] = <[[b64; 4]; 256]>::gen_table();
+}
+
+lazy_static! {
+    static ref RANDOM_TABLE_512: [[b64; 8]; 256] = <[[b64; 8]; 256]>::gen_table();
+}
+
+pub trait ExpandByte: BitString {
     fn encode_byte(b: u8) -> Self;
     fn decode_byte(&self) -> u8;
 }
 
-impl ExpandByte for b64 {
-    const N: usize = 64;
-    const SEED: u64 = 17246404;
-    const MIN_DIST: u32 = 19;
-    fn count(&self) -> u32 {
-        self.count_ones()
-    }
-    fn distance(&self, rhs: &b64) -> u32 {
-        (self.0 ^ rhs.0).count_ones()
-    }
+impl ExpandByte for [b64; 1] {
     fn encode_byte(b: u8) -> Self {
         RANDOM_TABLE_64[b as usize]
     }
@@ -75,25 +140,13 @@ impl ExpandByte for b64 {
         RANDOM_TABLE_64
             .iter()
             .enumerate()
-            .min_by_key(|(_, row)| row.distance(self))
+            .min_by_key(|(_, row)| row.hamming_dist(self))
             .unwrap()
             .0 as u8
     }
 }
 
 impl ExpandByte for [b64; 2] {
-    const N: usize = 128;
-    const SEED: u64 = 629745;
-    const MIN_DIST: u32 = 46;
-    fn count(&self) -> u32 {
-        self.iter().map(|x| x.count_ones()).sum()
-    }
-    fn distance(&self, rhs: &Self) -> u32 {
-        self.iter()
-            .zip(rhs.iter())
-            .map(|(a, b)| (a.0 ^ b.0).count_ones())
-            .sum()
-    }
     fn encode_byte(b: u8) -> Self {
         RANDOM_TABLE_128[b as usize]
     }
@@ -101,25 +154,13 @@ impl ExpandByte for [b64; 2] {
         RANDOM_TABLE_128
             .iter()
             .enumerate()
-            .min_by_key(|(_, row)| row.distance(self))
+            .min_by_key(|(_, row)| row.hamming_dist(self))
             .unwrap()
             .0 as u8
     }
 }
 
 impl ExpandByte for [b64; 4] {
-    const N: usize = 256;
-    const SEED: u64 = 1902564;
-    const MIN_DIST: u32 = 102;
-    fn count(&self) -> u32 {
-        self.iter().map(|x| x.count_ones()).sum()
-    }
-    fn distance(&self, rhs: &Self) -> u32 {
-        self.iter()
-            .zip(rhs.iter())
-            .map(|(a, b)| (a.0 ^ b.0).count_ones())
-            .sum()
-    }
     fn encode_byte(b: u8) -> Self {
         RANDOM_TABLE_256[b as usize]
     }
@@ -127,29 +168,13 @@ impl ExpandByte for [b64; 4] {
         RANDOM_TABLE_256
             .iter()
             .enumerate()
-            .min_by_key(|(_, row)| row.distance(self))
+            .min_by_key(|(_, row)| row.hamming_dist(self))
             .unwrap()
             .0 as u8
     }
 }
 
-lazy_static! {
-    pub static ref RANDOM_TABLE_512: [[b64; 8]; 256] = <[b64; 8]>::gen_table();
-}
-
 impl ExpandByte for [b64; 8] {
-    const N: usize = 256;
-    const SEED: u64 = 1446115;
-    const MIN_DIST: u32 = 219;
-    fn count(&self) -> u32 {
-        self.iter().map(|x| x.count_ones()).sum()
-    }
-    fn distance(&self, rhs: &Self) -> u32 {
-        self.iter()
-            .zip(rhs.iter())
-            .map(|(a, b)| (a.0 ^ b.0).count_ones())
-            .sum()
-    }
     fn encode_byte(b: u8) -> Self {
         RANDOM_TABLE_512[b as usize]
     }
@@ -157,7 +182,7 @@ impl ExpandByte for [b64; 8] {
         RANDOM_TABLE_512
             .iter()
             .enumerate()
-            .min_by_key(|(_, row)| row.distance(self))
+            .min_by_key(|(_, row)| row.hamming_dist(self))
             .unwrap()
             .0 as u8
     }
