@@ -1690,6 +1690,12 @@ impl GetBit for usize {
         ((self >> i) & 1) == 1
     }
 }
+impl GetBit for u8 {
+    #[inline(always)]
+    fn bit(self, i: usize) -> bool {
+        ((self >> i) & 1) == 1
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -6,6 +6,39 @@ use std::convert::TryFrom;
 use std::convert::TryInto;
 
 /// Requires that examples.len() be a multiple of
+pub fn count_target_bits<const T: usize, const S: usize>(
+    examples: &[[b64; T]],
+) -> Box<(u64, [[u64; 64]; T])>
+where
+    [u64; T * 64]: TryFrom<Vec<u64>>,
+    [[b64; T]; S * 64]: TryFrom<Vec<[b64; T]>>,
+{
+    examples
+        .par_chunks_exact(S * 64)
+        .fold(
+            || Box::new((0u64, [[0u64; 64]; T])),
+            |mut acc, chunk| {
+                let target: &[[b64; T]; S * 64] =
+                    <&[[b64; T]; S * 64]>::try_from(&chunk[0..]).unwrap();
+                let t_target = transpose::<T, S>(target);
+                acc.0 += (S * 64) as u64;
+                for o in 0..T {
+                    for ow in 0..64 {
+                        acc.1[o][ow] +=
+                            t_target[o][ow].iter().map(|x| x.count_ones()).sum::<u32>() as u64;
+                    }
+                }
+                acc
+            },
+        )
+        .reduce_with(|mut a, b| {
+            a.elementwise_add(&b);
+            a
+        })
+        .unwrap()
+}
+
+/// Requires that examples.len() be a multiple of
 pub fn count_bits<const I: usize, const T: usize, const S: usize>(
     examples: &[([b64; I], [b64; T])],
 ) -> Box<Counters<I, T>>
@@ -364,6 +397,20 @@ where
             .try_into()
             .unwrap()
     }
+    pub fn find_thresholds2(&self) -> [[Vec<(u32, u64)>; 64]; T] {
+        self.counts
+            .par_iter()
+            .map(|x| {
+                x.par_iter()
+                    .map(|x| x.iter().map(|dist| find_best_threshold2(dist)).collect())
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    }
 }
 
 fn find_best_threshold<const N: usize>(dist: &[[u64; 2]; N], targ: u64) -> (u32, u64) {
@@ -379,7 +426,13 @@ fn find_best_threshold<const N: usize>(dist: &[[u64; 2]; N], targ: u64) -> (u32,
     }
     let acc = bit_acc(dist, threshold);
     (threshold, acc)
-    //(0..N).map(|i| (i as u32, bit_acc(dist, i as u32))).max_by_key(|(_, acc)| *acc).unwrap()
+}
+
+fn find_best_threshold2<const N: usize>(dist: &[[u64; 2]; N]) -> (u32, u64) {
+    (0..N)
+        .map(|i| (i as u32, bit_acc(dist, i as u32)))
+        .max_by_key(|(_, acc)| *acc)
+        .unwrap()
 }
 
 fn bit_acc<const N: usize>(dist: &[[u64; 2]; N], threshold: u32) -> u64 {
