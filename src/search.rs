@@ -8,6 +8,7 @@ use std::hash::Hash;
 pub trait Weights {
     type Mutation;
     type Index;
+    fn init() -> Self;
     fn mutations() -> Vec<Self::Mutation>;
     fn indices() -> Vec<Self::Index>;
     fn get(&self, i: Self::Index) -> Self::Mutation;
@@ -19,6 +20,9 @@ pub trait Weights {
 impl<const L: usize> Weights for [b64; L] {
     type Mutation = bool;
     type Index = usize;
+    fn init() -> Self {
+        [b64(0); L]
+    }
     fn mutations() -> Vec<Self::Mutation> {
         vec![false, true]
     }
@@ -51,9 +55,52 @@ impl<const L: usize> Weights for [b64; L] {
     }
 }
 
+impl<const L: usize> Weights for ([b64; L], [b64; L]) {
+    type Mutation = Option<bool>;
+    type Index = usize;
+    fn init() -> Self {
+        ([b64(0); L], [b64(0); L])
+    }
+    fn mutations() -> Vec<Self::Mutation> {
+        vec![Some(false), None, Some(true)]
+    }
+    fn indices() -> Vec<Self::Index> {
+        (0..(64 * L)).collect()
+    }
+    fn get(&self, i: usize) -> Option<bool> {
+        let sign = self.0.get(i);
+        let mask = self.1.get(i);
+        Some(sign).filter(|_| mask)
+    }
+    fn set(&mut self, i: usize, b: Option<bool>) {
+        self.0.set(i, b.unwrap_or(false));
+        self.1.set(i, b.is_some());
+    }
+    fn apply(mut self, i: Self::Index, m: Self::Mutation) -> Self {
+        self.set(i, m);
+        self
+    }
+    fn diff(&self, rhs: &Self) -> Vec<(Self::Index, Self::Mutation)> {
+        (0..(64 * L))
+            .filter_map(|i| {
+                let cur_state = self.get(i);
+                let new_state = rhs.get(i);
+                if cur_state == new_state {
+                    None
+                } else {
+                    Some((i, new_state))
+                }
+            })
+            .collect()
+    }
+}
+
 impl<const L: usize> Weights for [t64; L] {
     type Mutation = Option<bool>;
     type Index = usize;
+    fn init() -> Self {
+        [t64(0, 0); L]
+    }
     fn mutations() -> Vec<Self::Mutation> {
         vec![Some(false), None, Some(true)]
     }

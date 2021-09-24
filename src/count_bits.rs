@@ -6,9 +6,7 @@ use std::convert::TryFrom;
 use std::convert::TryInto;
 
 /// Requires that examples.len() be a multiple of
-pub fn count_target_bits<const T: usize, const S: usize>(
-    examples: &[[b64; T]],
-) -> Box<(u64, [[u64; 64]; T])>
+pub fn count_target_bits<const T: usize, const S: usize>(examples: &[[b64; T]]) -> Box<(u64, [[u64; 64]; T])>
 where
     [u64; T * 64]: TryFrom<Vec<u64>>,
     [[b64; T]; S * 64]: TryFrom<Vec<[b64; T]>>,
@@ -18,14 +16,12 @@ where
         .fold(
             || Box::new((0u64, [[0u64; 64]; T])),
             |mut acc, chunk| {
-                let target: &[[b64; T]; S * 64] =
-                    <&[[b64; T]; S * 64]>::try_from(&chunk[0..]).unwrap();
+                let target: &[[b64; T]; S * 64] = <&[[b64; T]; S * 64]>::try_from(&chunk[0..]).unwrap();
                 let t_target = transpose::<T, S>(target);
                 acc.0 += (S * 64) as u64;
                 for o in 0..T {
                     for ow in 0..64 {
-                        acc.1[o][ow] +=
-                            t_target[o][ow].iter().map(|x| x.count_ones()).sum::<u32>() as u64;
+                        acc.1[o][ow] += t_target[o][ow].iter().map(|x| x.count_ones()).sum::<u32>() as u64;
                     }
                 }
                 acc
@@ -39,9 +35,7 @@ where
 }
 
 /// Requires that examples.len() be a multiple of
-pub fn count_bits<const I: usize, const T: usize, const S: usize>(
-    examples: &[([b64; I], [b64; T])],
-) -> Box<Counters<I, T>>
+pub fn count_bits<const I: usize, const T: usize, const S: usize>(examples: &[([b64; I], [b64; T])]) -> Box<Counters<I, T>>
 where
     [u64; I * 64]: TryFrom<Vec<u64>>,
     [u64; T * 64]: TryFrom<Vec<u64>>,
@@ -53,13 +47,10 @@ where
         .fold(
             || Counters::<I, T>::new_box(),
             |mut acc, chunk| {
-                let (input_chunk, target_chunk): (Vec<[b64; I]>, Vec<[b64; T]>) =
-                    chunk.iter().cloned().unzip();
+                let (input_chunk, target_chunk): (Vec<[b64; I]>, Vec<[b64; T]>) = chunk.iter().cloned().unzip();
 
-                let input: &[[b64; I]; S * 64] =
-                    <&[[b64; I]; S * 64]>::try_from(&input_chunk[0..]).unwrap();
-                let target: &[[b64; T]; S * 64] =
-                    <&[[b64; T]; S * 64]>::try_from(&target_chunk[0..]).unwrap();
+                let input: &[[b64; I]; S * 64] = <&[[b64; I]; S * 64]>::try_from(&input_chunk[0..]).unwrap();
+                let target: &[[b64; T]; S * 64] = <&[[b64; T]; S * 64]>::try_from(&target_chunk[0..]).unwrap();
                 let t_input = transpose::<I, S>(input);
                 let t_target = transpose::<T, S>(target);
                 acc.increment::<S>(&t_input, &t_target);
@@ -100,36 +91,25 @@ where
         a.input.elementwise_add(&b.input);
         a.target.elementwise_add(&b.target);
     }
-    pub fn increment<const L: usize>(
-        &mut self,
-        input: &[[[b64; L]; 64]; I],
-        target: &[[[b64; L]; 64]; T],
-    ) {
+    pub fn increment<const L: usize>(&mut self, input: &[[[b64; L]; 64]; I], target: &[[[b64; L]; 64]; T]) {
         self.n += (L * 64) as u64;
         for i in 0..I {
             for o in 0..T {
                 for iw in 0..64 {
                     for ow in 0..64 {
-                        self.counts[o][ow][i][iw] += input[i][iw]
-                            .iter()
-                            .zip(target[o][ow].iter())
-                            .map(|(a, b)| (*a ^ *b).count_ones())
-                            .sum::<u32>()
-                            as u64;
+                        self.counts[o][ow][i][iw] += input[i][iw].iter().zip(target[o][ow].iter()).map(|(a, b)| (*a ^ *b).count_ones()).sum::<u32>() as u64;
                     }
                 }
             }
         }
         for i in 0..I {
             for iw in 0..64 {
-                self.input[i][iw] +=
-                    input[i][iw].iter().map(|x| x.count_ones()).sum::<u32>() as u64;
+                self.input[i][iw] += input[i][iw].iter().map(|x| x.count_ones()).sum::<u32>() as u64;
             }
         }
         for o in 0..T {
             for ow in 0..64 {
-                self.target[o][ow] +=
-                    target[o][ow].iter().map(|x| x.count_ones()).sum::<u32>() as u64;
+                self.target[o][ow] += target[o][ow].iter().map(|x| x.count_ones()).sum::<u32>() as u64;
             }
         }
     }
@@ -156,8 +136,7 @@ where
             for tb in 0..64 {
                 for iw in 0..I {
                     for ib in 0..64 {
-                        let mask = (self.counts[tw][tb][iw][ib] > upper_threshold)
-                            | (self.counts[tw][tb][iw][ib] < lower_threshold);
+                        let mask = (self.counts[tw][tb][iw][ib] > upper_threshold) | (self.counts[tw][tb][iw][ib] < lower_threshold);
                         target[tw][tb][iw].set_bit_in_place(ib, mask);
                     }
                 }
@@ -175,8 +154,7 @@ where
                 for iw in 0..I {
                     for ib in 0..64 {
                         let sign = self.counts[tw][tb][iw][ib] > sign_threshold;
-                        let mask = (self.counts[tw][tb][iw][ib] > upper_threshold)
-                            | (self.counts[tw][tb][iw][ib] < lower_threshold);
+                        let mask = (self.counts[tw][tb][iw][ib] > upper_threshold) | (self.counts[tw][tb][iw][ib] < lower_threshold);
                         target[tw][tb][iw].set_trit_in_place(ib, Some(sign).filter(|_| mask));
                     }
                 }
@@ -202,6 +180,17 @@ impl<const L: usize> HammingDist for [b64; L] {
     }
 }
 
+impl<const L: usize> HammingDist for ([b64; L], [b64; L]) {
+    type Bits = [b64; L];
+    fn hamming_dist(&self, bits: &Self::Bits) -> u32 {
+        let mut target = 0u32;
+        for i in 0..L {
+            target += ((self.0[i].0 ^ bits[i].0) & self.1[i].0).count_ones();
+        }
+        target
+    }
+}
+
 impl<const L: usize> HammingDist for [t64; L] {
     type Bits = [b64; L];
     fn hamming_dist(&self, bits: &Self::Bits) -> u32 {
@@ -213,12 +202,7 @@ impl<const L: usize> HammingDist for [t64; L] {
     }
 }
 
-pub fn count_act_dist_cache_local<
-    W: Sync + Send + HammingDist<Bits = [b64; I]>,
-    const I: usize,
-    const T: usize,
-    const S: usize,
->(
+pub fn count_act_dist_cache_local<W: Sync + Send + HammingDist<Bits = [b64; I]>, const I: usize, const T: usize, const S: usize>(
     examples: &[([b64; I], [b64; T])],
     weights: &[[Vec<W>; 64]; T],
 ) -> ActDists<I, T>
@@ -227,13 +211,7 @@ where
 {
     let weight_lens: [[usize; 64]; T] = weights
         .iter()
-        .map(|x| {
-            x.iter()
-                .map(|x| x.len())
-                .collect::<Vec<usize>>()
-                .try_into()
-                .unwrap()
-        })
+        .map(|x| x.iter().map(|x| x.len()).collect::<Vec<usize>>().try_into().unwrap())
         .collect::<Vec<[usize; 64]>>()
         .try_into()
         .unwrap();
@@ -247,13 +225,10 @@ where
                     for b in 0..64 {
                         chunk.iter().for_each(|(input, target)| {
                             let sign = target[w].get_bit(b);
-                            weights[w][b]
-                                .iter()
-                                .zip(acc.counts[w][b].iter_mut())
-                                .for_each(|(trits, distr)| {
-                                    let act = trits.hamming_dist(input).min(I as u32 * 64 - 1);
-                                    distr[act as usize][sign as usize] += 1;
-                                });
+                            weights[w][b].iter().zip(acc.counts[w][b].iter_mut()).for_each(|(trits, distr)| {
+                                let act = trits.hamming_dist(input).min(I as u32 * 64 - 1);
+                                distr[act as usize][sign as usize] += 1;
+                            });
                         });
                     }
                 }
@@ -267,12 +242,7 @@ where
         .unwrap()
 }
 
-pub fn count_act_dist<
-    W: Sync + Send + HammingDist<Bits = [b64; I]>,
-    const I: usize,
-    const T: usize,
-    const S: usize,
->(
+pub fn count_act_dist<W: Sync + Send + HammingDist<Bits = [b64; I]>, const I: usize, const T: usize, const S: usize>(
     examples: &[([b64; I], [b64; T])],
     weights: &[[Vec<W>; 64]; T],
 ) -> ActDists<I, T>
@@ -281,13 +251,7 @@ where
 {
     let weight_lens: [[usize; 64]; T] = weights
         .iter()
-        .map(|x| {
-            x.iter()
-                .map(|x| x.len())
-                .collect::<Vec<usize>>()
-                .try_into()
-                .unwrap()
-        })
+        .map(|x| x.iter().map(|x| x.len()).collect::<Vec<usize>>().try_into().unwrap())
         .collect::<Vec<[usize; 64]>>()
         .try_into()
         .unwrap();
@@ -301,13 +265,10 @@ where
                     for w in 0..T {
                         for b in 0..64 {
                             let sign = target[w].get_bit(b);
-                            weights[w][b]
-                                .iter()
-                                .zip(acc.counts[w][b].iter_mut())
-                                .for_each(|(trits, distr)| {
-                                    let act = trits.hamming_dist(input).min(I as u32 * 64 - 1);
-                                    distr[act as usize][sign as usize] += 1;
-                                });
+                            weights[w][b].iter().zip(acc.counts[w][b].iter_mut()).for_each(|(trits, distr)| {
+                                let act = trits.hamming_dist(input).min(I as u32 * 64 - 1);
+                                distr[act as usize][sign as usize] += 1;
+                            });
                         }
                     }
                     acc
@@ -346,11 +307,7 @@ where
             .iter()
             .map(|w| {
                 w.iter()
-                    .map(|&len| {
-                        (0..len)
-                            .map(|_| [[0u64; 2]; I * 64])
-                            .collect::<Vec<[[u64; 2]; I * 64]>>()
-                    })
+                    .map(|&len| (0..len).map(|_| [[0u64; 2]; I * 64]).collect::<Vec<[[u64; 2]; I * 64]>>())
                     .collect::<Vec<Vec<[[u64; 2]; I * 64]>>>()
                     .try_into()
                     .unwrap()
@@ -364,16 +321,13 @@ where
     fn merge(&mut self, rhs: &Self) {
         for t in 0..T {
             for b in 0..64 {
-                rhs.counts[t][b]
-                    .iter()
-                    .zip(self.counts[t][b].iter_mut())
-                    .for_each(|(a_dist, b_dist)| {
-                        for b in 0..I * 64 {
-                            for s in 0..2 {
-                                b_dist[b][s] += a_dist[b][s];
-                            }
+                rhs.counts[t][b].iter().zip(self.counts[t][b].iter_mut()).for_each(|(a_dist, b_dist)| {
+                    for b in 0..I * 64 {
+                        for s in 0..2 {
+                            b_dist[b][s] += a_dist[b][s];
                         }
-                    });
+                    }
+                });
             }
         }
     }
@@ -384,11 +338,7 @@ where
             .map(|(x, counts)| {
                 x.iter()
                     .zip(counts.iter())
-                    .map(|(x, targ_count)| {
-                        x.iter()
-                            .map(|dist| find_best_threshold(dist, *targ_count))
-                            .collect()
-                    })
+                    .map(|(x, targ_count)| x.iter().map(|dist| find_best_threshold(dist, *targ_count)).collect())
                     .collect::<Vec<_>>()
                     .try_into()
                     .unwrap()
@@ -429,15 +379,9 @@ fn find_best_threshold<const N: usize>(dist: &[[u64; 2]; N], targ: u64) -> (u32,
 }
 
 fn find_best_threshold2<const N: usize>(dist: &[[u64; 2]; N]) -> (u32, u64) {
-    (0..N)
-        .map(|i| (i as u32, bit_acc(dist, i as u32)))
-        .max_by_key(|(_, acc)| *acc)
-        .unwrap()
+    (0..N).map(|i| (i as u32, bit_acc(dist, i as u32))).max_by_key(|(_, acc)| *acc).unwrap()
 }
 
 fn bit_acc<const N: usize>(dist: &[[u64; 2]; N], threshold: u32) -> u64 {
-    dist.iter()
-        .enumerate()
-        .map(|(a, pair)| pair[(a > threshold as usize) as usize])
-        .sum()
+    dist.iter().enumerate().map(|(a, pair)| pair[(a > threshold as usize) as usize]).sum()
 }

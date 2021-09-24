@@ -1,7 +1,11 @@
 use crate::bits::{b64, t64};
+use crate::bitslice::BitSlice;
 use crate::count::ElementwiseAdd;
+use std::arch::x86_64::{__m256i, _mm256_setzero_si256};
+use std::arch::x86_64::{__m512i, _mm512_setzero_si512};
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::mem;
 
 #[inline(always)]
 fn transpose_64_slow(input: &mut [u64; 64]) {
@@ -16,7 +20,7 @@ fn transpose_64_slow(input: &mut [u64; 64]) {
     *input = target;
 }
 
-// Hacker's Delight 7-7
+// Hacker's Delight 7-3 fig 7-7
 #[inline(always)]
 fn transpose_64(a: &mut [u64; 64]) {
     let mut m: u64 = !0u64 >> 32;
@@ -34,7 +38,6 @@ fn transpose_64(a: &mut [u64; 64]) {
         m ^= m << j
     }
 }
-
 #[inline(never)]
 pub fn transpose<const L: usize, const N: usize>(
     input: &[[b64; L]; N * 64],
@@ -70,6 +73,89 @@ pub fn transpose<const L: usize, const N: usize>(
         }
     });
 
+    target
+}
+
+#[inline(never)]
+pub fn transpose_256<const L: usize, const N: usize>(
+    input: &[[b64; L]; N * 256],
+) -> [[__m256i; N]; 64 * L] {
+    let mut target: [[__m256i; N]; 64 * L] = (0..(L * 64))
+        .map(|_| {
+            (0..N)
+                .map(|_| unsafe { _mm256_setzero_si256() })
+                .collect::<Vec<__m256i>>()
+                .try_into()
+                .unwrap()
+        })
+        .collect::<Vec<[__m256i; N]>>()
+        .try_into()
+        .unwrap();
+
+    input.chunks(256).enumerate().for_each(|(i, chunk)| {
+        let chunk: &[[b64; L]; 256] = <&[[b64; L]; 256]>::try_from(chunk).unwrap();
+        for l in 0..L {
+            let mut block: [[u64; 64]; 4] = [[0u64; 64]; 4];
+            for w in 0..4 {
+                for b in 0..64 {
+                    block[w][b] = chunk[w * 64 + b][l].0;
+                }
+                transpose_64(&mut block[w]);
+            }
+            for b in 0..64 {
+                let mut row = [0u64; 4];
+                for w in 0..4 {
+                    row[w] = block[w][b];
+                }
+                target[l * 64 + b][i] = unsafe { mem::transmute(row) };
+            }
+        }
+    });
+
+    target
+}
+
+pub fn block_transpose_256<const L: usize>(input: &[[b64; L]; 256]) -> [__m256i; 64 * L] {
+    let mut target = [unsafe { _mm256_setzero_si256() }; 64 * L];
+
+    for l in 0..L {
+        let mut block: [[u64; 64]; 4] = [[0u64; 64]; 4];
+        for w in 0..4 {
+            for b in 0..64 {
+                block[w][b] = input[w * 64 + b][l].0;
+            }
+            transpose_64(&mut block[w]);
+        }
+        for b in 0..64 {
+            let mut row = [0u64; 4];
+            for w in 0..4 {
+                row[w] = block[w][b];
+            }
+            target[l * 64 + b] = unsafe { mem::transmute(row) };
+        }
+    }
+    target
+}
+
+pub fn block_transpose_512<const L: usize>(input: &[[b64; L]; 512]) -> [__m512i; 64 * L] {
+    let mut target = [unsafe { _mm512_setzero_si512() }; 64 * L];
+
+    for l in 0..L {
+        let mut block: [[u64; 64]; 8] = [[0u64; 64]; 8];
+        for w in 0..8 {
+            for b in 0..64 {
+                block[w][b] = input[w * 64 + b][l].0;
+            }
+            transpose_64(&mut block[w]);
+        }
+        for b in 0..64 {
+            let mut row = [0u64; 8];
+            for w in 0..8 {
+                row[w] = block[w][b];
+            }
+            target[l * 64 + b] = unsafe { mem::transmute(row) };
+        }
+    }
     target
 }
 

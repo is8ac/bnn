@@ -1910,8 +1910,8 @@ mod tests {
         };
     }
 
-    weight_group!(test_bit, bool);
-    weight_group!(test_trit, Option<bool>);
+    //weight_group!(test_bit, bool);
+    //weight_group!(test_trit, Option<bool>);
     //weight_group!(test_trit, (bool, bool));
 
     #[test]

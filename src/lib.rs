@@ -1,3 +1,5 @@
+#![feature(avx512_target_feature)]
+#![feature(int_log)]
 #![feature(stdsimd)]
 #![forbid(unreachable_pub)]
 #![feature(test)]
@@ -8,8 +10,9 @@
 extern crate lazy_static;
 
 pub mod bits;
+pub mod bitslice;
 pub mod count;
-pub mod count_bits;
+//pub mod count_bits;
 pub mod datasets;
 pub mod ecc;
 pub mod matrix;

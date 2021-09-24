@@ -1,46 +1,45 @@
-use crate::bits::{b32, b64, b8, GetBit, PackedIndexSGet, BMA};
-use crate::shape::Shape;
-use rand::distributions::{Distribution, Standard};
-use rand::Rng;
-use rand::SeedableRng;
-use rand_hc::Hc128Rng;
+use crate::bits::b64;
 use rayon::prelude::*;
-use std::convert::TryInto;
-use std::num::Wrapping;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 pub fn generate_hadamard_matrix() -> [[b64; 4]; 256] {
-    let mut generator_matrix = [[b64(0); 4]; 8];
-    for i in 0..256 {
-        for b in 0..8 {
-            generator_matrix[b].set_bit(i, i.bit(b));
+    let mut hadamard_matrix = [[b64(0); 4]; 256];
+    for x in 0..256_usize {
+        for y in 0..256_usize {
+            let sign = ((x & y).count_ones() & 1) == 1;
+            hadamard_matrix[x].set_bit(y, sign);
         }
     }
+    hadamard_matrix
+}
 
-    let mut hadamard_matrix = [[b64(0); 4]; 256];
-    for i in 0..256usize {
-        for b in 0..8 {
-            if i.bit(b) {
-                hadamard_matrix[i].xor_in_place(&generator_matrix[b]);
-            }
+pub fn generate_thin_hadamard_matrix() -> [[b64; 2]; 256] {
+    let mut hadamard_matrix = [[b64(0); 2]; 256];
+    for x in 0..256_usize {
+        for y in 0..128_usize {
+            let sign = ((x & (y + 128)).count_ones() & 1) == 1;
+            hadamard_matrix[x].set_bit(y, sign);
+        }
+    }
+    hadamard_matrix
+}
+
+pub fn generate_wide_hadamard_matrix() -> [[b64; 8]; 256] {
+    let mut hadamard_matrix = [[b64(0); 8]; 256];
+    for x in 0..256_usize {
+        for y in 0..512_usize {
+            let sign = ((x & y).count_ones() & 1) == 1;
+            hadamard_matrix[x].set_bit(y, sign);
         }
     }
     hadamard_matrix
 }
 
 pub trait BitString {
-    fn xor_in_place(&mut self, rhs: &Self);
     fn set_bit(&mut self, i: usize, b: bool);
     fn hamming_dist(&self, rhs: &Self) -> u32;
 }
 
 impl<const L: usize> BitString for [b64; L] {
-    fn xor_in_place(&mut self, rhs: &Self) {
-        let mut target = [b64(0); L];
-        for i in 0..L {
-            self[i].0 ^= rhs[i].0;
-        }
-    }
     fn set_bit(&mut self, i: usize, b: bool) {
         self[i / 64].0 |= (b as u64) << (i % 64);
     }
