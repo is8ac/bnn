@@ -10,7 +10,6 @@ use bnn::bitslice::{
 };
 //use bnn::matrix::{block_transpose_256, block_transpose_512};
 use bnn::ecc::{decode_byte, encode_byte};
-use bnn::search::Weights;
 use bnn::shape::flatten_2d;
 use rayon::prelude::*;
 use std::arch::x86_64::{__m256i, __m512i, _mm256_setzero_si256};
@@ -50,6 +49,7 @@ fn main() {
     //    println!("{} {:?}", i, row);
     //}
 
+    /*
     for threshold in 50..200 {
         //let threshold = 125;
 
@@ -72,4 +72,7 @@ fn main() {
             .sum();
         assert_eq!(count, real_count);
     }
+    */
+    let foo = b8(0b_11001111_u8);
+    dbg!(foo.get_bit(1));
 }

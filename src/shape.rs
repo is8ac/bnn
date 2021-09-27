@@ -142,29 +142,6 @@ impl<I, O> Map<I, O> for () {
     }
 }
 
-impl<S, I, O, const L: usize> Map<I, O> for [S; L]
-where
-    S: Shape + Map<I, O> + Pack<I> + Pack<O>,
-    <Self as Pack<O>>::T: LongDefault,
-{
-    fn map<F: Fn(&I) -> O>(input: &[<S as Pack<I>>::T; L], map_fn: F) -> <Self as Pack<O>>::T {
-        let mut target = <<Self as Pack<O>>::T>::long_default();
-        for i in 0..L {
-            target[i] = <S as Map<I, O>>::map(&input[i], &map_fn);
-        }
-        target
-    }
-    fn map_mut<F: Fn(&I, &mut O)>(
-        input: &[<S as Pack<I>>::T; L],
-        target: &mut [<S as Pack<O>>::T; L],
-        map_fn: F,
-    ) {
-        for i in 0..L {
-            <S as Map<I, O>>::map_mut(&input[i], &mut target[i], &map_fn);
-        }
-    }
-}
-
 pub trait IndexMap<O, W>
 where
     Self: Sized + Pack<O>,
@@ -183,31 +160,6 @@ where
 {
     fn index_map<F: Fn(W::Index) -> O>(outer_index: W::Index, map_fn: F) -> O {
         map_fn(outer_index)
-    }
-}
-
-impl<W, S, O, const L: usize> IndexMap<O, W> for [S; L]
-where
-    W: Pack<[S; L], T = <<W as Pack<[(); L]>>::T as Pack<S>>::T> + Pack<[(); L]>,
-    <W as Pack<[(); L]>>::T: Pack<S>,
-    S: Pack<O> + IndexMap<O, <W as Pack<[(); L]>>::T>,
-    <<W as Pack<[(); L]>>::T as Pack<S>>::T: Shape,
-    <W as Pack<[S; L]>>::T: Shape,
-    [<S as Pack<O>>::T; L]: LongDefault,
-    (u8, ()): Wrap<W::Index, Wrapped = <<W as Pack<[(); L]>>::T as Shape>::Index>,
-{
-    fn index_map<F: Fn(<<W as Pack<[S; L]>>::T as Shape>::Index) -> O>(
-        outer_index: W::Index,
-        map_fn: F,
-    ) -> [<S as Pack<O>>::T; L] {
-        let mut target = <[<S as Pack<O>>::T; L]>::long_default();
-        for i in 0..L {
-            target[i] = <S as IndexMap<O, <W as Pack<[(); L]>>::T>>::index_map(
-                (i as u8, ()).wrap(outer_index),
-                &map_fn,
-            );
-        }
-        target
     }
 }
 
@@ -294,113 +246,6 @@ impl<A, B, O> ZipMap<A, B, O> for () {
         map_fn(a, b, target)
     }
 }
-
-impl<S, A, B, O, const L: usize> ZipMap<A, B, O> for [S; L]
-where
-    S: Shape + ZipMap<A, B, O> + Pack<A> + Pack<B> + Pack<O>,
-    [<S as Pack<O>>::T; L]: LongDefault,
-{
-    fn zip_map<F: Fn(&A, &B) -> O>(
-        a: &[<S as Pack<A>>::T; L],
-        b: &[<S as Pack<B>>::T; L],
-        map_fn: F,
-    ) -> [<S as Pack<O>>::T; L] {
-        let mut target = <[<S as Pack<O>>::T; L]>::long_default();
-        for i in 0..L {
-            target[i] = S::zip_map(&a[i], &b[i], &map_fn);
-        }
-        target
-    }
-    fn zip_map_mut<F: Fn(&A, &B, &mut O)>(
-        a: &[<S as Pack<A>>::T; L],
-        b: &[<S as Pack<B>>::T; L],
-        target: &mut [<S as Pack<O>>::T; L],
-        map_fn: F,
-    ) {
-        for i in 0..L {
-            S::zip_map_mut(&a[i], &b[i], &mut target[i], &map_fn);
-        }
-    }
-}
-
-pub trait LongDefault {
-    fn long_default() -> Self;
-}
-
-impl<T: LongDefault> LongDefault for Box<T> {
-    fn long_default() -> Self {
-        Box::new(T::long_default())
-    }
-}
-
-impl<T: LongDefault> LongDefault for Vec<T> {
-    fn long_default() -> Self {
-        Vec::new()
-    }
-}
-
-impl LongDefault for f32 {
-    fn long_default() -> Self {
-        0f32
-    }
-}
-
-impl LongDefault for i32 {
-    fn long_default() -> Self {
-        0i32
-    }
-}
-impl LongDefault for usize {
-    fn long_default() -> Self {
-        0usize
-    }
-}
-
-impl<A: LongDefault, B: LongDefault> LongDefault for (A, B) {
-    fn long_default() -> Self {
-        (A::long_default(), B::long_default())
-    }
-}
-
-impl<A: LongDefault, B: LongDefault, C: LongDefault> LongDefault for (A, B, C) {
-    fn long_default() -> Self {
-        (A::long_default(), B::long_default(), C::long_default())
-    }
-}
-
-macro_rules! impl_long_default_for_array {
-    ($len:expr) => {
-        impl<T: Copy + LongDefault> LongDefault for [T; $len] {
-            fn long_default() -> [T; $len] {
-                [T::long_default(); $len]
-            }
-        }
-    };
-}
-
-impl_long_default_for_array!(1);
-impl_long_default_for_array!(2);
-impl_long_default_for_array!(3);
-impl_long_default_for_array!(4);
-impl_long_default_for_array!(5);
-impl_long_default_for_array!(6);
-impl_long_default_for_array!(7);
-impl_long_default_for_array!(8);
-impl_long_default_for_array!(9);
-impl_long_default_for_array!(10);
-impl_long_default_for_array!(11);
-impl_long_default_for_array!(12);
-impl_long_default_for_array!(13);
-impl_long_default_for_array!(14);
-impl_long_default_for_array!(15);
-impl_long_default_for_array!(16);
-impl_long_default_for_array!(25);
-impl_long_default_for_array!(32);
-impl_long_default_for_array!(64);
-impl_long_default_for_array!(128);
-impl_long_default_for_array!(256);
-impl_long_default_for_array!(512);
-impl_long_default_for_array!(1024);
 
 pub fn flatten_2d<'a, T: Copy + Sized, const A: usize, const B: usize>(
     input: &'a [[T; B]; A],

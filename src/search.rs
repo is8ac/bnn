@@ -1,4 +1,4 @@
-use crate::bits::{b64, t64};
+use crate::bits::b64;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -179,12 +179,7 @@ where
             cur_n_correct: 0u64,
             mutation_values: W::mutations()
                 .iter()
-                .map(|&m| {
-                    indices
-                        .iter()
-                        .map(|&i| ((i, m), (0, None)))
-                        .collect::<Vec<_>>()
-                })
+                .map(|&m| indices.iter().map(|&i| ((i, m), (0, None))).collect::<Vec<_>>())
                 .flatten()
                 .collect(),
         }
@@ -216,9 +211,7 @@ where
             self.cur_n_correct = n_correct;
             self.cur_state = top_mutation;
         }
-        self.mutation_values
-            .iter_mut()
-            .for_each(|(k, (age, _))| *age += 1);
+        self.mutation_values.iter_mut().for_each(|(k, (age, _))| *age += 1);
         //dbg!(&self.mutation_values);
         self.cur_n_correct
     }
