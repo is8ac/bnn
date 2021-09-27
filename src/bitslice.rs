@@ -1,4 +1,4 @@
-use crate::bits::b64;
+use crate::bits::{b128, b16, b32, b64, b8};
 use std::arch::x86_64::{
     __m256i, _mm256_and_si256, _mm256_extract_epi64, _mm256_or_si256, _mm256_set1_epi8,
     _mm256_setzero_si256, _mm256_xor_si256,
@@ -166,59 +166,59 @@ impl BitSlice for __m512i {
 }
 
 macro_rules! impl_transpose {
-    ($fn_name:ident, $type:ty, $len:expr) => {
+    ($fn_name:ident, $b_type:ident, $u_type:ident, $len:expr) => {
         // Hacker's Delight 7-7
-        pub fn $fn_name(a: &mut [$type; $len]) {
-            let mut m: $type = !(0 as $type) >> $len / 2;
+        pub fn $fn_name(a: &mut [$b_type; $len]) {
+            let mut m: $u_type = !(0 as $u_type) >> $len / 2;
             let mut j: usize = $len / 2;
             while j != 0 {
                 let mut k: usize = 0;
-                let mut t: $type;
+                let mut t: $u_type;
                 while k < $len {
-                    t = (a[k] ^ a[k | j] >> j) & m;
-                    a[k] ^= t;
-                    a[k | j] ^= t << j;
+                    t = (a[k].0 ^ a[k | j].0 >> j) & m;
+                    a[k].0 ^= t;
+                    a[k | j].0 ^= t << j;
                     k = (k | j) + 1 & !j
                 }
                 j >>= 1;
                 m ^= m << j
             }
         }
-        impl BitSlice for $type {
+        impl BitSlice for $b_type {
             const N: usize = $len;
             fn zeros() -> Self {
-                0
+                $b_type(0)
             }
             fn ones() -> Self {
-                !(0)
+                $b_type(!(0))
             }
             fn splat(sign: bool) -> Self {
-                0 - sign as $type
+                $b_type(0 - sign as $u_type)
             }
             fn xor(self, rhs: Self) -> Self {
-                self ^ rhs
+                $b_type(self.0 ^ rhs.0)
             }
             fn or(self, rhs: Self) -> Self {
-                self | rhs
+                $b_type(self.0 | rhs.0)
             }
             fn and(self, rhs: Self) -> Self {
-                self & rhs
+                $b_type(self.0 & rhs.0)
             }
             fn not(self) -> Self {
-                !self
+                $b_type(!self.0)
             }
             fn count_bits(self) -> u32 {
-                self.count_ones()
+                self.0.count_ones()
             }
         }
     };
 }
 
-impl_transpose!(transpose_8, u8, 8);
-impl_transpose!(transpose_16, u16, 16);
-impl_transpose!(transpose_32, u32, 32);
-impl_transpose!(transpose_64, u64, 64);
-impl_transpose!(transpose_128, u128, 128);
+impl_transpose!(transpose_8, b8, u8, 8);
+impl_transpose!(transpose_16, b16, u16, 16);
+impl_transpose!(transpose_32, b32, u32, 32);
+impl_transpose!(transpose_64, b64, u64, 64);
+impl_transpose!(transpose_128, b128, u128, 128);
 
 pub trait BlockTranspose<const L: usize>
 where
@@ -227,20 +227,38 @@ where
     fn block_transpose(input: &[[b64; L]; Self::N]) -> [Self; 64 * L];
 }
 
+impl<const L: usize> BlockTranspose<L> for b64 {
+    fn block_transpose(input: &[[b64; L]; 64]) -> [b64; 64 * L] {
+        let mut target = [b64(0); 64 * L];
+
+        for l in 0..L {
+            let mut block: [b64; 64] = [b64(0); 64];
+            for b in 0..64 {
+                block[b] = input[b][l];
+            }
+            transpose_64(&mut block);
+            for b in 0..64 {
+                target[l * 64 + b] = block[b];
+            }
+        }
+        target
+    }
+}
+
 impl<const L: usize> BlockTranspose<L> for __m256i {
     fn block_transpose(input: &[[b64; L]; Self::N]) -> [__m256i; 64 * L] {
         let mut target = [unsafe { _mm256_setzero_si256() }; 64 * L];
 
         for l in 0..L {
-            let mut block: [[u64; 64]; 4] = [[0u64; 64]; 4];
+            let mut block: [[b64; 64]; 4] = [[b64(0); 64]; 4];
             for w in 0..4 {
                 for b in 0..64 {
-                    block[w][b] = input[w * 64 + b][l].0;
+                    block[w][b] = input[w * 64 + b][l];
                 }
                 transpose_64(&mut block[w]);
             }
             for b in 0..64 {
-                let mut row = [0u64; 4];
+                let mut row = [b64(0); 4];
                 for w in 0..4 {
                     row[w] = block[w][b];
                 }
@@ -256,15 +274,15 @@ impl<const L: usize> BlockTranspose<L> for __m512i {
         let mut target = [unsafe { _mm512_setzero_si512() }; 64 * L];
 
         for l in 0..L {
-            let mut block: [[u64; 64]; 8] = [[0u64; 64]; 8];
+            let mut block: [[b64; 64]; 8] = [[b64(0); 64]; 8];
             for w in 0..8 {
                 for b in 0..64 {
-                    block[w][b] = input[w * 64 + b][l].0;
+                    block[w][b] = input[w * 64 + b][l];
                 }
                 transpose_64(&mut block[w]);
             }
             for b in 0..64 {
-                let mut row = [0u64; 8];
+                let mut row = [b64(0); 8];
                 for w in 0..8 {
                     row[w] = block[w][b];
                 }
@@ -378,6 +396,8 @@ adder_fns!(4, array_popcount_4, array_popcount_3);
 adder_fns!(5, array_popcount_5, array_popcount_4);
 adder_fns!(6, array_popcount_6, array_popcount_5);
 adder_fns!(7, array_popcount_7, array_popcount_6);
+adder_fns!(8, array_popcount_8, array_popcount_7);
+adder_fns!(9, array_popcount_9, array_popcount_8);
 
 pub fn extend<T: BitSlice + Copy, const I: usize, const O: usize>(v: &[T; I]) -> [T; O] {
     let mut target = [T::zeros(); O];
@@ -401,7 +421,13 @@ pub fn ragged_array_popcount<T: BitSlice + Copy, const L: usize>(v: &[T]) -> [T;
         7 => extend(&array_popcount_7(
             <&[T; 128]>::try_from(&v[0..128]).unwrap(),
         )),
-        _ => panic!(),
+        8 => extend(&array_popcount_8(
+            <&[T; 256]>::try_from(&v[0..256]).unwrap(),
+        )),
+        9 => extend(&array_popcount_9(
+            <&[T; 512]>::try_from(&v[0..512]).unwrap(),
+        )),
+        _ => panic!("Size not implemented"),
     };
     if 2usize.pow(size) == v.len() {
         head

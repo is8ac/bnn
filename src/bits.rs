@@ -872,6 +872,18 @@ where
     }
 }
 
+pub trait BitArray
+where
+    Self: Sized,
+{
+    fn set_bit_in_place(&mut self, i: usize, s: bool);
+    fn set_bit(mut self, i: usize, s: bool) -> Self {
+        self.set_bit_in_place(i, s);
+        self
+    }
+    fn get_bit(&self, i: usize) -> bool;
+}
+
 #[cfg(target_feature = "avx2")]
 const PSHUF_BYTE_MASK: [u8; 32] = [
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
@@ -1327,16 +1339,22 @@ macro_rules! for_uints {
             }
             #[inline(always)]
             pub fn get_bit(self, index: usize) -> bool {
-                ((self.0 >> index) & 1) == 1
+                ((self.0 >> (($len - 1) - index)) & 1) == 1
             }
             #[inline(always)]
             pub fn get_bit_u8(self, index: usize) -> u8 {
-                ((self.0 >> index) & 1) as u8
+                ((self.0 >> (($len - 1) - index)) & 1) as u8
             }
             #[inline(always)]
             pub fn set_bit_in_place(&mut self, index: usize, value: bool) {
-                self.0 &= !(1 << index);
-                self.0 |= ((value as $u_type) << index);
+                self.0 &= !(1 << (($len - 1) - index));
+                self.0 |= ((value as $u_type) << (($len - 1) - index));
+            }
+            #[inline(always)]
+            pub fn set_bit(mut self, index: usize, value: bool) -> Self {
+                self.0 &= !(1 << (($len - 1) - index));
+                self.0 |= ((value as $u_type) << (($len - 1) - index));
+                self
             }
         }
         impl $t_type {
@@ -1353,6 +1371,15 @@ macro_rules! for_uints {
 
                 self.1 &= !(1 << index);
                 self.1 |= ((val.is_some() as $u_type) << index);
+            }
+        }
+
+        impl<const L: usize> BitArray for [$b_type; L] {
+            fn set_bit_in_place(&mut self, i: usize, s: bool) {
+                self[i / $len].set_bit_in_place(i % $len, s);
+            }
+            fn get_bit(&self, i: usize) -> bool {
+                self[i / $len].get_bit(i)
             }
         }
 
