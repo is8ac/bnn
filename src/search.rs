@@ -1,262 +1,280 @@
 use crate::bits::b64;
+use crate::bits::GetBit;
+use crate::count_bits::{ShuffleTable, TargetAccumulator};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::convert::TryInto;
 use std::fmt;
 use std::fmt::Debug;
 use std::hash::Hash;
 
-pub trait Weights {
-    type Mutation;
-    type Index;
-    fn init() -> Self;
-    fn mutations() -> Vec<Self::Mutation>;
-    fn indices() -> Vec<Self::Index>;
-    fn get(&self, i: Self::Index) -> Self::Mutation;
-    fn set(&mut self, i: Self::Index, m: Self::Mutation);
-    fn apply(self, i: Self::Index, m: Self::Mutation) -> Self;
-    fn diff(&self, rhs: &Self) -> Vec<(Self::Index, Self::Mutation)>;
+fn compute_exp_candidates<const I: usize, const N: usize, const E: u32>(
+    weights: &[Option<bool>; I],
+    threshold: u32,
+    unit_counts: &[[[u64; N]; 2]; I],
+) -> ([(usize, bool); E as usize], [u32; N]) {
+    let mut sorted_candidates: Vec<_> = weights
+        .iter()
+        .zip(unit_counts.iter())
+        .enumerate()
+        .filter_map(|(i, (weight, counts))| {
+            if let None = weight {
+                Some(
+                    counts
+                        .iter()
+                        .enumerate()
+                        .map(|(s, counts)| counts.iter().max().map(|&a| (a, (i, s == 1))).unwrap())
+                        .max()
+                        .unwrap(),
+                )
+            } else {
+                // skip
+                None
+            }
+        })
+        .collect();
+    sorted_candidates.sort_by_key(|&(a, _)| Reverse(a));
+
+    let candidates: [(usize, bool); E as usize] = sorted_candidates
+        .iter()
+        .map(|&(_, (i, s))| (i, s))
+        .take(2usize.pow(E))
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let thresholds: [u32; N] = (0..N)
+        .map(|x| threshold + x as u32)
+        .collect::<Vec<u32>>()
+        .try_into()
+        .unwrap();
+    (candidates, thresholds)
 }
 
-impl<const L: usize> Weights for [b64; L] {
-    type Mutation = bool;
-    type Index = usize;
-    fn init() -> Self {
-        [b64(0); L]
+fn update_weights<const I: usize, const N: usize, const E: u32>(
+    weights: &mut ([Option<bool>; I], u32),
+    exp_candidates: &[(usize, bool); E as usize],
+    exp_counts: &[[u64; N]; 2usize.pow(E)],
+    thresholds: &[u32; N],
+) -> u64 {
+    let (mask, (accuracy, threshold)): (usize, (u64, u32)) = exp_counts
+        .iter()
+        .enumerate()
+        .map(|(mask, &counts)| {
+            let (accuracy, threshold) = counts.iter().zip(thresholds.iter()).max().unwrap();
+            (mask, (*accuracy, *threshold))
+        })
+        .max_by_key(|(mask, (a, _))| (*a, mask.count_zeros()))
+        .unwrap();
+    if mask == 0 {
+        println!("stuck",);
     }
-    fn mutations() -> Vec<Self::Mutation> {
-        vec![false, true]
-    }
-    fn indices() -> Vec<Self::Index> {
-        (0..(64 * L)).collect()
-    }
-    fn get(&self, i: usize) -> bool {
-        ((self[i / 64].0 >> (i % 64)) & 1) == 1
-    }
-    fn set(&mut self, i: usize, b: bool) {
-        self[i / 64].0 &= !(1 << (i % 64));
-        self[i / 64].0 |= (b as u64) << (i % 64);
-    }
-    fn apply(mut self, i: Self::Index, m: Self::Mutation) -> Self {
-        self.set(i, m);
-        self
-    }
-    fn diff(&self, rhs: &Self) -> Vec<(Self::Index, Self::Mutation)> {
-        (0..(64 * L))
-            .filter_map(|i| {
-                let cur_state = self.get(i);
-                let new_state = rhs.get(i);
-                if cur_state == new_state {
-                    None
-                } else {
-                    Some((i, new_state))
-                }
-            })
-            .collect()
-    }
+    weights.1 = threshold;
+
+    exp_candidates.iter().enumerate().for_each(|(b, &(i, s))| {
+        weights.0[i] = Some(s).filter(|_| mask.bit(b));
+    });
+    accuracy
 }
 
-impl<const L: usize> Weights for ([b64; L], [b64; L]) {
-    type Mutation = Option<bool>;
-    type Index = usize;
-    fn init() -> Self {
-        ([b64(0); L], [b64(0); L])
-    }
-    fn mutations() -> Vec<Self::Mutation> {
-        vec![Some(false), None, Some(true)]
-    }
-    fn indices() -> Vec<Self::Index> {
-        (0..(64 * L)).collect()
-    }
-    fn get(&self, i: usize) -> Option<bool> {
-        let sign = self.0.get(i);
-        let mask = self.1.get(i);
-        Some(sign).filter(|_| mask)
-    }
-    fn set(&mut self, i: usize, b: Option<bool>) {
-        self.0.set(i, b.unwrap_or(false));
-        self.1.set(i, b.is_some());
-    }
-    fn apply(mut self, i: Self::Index, m: Self::Mutation) -> Self {
-        self.set(i, m);
-        self
-    }
-    fn diff(&self, rhs: &Self) -> Vec<(Self::Index, Self::Mutation)> {
-        (0..(64 * L))
-            .filter_map(|i| {
-                let cur_state = self.get(i);
-                let new_state = rhs.get(i);
-                if cur_state == new_state {
-                    None
-                } else {
-                    Some((i, new_state))
-                }
-            })
-            .collect()
-    }
+fn weights_to_sparse<const I: usize>(weights: &[Option<bool>; I]) -> Vec<(usize, bool)> {
+    weights
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| t.map(|s| (i, s)))
+        .collect()
 }
 
-impl<const L: usize> Weights for [t64; L] {
-    type Mutation = Option<bool>;
-    type Index = usize;
-    fn init() -> Self {
-        [t64(0, 0); L]
-    }
-    fn mutations() -> Vec<Self::Mutation> {
-        vec![Some(false), None, Some(true)]
-    }
-    fn indices() -> Vec<Self::Index> {
-        (0..(64 * L)).collect()
-    }
-    fn get(&self, i: usize) -> Option<bool> {
-        let sign = (self[i / 64].0 >> (i % 64)) & 1 == 1;
-        let magn = (self[i / 64].1 >> (i % 64)) & 1 == 1;
-        Some(sign).filter(|_| magn)
-    }
-    fn set(&mut self, i: usize, b: Option<bool>) {
-        self[i / 64].0 &= !(1 << (i % 64));
-        self[i / 64].0 |= ((b.unwrap_or(false) as u64) << (i % 64));
-        self[i / 64].1 &= !(1 << (i % 64));
-        self[i / 64].1 |= ((b.is_some() as u64) << (i % 64));
-    }
-    fn apply(mut self, i: Self::Index, m: Self::Mutation) -> Self {
-        self.set(i, m);
-        self
-    }
-    fn diff(&self, rhs: &Self) -> Vec<(Self::Index, Self::Mutation)> {
-        (0..(64 * L))
-            .filter_map(|i| {
-                let cur_state = self.get(i);
-                let new_state = rhs.get(i);
-                if cur_state == new_state {
-                    None
-                } else {
-                    Some((i, new_state))
-                }
-            })
-            .collect()
-    }
+/*
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+pub enum Weight {
+    Set(bool),
+    Unset([u64; 2]),
 }
 
-pub trait SearchManager<W> {
-    // Must accept mutatations different form what was proposed.
-    fn update(&mut self, mutations: &Vec<(W, u64)>) -> u64;
-    // Must return no more then n mutations.
-    fn mutation_candidates(&self, n: usize) -> Vec<W>;
-    fn weights(&self) -> W;
-}
-
-pub struct UnitSearch<W: Weights>
+#[derive(Debug)]
+pub struct TargetSearchManager<const I: usize, const N: usize, const E: u32>
 where
-    W::Index: Eq + Hash,
-    W::Mutation: Eq + Hash,
+    [(); E as usize]: ,
 {
-    cur_state: W,
-    cur_n_correct: u64,
-    mutation_values: HashMap<(W::Index, W::Mutation), (usize, Option<u64>)>,
+    pub n: Option<usize>,
+    pub cur_acc: u64,
+    pub cur_threshold: u32,
+    pub weights: [Weight; I],
 }
 
-impl<W: Weights + Debug> fmt::Debug for UnitSearch<W>
+impl<const I: usize, const N: usize, const E: u32> TargetSearchManager<I, N, E>
 where
-    W::Index: Eq + Hash,
-    W::Mutation: Eq + Hash,
+    [(); E as usize]: ,
+    [(); 2usize.pow(E)]: ,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UnitSearch")
-            .field("cur_state", &self.cur_state)
-            .field("cur_n_correct", &self.cur_n_correct)
-            .finish()
-    }
-}
-impl<W: Weights> UnitSearch<W>
-where
-    W::Index: Eq + Hash + Copy,
-    W::Mutation: Eq + Hash + Copy,
-{
-    pub fn init(w: W) -> Self {
-        let indices = W::indices();
-        UnitSearch {
-            cur_state: w,
-            cur_n_correct: 0u64,
-            mutation_values: W::mutations()
-                .iter()
-                .map(|&m| indices.iter().map(|&i| ((i, m), (0, None))).collect::<Vec<_>>())
-                .flatten()
-                .collect(),
+    pub fn new() -> Self {
+        TargetSearchManager {
+            n: None,
+            cur_acc: 0,
+            cur_threshold: 0,
+            weights: (0..I).map(|_| Weight::Unset([0, 0])).collect::<Vec<_>>().try_into().unwrap(),
         }
     }
-}
+    pub fn query(&self) -> ShuffleTable<N, E> {
+        let mut exp_sort: Vec<(usize, i64, bool)> = self
+            .weights
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &w)| {
+                if let Weight::Unset((_, d)) = w {
+                    Some((i, d[0].max(d[1]), d[0] < d[1]))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
 
-impl<W: Weights + Copy> SearchManager<W> for UnitSearch<W>
-where
-    W::Index: Eq + Hash + Copy + Ord + Debug,
-    W::Mutation: Eq + Hash + Copy + Ord + Debug,
-{
-    fn update(&mut self, mutations: &Vec<(W, u64)>) -> u64 {
-        //dbg!(mutations.len());
-        mutations.iter().for_each(|(w, n_correct)| {
-            let diff = self.cur_state.diff(w);
-            //dbg!(diff.len());
-            //let weight: f64 = (*n_correct as f64 / self.n_examples as f64) / diff.len() as f64;
-            diff.iter().for_each(|k| {
-                //dbg!(k);
-                *self.mutation_values.get_mut(k).unwrap() = (0, Some(*n_correct));
-            });
+        exp_sort.sort_by_key(|&(i, d, s)| Reverse((d, i)));
+
+        ShuffleTable::<N, E> {
+            base: self
+                .weights
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &w)| if let Weight::Set(sign) = w { Some((i, sign)) } else { None })
+                .collect(),
+            exp: exp_sort[0..E as usize].iter().map(|&(i, _, s)| (i, s)).collect::<Vec<_>>().try_into().unwrap(),
+            thresholds: (0..N).map(|i| i as u32 + self.cur_threshold).collect::<Vec<u32>>().try_into().unwrap(),
+        }
+    }
+    pub fn apply_unit(&mut self, unit_counts: [[[u64; N]; 2]; I]) {
+        let set_weights: Vec<_> = self
+            .weights
+            .iter()
+            .enumerate()
+            .filter_map(|(i, w)| if let Weight::Set(s) = w { Some((i, *s)) } else { None })
+            .collect();
+        assert_eq!(set_weights, table.base);
+
+        counts.unit_counts.iter().enumerate().for_each(|(i, c)| {
+            if let Weight::Unset((age, delta)) = &mut self.weights[i] {
+                *age = 0;
+                for s in 0..2 {
+                    delta[s] = *c[s].iter().max().unwrap() as i64 - self.cur_acc as i64;
+                }
+            } else {
+                panic!("attempted to set already set weight!")
+            }
         });
 
-        let (top_mutation, n_correct) = *mutations.iter().max_by_key(|(_, c)| *c).unwrap();
+        self.weights.iter_mut().for_each(|w| {
+            if let Weight::Unset((age, _)) = w {
+                *age += 1;
+            }
+        });
 
-        //let applied_mutations = self.cur_state.diff(&top_mutation);
-
-        if n_correct > self.cur_n_correct {
-            self.cur_n_correct = n_correct;
-            self.cur_state = top_mutation;
-        }
-        self.mutation_values.iter_mut().for_each(|(k, (age, _))| *age += 1);
-        //dbg!(&self.mutation_values);
-        self.cur_n_correct
-    }
-    fn mutation_candidates(&self, n: usize) -> Vec<W> {
-        let sorted_by_expected_value: HashMap<(W::Index, W::Mutation), u64> = {
-            let mut sorted: Vec<((W::Index, W::Mutation), u64)> = self
-                .mutation_values
-                .iter()
-                .filter(|(&(i, m), _)| self.cur_state.get(i) != m)
-                .filter(|(&_, (_, n))| n.unwrap_or_default() > self.cur_n_correct)
-                .filter_map(|(&k, (age, value))| value.map(|v| (k, v)))
-                .collect();
-            sorted.sort();
-            sorted.sort_by_key(|(k, v)| Reverse(*v));
-            sorted.drain(0..).take(n / 2).collect()
-        };
-        //dbg!(sorted_by_expected_value.len());
-        let sorted_by_age = {
-            let mut sorted: Vec<((W::Index, W::Mutation), usize)> = self
-                .mutation_values
-                .iter()
-                .filter(|(&(i, m), _)| self.cur_state.get(i) != m)
-                .filter(|(k, _)| !sorted_by_expected_value.contains_key(k))
-                .map(|(&k, &(age, _))| (k, age))
-                .collect();
-            sorted.sort();
-            sorted.sort_by_key(|(k, n)| Reverse(*n));
-            sorted
-        };
-        //dbg!(&sorted_by_age[0..5]);
-        //dbg!(sorted_by_age[sorted_by_age.len() - 1]);
-
-        sorted_by_expected_value
+        let (mutations, (accuracy, threshold)): (Vec<(usize, bool)>, (u64, u32)) = counts
+            .exp_counts
             .iter()
-            .map(|(k, _)| *k)
-            .take(n / 2)
-            .chain(sorted_by_age.iter().map(|(k, _)| *k))
-            .inspect(|(i, m)| {
-                //println!("{:?} {:?} {:?}", i, m, self.cur_state.get(*i));
+            .enumerate()
+            .map(|(mask, &counts)| {
+                let signs: Vec<(usize, bool)> = table
+                    .exp
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(b, &(i, sign))| if mask.bit(b) { Some((i, sign)) } else { None })
+                    .collect();
+
+                let (accuracy, threshold) = counts.iter().zip(table.thresholds.iter()).max().unwrap();
+                (signs, (*accuracy, *threshold))
             })
-            .map(|(i, m)| self.cur_state.apply(i, m))
-            .take(n)
-            .collect()
+            .max_by_key(|(_, (a, _))| *a)
+            .unwrap();
+        //dbg!(&mutations);
+        if accuracy > self.cur_acc {
+            //dbg!(accuracy);
+            self.cur_acc = accuracy;
+            self.cur_threshold = threshold;
+            //dbg!(&mutations.len());
+            mutations.iter().for_each(|&(i, s)| {
+                if let Weight::Set(_) = self.weights[i] {
+                    dbg!(i);
+                    panic!("attempt to set already set weight.")
+                }
+                self.weights[i] = Weight::Set(s);
+                //println!("updating",);
+            });
+        } else {
+            //println!("stuck",);
+        }
+
+        self.cur_acc
     }
-    fn weights(&self) -> W {
-        self.cur_state
+    pub fn apply_exp(&mut self, table: &ShuffleTable<N, E>, counts: &TargetAccumulator<I, N, E>) -> u64 {
+        if let Some(n) = self.n {
+            assert_eq!(counts.n, n);
+            assert_eq!(counts.exp_counts[0b_0][0], self.cur_acc);
+        }
+        self.n = Some(counts.n);
+
+        let set_weights: Vec<_> = self
+            .weights
+            .iter()
+            .enumerate()
+            .filter_map(|(i, w)| if let Weight::Set(s) = w { Some((i, *s)) } else { None })
+            .collect();
+        assert_eq!(set_weights, table.base);
+
+        counts.unit_counts.iter().enumerate().for_each(|(i, c)| {
+            if let Weight::Unset((age, delta)) = &mut self.weights[i] {
+                *age = 0;
+                for s in 0..2 {
+                    delta[s] = *c[s].iter().max().unwrap() as i64 - self.cur_acc as i64;
+                }
+            } else {
+                panic!("attempted to set already set weight!")
+            }
+        });
+
+        self.weights.iter_mut().for_each(|w| {
+            if let Weight::Unset((age, _)) = w {
+                *age += 1;
+            }
+        });
+
+        let (mutations, (accuracy, threshold)): (Vec<(usize, bool)>, (u64, u32)) = counts
+            .exp_counts
+            .iter()
+            .enumerate()
+            .map(|(mask, &counts)| {
+                let signs: Vec<(usize, bool)> = table
+                    .exp
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(b, &(i, sign))| if mask.bit(b) { Some((i, sign)) } else { None })
+                    .collect();
+
+                let (accuracy, threshold) = counts.iter().zip(table.thresholds.iter()).max().unwrap();
+                (signs, (*accuracy, *threshold))
+            })
+            .max_by_key(|(_, (a, _))| *a)
+            .unwrap();
+        //dbg!(&mutations);
+        if accuracy > self.cur_acc {
+            //dbg!(accuracy);
+            self.cur_acc = accuracy;
+            self.cur_threshold = threshold;
+            //dbg!(&mutations.len());
+            mutations.iter().for_each(|&(i, s)| {
+                if let Weight::Set(_) = self.weights[i] {
+                    dbg!(i);
+                    panic!("attempt to set already set weight.")
+                }
+                self.weights[i] = Weight::Set(s);
+                //println!("updating",);
+            });
+        } else {
+            //println!("stuck",);
+        }
+
+        self.cur_acc
     }
 }
+*/

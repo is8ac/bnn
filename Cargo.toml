@@ -4,28 +4,15 @@ version = "0.2.0"
 authors = ["Isaac Leonard <ifleonar@us.ibm.com>"]
 edition = "2018"
 description = "Greedy layerwise generation of ternary parameters for multi layer conv nets"
-keywords = ["convolutional neural networks", "neural networks", "bitnets", "ternary", "cifar10"]
+keywords = ["neural networks", "bitnets", "ternary", "cifar10"]
 
 [dependencies]
 time = "0.2"
-rand = { version = "0.8.0", features = ["min_const_gen"]}
-rand_hc = "0.3"
-rand_distr = "0.4"
-rand_core = "0.6"
 rayon = "1.5"
 num_cpus = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 bincode = { version = "1.2", features = ["i128"] }
-image = "0.23"
 lazy_static = "1.4"
-
-#[[bench]]
-#name = "bit_perf"
-#harness = false
-
-#[profile.bench]
-#codegen-units = 1
-#lto = "thin"
 
 [profile.release]
 codegen-units = 1

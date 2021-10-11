@@ -1,8 +1,14 @@
 use crate::bits::{b128, b16, b32, b64, b8};
+#[cfg(target_arch = "aarch64")]
+use core::arch::aarch64::{
+    uint8x16_t, vaddvq_u8, vandq_u8, vcntq_u8, vdupq_n_u8, veorq_u8, vmvnq_u8, vorrq_u8,
+};
+#[cfg(target_feature = "avx2")]
 use std::arch::x86_64::{
     __m256i, _mm256_and_si256, _mm256_extract_epi64, _mm256_or_si256, _mm256_set1_epi8,
     _mm256_setzero_si256, _mm256_xor_si256,
 };
+#[cfg(target_feature = "avx512f")]
 use std::arch::x86_64::{
     __m512i, _mm512_and_si512, _mm512_or_si512, _mm512_popcnt_epi64, _mm512_reduce_add_epi64,
     _mm512_set1_epi8, _mm512_setzero_si512, _mm512_xor_si512,
@@ -11,35 +17,68 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::mem;
 
-#[target_feature(enable = "avx2")]
+#[cfg(target_feature = "neon")]
+unsafe fn neon_zeros() -> uint8x16_t {
+    vdupq_n_u8(0)
+}
+#[cfg(target_feature = "neon")]
+unsafe fn neon_ones() -> uint8x16_t {
+    vdupq_n_u8(!0)
+}
+#[cfg(target_feature = "neon")]
+unsafe fn neon_splat(sign: bool) -> uint8x16_t {
+    vdupq_n_u8(0 - sign as u8)
+}
+#[cfg(target_feature = "neon")]
+unsafe fn neon_xor(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+    veorq_u8(a, b)
+}
+#[cfg(target_feature = "neon")]
+unsafe fn neon_or(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+    vorrq_u8(a, b)
+}
+#[cfg(target_feature = "neon")]
+unsafe fn neon_and(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+    vandq_u8(a, b)
+}
+#[cfg(target_feature = "neon")]
+unsafe fn neon_not(a: uint8x16_t) -> uint8x16_t {
+    vmvnq_u8(a)
+}
+#[cfg(target_feature = "neon")]
+unsafe fn neon_count_ones(a: uint8x16_t) -> u32 {
+    vaddvq_u8(vcntq_u8(a)) as u32
+}
+
+#[cfg(target_feature = "avx2")]
 unsafe fn avx2_zeros() -> __m256i {
     _mm256_setzero_si256()
 }
-#[target_feature(enable = "avx2")]
+#[cfg(target_feature = "avx2")]
 unsafe fn avx2_ones() -> __m256i {
     _mm256_set1_epi8(-1)
 }
-#[target_feature(enable = "avx2")]
+#[cfg(target_feature = "avx2")]
 unsafe fn avx2_splat(sign: bool) -> __m256i {
     _mm256_set1_epi8(0 - sign as i8)
 }
-#[target_feature(enable = "avx2")]
+#[cfg(target_feature = "avx2")]
 unsafe fn avx2_xor(a: __m256i, b: __m256i) -> __m256i {
     _mm256_xor_si256(a, b)
 }
-#[target_feature(enable = "avx2")]
+#[cfg(target_feature = "avx2")]
 unsafe fn avx2_or(a: __m256i, b: __m256i) -> __m256i {
     _mm256_or_si256(a, b)
 }
-#[target_feature(enable = "avx2")]
+#[cfg(target_feature = "avx2")]
 unsafe fn avx2_and(a: __m256i, b: __m256i) -> __m256i {
     _mm256_and_si256(a, b)
 }
-#[target_feature(enable = "avx2")]
+#[cfg(target_feature = "avx2")]
 unsafe fn avx2_not(a: __m256i) -> __m256i {
     _mm256_xor_si256(a, _mm256_set1_epi8(-1))
 }
-#[target_feature(enable = "avx2")]
+#[cfg(target_feature = "avx2")]
 unsafe fn avx2_count_ones(a: __m256i) -> u32 {
     _mm256_extract_epi64(a, 0).count_ones()
         + _mm256_extract_epi64(a, 1).count_ones()
@@ -47,35 +86,35 @@ unsafe fn avx2_count_ones(a: __m256i) -> u32 {
         + _mm256_extract_epi64(a, 3).count_ones()
 }
 
-#[target_feature(enable = "avx512f")]
+#[cfg(target_feature = "avx512f")]
 unsafe fn avx512_zeros() -> __m512i {
     _mm512_setzero_si512()
 }
-#[target_feature(enable = "avx512f")]
+#[cfg(target_feature = "avx512f")]
 unsafe fn avx512_ones() -> __m512i {
     _mm512_set1_epi8(-1)
 }
-#[target_feature(enable = "avx512f")]
+#[cfg(target_feature = "avx512f")]
 unsafe fn avx512_splat(sign: bool) -> __m512i {
     _mm512_set1_epi8(0 - sign as i8)
 }
-#[target_feature(enable = "avx512f")]
+#[cfg(target_feature = "avx512f")]
 unsafe fn avx512_xor(a: __m512i, b: __m512i) -> __m512i {
     _mm512_xor_si512(a, b)
 }
-#[target_feature(enable = "avx512f")]
+#[cfg(target_feature = "avx512f")]
 unsafe fn avx512_or(a: __m512i, b: __m512i) -> __m512i {
     _mm512_or_si512(a, b)
 }
-#[target_feature(enable = "avx512f")]
+#[cfg(target_feature = "avx512f")]
 unsafe fn avx512_and(a: __m512i, b: __m512i) -> __m512i {
     _mm512_and_si512(a, b)
 }
-#[target_feature(enable = "avx512f")]
+#[cfg(target_feature = "avx512f")]
 unsafe fn avx512_not(a: __m512i) -> __m512i {
     _mm512_xor_si512(a, _mm512_set1_epi8(-1))
 }
-#[target_feature(enable = "avx512f")]
+#[cfg(target_feature = "avx512f")]
 unsafe fn avx512_count_ones(a: __m512i) -> u32 {
     let foo: [u64; 8] = mem::transmute(a);
     let mut target = 0u32;
@@ -85,7 +124,7 @@ unsafe fn avx512_count_ones(a: __m512i) -> u32 {
     target
 }
 
-#[target_feature(enable = "avx512vpopcntdq")]
+#[cfg(target_feature = "avx512vpopcntdq")]
 unsafe fn avx512popcnt_count_ones(a: __m512i) -> u32 {
     let counts = _mm512_popcnt_epi64(a);
     let sum: u64 = mem::transmute(_mm512_reduce_add_epi64(counts));
@@ -103,7 +142,36 @@ pub trait BitSlice {
     fn not(self) -> Self;
     fn count_bits(self) -> u32;
 }
+#[cfg(target_feature = "neon")]
+impl BitSlice for uint8x16_t {
+    const N: usize = 128;
+    fn zeros() -> Self {
+        unsafe { neon_zeros() }
+    }
+    fn ones() -> Self {
+        unsafe { neon_ones() }
+    }
+    fn splat(sign: bool) -> Self {
+        unsafe { neon_splat(sign) }
+    }
+    fn xor(self, rhs: Self) -> Self {
+        unsafe { neon_xor(self, rhs) }
+    }
+    fn or(self, rhs: Self) -> Self {
+        unsafe { neon_or(self, rhs) }
+    }
+    fn and(self, rhs: Self) -> Self {
+        unsafe { neon_and(self, rhs) }
+    }
+    fn not(self) -> Self {
+        unsafe { neon_not(self) }
+    }
+    fn count_bits(self) -> u32 {
+        unsafe { neon_count_ones(self) }
+    }
+}
 
+#[cfg(target_feature = "avx2")]
 impl BitSlice for __m256i {
     const N: usize = 256;
     fn zeros() -> Self {
@@ -132,6 +200,7 @@ impl BitSlice for __m256i {
     }
 }
 
+#[cfg(target_feature = "avx512f")]
 impl BitSlice for __m512i {
     const N: usize = 512;
     fn zeros() -> Self {
@@ -245,6 +314,32 @@ impl<const L: usize> BlockTranspose<L> for b64 {
     }
 }
 
+#[cfg(target_feature = "neon")]
+impl<const L: usize> BlockTranspose<L> for uint8x16_t {
+    fn block_transpose(input: &[[b64; L]; Self::N]) -> [uint8x16_t; 64 * L] {
+        let mut target = [unsafe { vdupq_n_u8(0) }; 64 * L];
+
+        for l in 0..L {
+            let mut block: [[b64; 64]; 2] = [[b64(0); 64]; 2];
+            for w in 0..2 {
+                for b in 0..64 {
+                    block[w][b] = input[w * 64 + b][l];
+                }
+                transpose_64(&mut block[w]);
+            }
+            for b in 0..64 {
+                let mut row = [b64(0); 2];
+                for w in 0..2 {
+                    row[w] = block[w][b];
+                }
+                target[l * 64 + b] = unsafe { mem::transmute(row) };
+            }
+        }
+        target
+    }
+}
+
+#[cfg(target_feature = "avx2")]
 impl<const L: usize> BlockTranspose<L> for __m256i {
     fn block_transpose(input: &[[b64; L]; Self::N]) -> [__m256i; 64 * L] {
         let mut target = [unsafe { _mm256_setzero_si256() }; 64 * L];
@@ -269,6 +364,7 @@ impl<const L: usize> BlockTranspose<L> for __m256i {
     }
 }
 
+#[cfg(target_feature = "avx512f")]
 impl<const L: usize> BlockTranspose<L> for __m512i {
     fn block_transpose(input: &[[b64; L]; 512]) -> [__m512i; 64 * L] {
         let mut target = [unsafe { _mm512_setzero_si512() }; 64 * L];
@@ -409,31 +505,35 @@ pub fn extend<T: BitSlice + Copy, const I: usize, const O: usize>(v: &[T; I]) ->
 
 pub fn ragged_array_popcount<T: BitSlice + Copy, const L: usize>(v: &[T]) -> [T; L] {
     assert!(v.len() < 2usize.pow(L as u32));
-    let size: u32 = v.len().log2();
-    let head = match size {
-        0 => extend::<T, 1, L>(&[v[0]]),
-        1 => extend(&array_popcount_1(<&[T; 2]>::try_from(&v[0..2]).unwrap())),
-        2 => extend(&array_popcount_2(<&[T; 4]>::try_from(&v[0..4]).unwrap())),
-        3 => extend(&array_popcount_3(<&[T; 8]>::try_from(&v[0..8]).unwrap())),
-        4 => extend(&array_popcount_4(<&[T; 16]>::try_from(&v[0..16]).unwrap())),
-        5 => extend(&array_popcount_5(<&[T; 32]>::try_from(&v[0..32]).unwrap())),
-        6 => extend(&array_popcount_6(<&[T; 64]>::try_from(&v[0..64]).unwrap())),
-        7 => extend(&array_popcount_7(
-            <&[T; 128]>::try_from(&v[0..128]).unwrap(),
-        )),
-        8 => extend(&array_popcount_8(
-            <&[T; 256]>::try_from(&v[0..256]).unwrap(),
-        )),
-        9 => extend(&array_popcount_9(
-            <&[T; 512]>::try_from(&v[0..512]).unwrap(),
-        )),
-        _ => panic!("Size not implemented"),
-    };
-    if 2usize.pow(size) == v.len() {
-        head
+    if v.len() == 0 {
+        [T::zeros(); L]
     } else {
-        let tail = ragged_array_popcount::<T, L>(&v[(2usize.pow(size) as usize)..]);
-        bit_add_wrapping(&head, &tail)
+        let size: u32 = v.len().log2();
+        let head = match size {
+            0 => extend::<T, 1, L>(&[v[0]]),
+            1 => extend(&array_popcount_1(<&[T; 2]>::try_from(&v[0..2]).unwrap())),
+            2 => extend(&array_popcount_2(<&[T; 4]>::try_from(&v[0..4]).unwrap())),
+            3 => extend(&array_popcount_3(<&[T; 8]>::try_from(&v[0..8]).unwrap())),
+            4 => extend(&array_popcount_4(<&[T; 16]>::try_from(&v[0..16]).unwrap())),
+            5 => extend(&array_popcount_5(<&[T; 32]>::try_from(&v[0..32]).unwrap())),
+            6 => extend(&array_popcount_6(<&[T; 64]>::try_from(&v[0..64]).unwrap())),
+            7 => extend(&array_popcount_7(
+                <&[T; 128]>::try_from(&v[0..128]).unwrap(),
+            )),
+            8 => extend(&array_popcount_8(
+                <&[T; 256]>::try_from(&v[0..256]).unwrap(),
+            )),
+            9 => extend(&array_popcount_9(
+                <&[T; 512]>::try_from(&v[0..512]).unwrap(),
+            )),
+            _ => panic!("Size not implemented"),
+        };
+        if 2usize.pow(size) == v.len() {
+            head
+        } else {
+            let tail = ragged_array_popcount::<T, L>(&v[(2usize.pow(size) as usize)..]);
+            bit_add_wrapping(&head, &tail)
+        }
     }
 }
 

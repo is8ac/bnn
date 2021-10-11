@@ -1,5 +1,4 @@
 use crate::bits::b64;
-use rayon::prelude::*;
 
 pub fn generate_hadamard_matrix() -> [[b64; 4]; 256] {
     let mut hadamard_matrix = [[b64(0); 4]; 256];
