@@ -3,510 +3,361 @@
 #![feature(avx512_target_feature)]
 #![feature(stdsimd)]
 
-use bnn::bits::{b64, BitArray, GetBit};
-use bnn::bitslice::{
-    bit_add, bit_add_wrapping, bit_splat, comparator, equality, extend, ragged_array_popcount,
-    transpose_8, BitSlice, BlockTranspose,
-};
-//use bnn::matrix::{block_transpose_256, block_transpose_512};
+use bnn::bench::{PerfResults, PerfTest};
+use bnn::bits::{b128, b64};
+use bnn::bitslice::{BitArray64, BitSlice};
+use bnn::count_bits::{BitSliceBitCounter, ExpCountBits, PopCountBitCounter, UnitCountBits};
 use bnn::ecc::{decode_byte, encode_byte};
+use bnn::layer;
+use bnn::search::{compute_exp_candidates, update_weights, weights_to_dense, weights_to_sparse};
 use bnn::shape::flatten_2d;
+#[cfg(target_arch = "aarch64")]
+use core::arch::aarch64::uint8x16_t;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+#[cfg(target_feature = "avx2")]
 use std::arch::x86_64::{__m256i, __m512i, _mm256_setzero_si256};
+use std::cmp::Reverse;
+use std::collections::hash_map::DefaultHasher;
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::fs::File;
+use std::hash::{Hash, Hasher};
+use std::io::prelude::*;
 use std::marker::PhantomData;
 use std::mem;
+use std::path::Path;
 use std::time::Instant;
 
-fn masked_hamming_dist<const L: usize>(bits: &[b64; L], trits: &([b64; L], [b64; L])) -> u32 {
-    bits.iter()
-        .zip(trits.0.iter())
-        .zip(trits.1.iter())
-        .map(|((b, s), m)| ((b.0 ^ s.0) & m.0).count_ones())
-        .sum()
-}
-
-pub trait TritArray {
-    fn set_trit(self, i: usize, t: bool) -> Self;
-}
-
-impl<const L: usize> TritArray for ([b64; L], [b64; L]) {
-    fn set_trit(mut self, i: usize, s: bool) -> Self {
-        self.0.set_bit_in_place(i, s);
-        self.1.set_bit_in_place(i, true);
-        self
-    }
-}
-
-fn expand_thresholds<T: BitSlice + Copy, const N: usize, const L: usize>(
-    thresholds: &[u32; N],
-) -> [[T; L]; N] {
-    let mut expanded_thresholds = [[T::zeros(); L]; N];
-    for i in 0..N {
-        expanded_thresholds[i] = bit_splat(thresholds[i]);
-    }
-    expanded_thresholds
-}
-
-// Example:
-// L==5
-// N==3
-// E==6
-fn exp_count<T: BitSlice + Copy, const N: usize, const L: usize, const E: u32>(
-    partial_sum: &[T; L],
-    bits: &[T; E as usize],
-    target_bit: &T,
-    thresholds: &[[T; L]; N],
-    counters: &mut [[u64; N]; 2usize.pow(E)],
-) where
-    T: std::fmt::Debug,
-    [T; E.log2() as usize + 1]: ,
-    [T; E.log2() as usize + 2]: ,
-{
-    for mask in 0..2usize.pow(E) {
-        let mut exp_sum = [T::zeros(); E.log2() as usize + 1];
-        //let mut exp_sum = [T::zeros(); L];
-        for b in 0..E {
-            let expanded = extend(&[T::splat(mask.bit(b as usize)).and(bits[b as usize])]);
-            exp_sum = bit_add_wrapping(&exp_sum, &expanded);
-        }
-        let exp_sum = extend(&exp_sum);
-        let full_sum = bit_add_wrapping(&exp_sum, &partial_sum);
-
-        for i in 0..N {
-            let (_, _, gt) = comparator(&full_sum, &thresholds[i]);
-            counters[mask][i] += gt.xor(*target_bit).not().count_bits() as u64;
-        }
-    }
-}
-
-fn unit_counts<T: BitSlice + Copy, const N: usize, const L: usize>(
-    partial_sum: &[T; L],
-    bits: &[T],
-    target_bit: &T,
-    thresholds: &[[T; L]; N],
-    counters: &mut [[[u64; N]; 2]],
-) {
-    assert_eq!(bits.len(), counters.len());
-
-    bits.iter()
-        .zip(counters.iter_mut())
-        .for_each(|(input, counter)| {
-            for i in 0..N {
-                let full_count = bit_add_wrapping(&partial_sum, &extend(&[*input]));
-                let (_, _, gt) = comparator(&full_count, &thresholds[i]);
-                //let (lt, _, gt) = comparator(&partial_sum, &thresholds[i]);
-                //counter[0][i] = gt.count_bits() as u64;
-                counter[0][i] += gt.xor(*target_bit).not().count_bits() as u64;
-
-                let full_count = bit_add_wrapping(&partial_sum, &extend(&[input.not()]));
-                let (_, _, gt) = comparator(&full_count, &thresholds[i]);
-                //let (lt, _, gt) = comparator(&partial_sum, &thresholds[i]);
-                //counter[1][i] = gt.count_bits() as u64;
-                counter[1][i] += gt.xor(*target_bit).not().count_bits() as u64;
-            }
-        });
-}
-
-fn partial_sum<T: BitSlice + Copy, const N: usize, const L: usize>(
-    set_bits: &[T],
-    unset_bits: &[T],
-) -> [T; L] {
-    let flipped_bits: Vec<T> = set_bits.iter().map(|x| x.not()).collect();
-    let flipped_count = ragged_array_popcount::<T, L>(&flipped_bits);
-    let normal_count = ragged_array_popcount::<T, L>(&unset_bits);
-    let partial_count = bit_add_wrapping(&normal_count, &flipped_count);
-    partial_count
-}
-
-#[derive(Debug)]
-pub struct ShuffleTable<const B: usize, const N: usize, const E: u32>
-where
-    [(); E as usize]: ,
-{
-    base: Vec<(usize, bool)>,
-    unit: [usize; B],
-    exp: [(usize, bool); E as usize],
-    thresholds: [u32; N],
-}
-
-impl<const B: usize, const N: usize, const E: u32> ShuffleTable<B, N, E>
-where
-    [(); E as usize]: ,
-{
-    fn extract_bits<T: BitSlice + Copy, const L: usize, const P: usize>(
-        &self,
-        bits: &[T; L],
-    ) -> ([T; P], [T; B], [T; E as usize]) {
-        let mut unit_target = [T::zeros(); B];
-        let mut exp_target = [T::zeros(); E as usize];
-
-        self.unit
-            .iter()
-            .zip(unit_target.iter_mut())
-            .for_each(|(&i, t)| *t = bits[i]);
-        self.exp
-            .iter()
-            .zip(exp_target.iter_mut())
-            .for_each(|(&(i, s), t)| *t = bits[i].xor(T::splat(s)));
-
-        let set_bits: Vec<T> = self
-            .base
-            .iter()
-            .map(|&(i, s)| bits[i].xor(T::splat(s)))
-            .collect();
-        let sum = ragged_array_popcount(&set_bits);
-        (sum, unit_target, exp_target)
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct TargetAccumulator<const N: usize, const B: usize, const E: u32>
-where
-    [(); 2usize.pow(E)]: ,
-{
-    n: usize,
-    unit_counts: [[[u64; N]; 2]; B],
-    exp_counts: [[u64; N]; 2usize.pow(E)],
-}
-
-impl<const N: usize, const B: usize, const E: u32> TargetAccumulator<N, B, E>
-where
-    [(); 2usize.pow(E)]: ,
-{
-    fn new() -> Self {
-        TargetAccumulator {
-            n: 0,
-            unit_counts: [[[0u64; N]; 2]; B],
-            exp_counts: [[0u64; N]; 2usize.pow(E)],
-        }
-    }
-    fn merge(&mut self, rhs: &Self) {
-        self.n += rhs.n;
-        for b in 0..B {
-            for s in 0..2 {
-                for t in 0..N {
-                    self.unit_counts[b][s][t] += rhs.unit_counts[b][s][t];
-                }
-            }
-        }
-        for e in 0..2usize.pow(E) {
-            for t in 0..N {
-                self.exp_counts[e][t] += rhs.exp_counts[e][t];
-            }
-        }
-    }
-}
-
-fn init_acc<const N: usize, const B: usize, const E: u32, const O: usize>(
-) -> Box<[TargetAccumulator<N, B, E>; O]>
-where
-    [(); 2usize.pow(E)]: ,
-{
-    Box::new(
-        (0..O)
-            .map(|_| TargetAccumulator::<N, B, E>::new())
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap(),
-    )
-}
-
-fn merge_acc<const N: usize, const B: usize, const E: u32, const O: usize>(
-    mut a: Box<[TargetAccumulator<N, B, E>; O]>,
-    b: Box<[TargetAccumulator<N, B, E>; O]>,
-) -> Box<[TargetAccumulator<N, B, E>; O]>
-where
-    [(); 2usize.pow(E)]: ,
-{
-    a.iter_mut().zip(b.iter()).for_each(|(a, b)| a.merge(b));
-    a
-}
-
-pub trait CountBits<const I: usize, const O: usize, const B: usize, const N: usize, const E: u32>
-where
-    [(); E as usize]: ,
-    [(); 2usize.pow(E)]: ,
-{
-    fn count_bits(
-        &self,
-        inputs: &[[b64; I]],
-        targets: &[[b64; O]],
-        table: &[ShuffleTable<B, N, E>; 64 * O],
-    ) -> Box<[TargetAccumulator<N, B, E>; 64 * O]>;
-}
-
-pub struct BitSliceBitCounter<T, const P: usize> {
-    n_threads: usize,
-    slice_type: PhantomData<T>,
-    chunk_size: usize,
-}
-
-impl<
-        T,
-        const I: usize,
-        const O: usize,
-        const P: usize,
-        const B: usize,
-        const N: usize,
-        const E: u32,
-    > CountBits<I, O, B, N, E> for BitSliceBitCounter<T, P>
-where
-    T: BitSlice + BlockTranspose<I> + BlockTranspose<O> + Copy + Sync + Send + std::fmt::Debug,
-    [(); E as usize]: ,
-    [(); 2usize.pow(E)]: ,
-    [(); 64 * I]: ,
-    [(); 64 * O]: ,
-    [(); T::N]: ,
-    [(); E.log2() as usize + 1]: ,
-    [(); E.log2() as usize + 2]: ,
-{
-    fn count_bits(
-        &self,
-        inputs: &[[b64; I]],
-        targets: &[[b64; O]],
-        table: &[ShuffleTable<B, N, E>; 64 * O],
-    ) -> Box<[TargetAccumulator<N, B, E>; 64 * O]> {
-        let blocks: Vec<([T; 64 * I], [T; 64 * O])> = inputs
-            .par_chunks_exact(T::N)
-            .zip(targets.par_chunks_exact(T::N))
-            .map(|(input, target)| {
-                let input = T::block_transpose(<&[[b64; I]; T::N]>::try_from(input).unwrap());
-                let target = T::block_transpose(<&[[b64; O]; T::N]>::try_from(target).unwrap());
-                (input, target)
-            })
-            .collect();
-
-        let expanded_thresholds: [[[T; P]; N]; 64 * O] = table
-            .iter()
-            .map(|table| expand_thresholds::<T, N, P>(&table.thresholds))
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
-
-        blocks
-            .par_chunks(self.chunk_size)
-            //.par_iter()
-            .fold(
-                || init_acc::<N, B, E, { 64 * O }>(),
-                |mut acc, chunk| {
-                    for o in 0..(64 * O) {
-                        chunk.iter().for_each(|(input, target)| {
-                            acc[o].n += T::N;
-                            let (base_sum, unit_bits, exp_bits) =
-                                table[o].extract_bits::<T, { 64 * I }, P>(input);
-                            unit_counts::<T, N, P>(
-                                &base_sum,
-                                &unit_bits,
-                                &target[o],
-                                &expanded_thresholds[o],
-                                &mut acc[o].unit_counts,
-                            );
-                            exp_count::<T, N, P, E>(
-                                &base_sum,
-                                &exp_bits,
-                                &target[o],
-                                &expanded_thresholds[o],
-                                &mut acc[o].exp_counts,
-                            );
-                        });
-                    }
-                    acc
-                },
-            )
-            .reduce_with(|a, b| merge_acc::<N, B, E, { 64 * O }>(a, b))
-            .unwrap()
-    }
-}
-
-pub struct PopCountBitCounter {
+fn run_test(
+    alg: &Box<dyn CountBits>,
+    input: &[[b64; 8]],
+    target: &[[b64; 4]],
     n_threads: usize,
     chunk_size: usize,
-}
+) -> PerfTest {
+    let total_start = Instant::now();
 
-impl<const I: usize, const O: usize, const B: usize, const N: usize, const E: u32>
-    CountBits<I, O, B, N, E> for PopCountBitCounter
-where
-    [(); E as usize]: ,
-    [(); 2usize.pow(E)]: ,
-    [(); 64 * I]: ,
-    [(); 64 * O]: ,
-    [(); E.log2() as usize + 1]: ,
-{
-    fn count_bits(
-        &self,
-        inputs: &[[b64; I]],
-        targets: &[[b64; O]],
-        table: &[ShuffleTable<B, N, E>; 64 * O],
-    ) -> Box<[TargetAccumulator<N, B, E>; 64 * O]> {
-        let weights: [(
-            [[([b64; I], [b64; I]); 2]; B],
-            [([b64; I], [b64; I]); 2usize.pow(E)],
-        ); 64 * O] = table
-            .iter()
-            .map(|table| {
-                let base = table
-                    .base
-                    .iter()
-                    .fold(([b64(0); I], [b64(0); I]), |w, &(i, s)| w.set_trit(i, s));
-                let unit_weights: [[([b64; I], [b64; I]); 2]; B] = table
-                    .unit
-                    .iter()
-                    .map(|&i| [base.set_trit(i, false), base.set_trit(i, true)])
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap();
-                let exp_weights: [([b64; I], [b64; I]); 2usize.pow(E)] = (0..2usize.pow(E))
-                    .map(|mask| {
-                        table
-                            .exp
-                            .iter()
-                            .enumerate()
-                            .filter(|&(i, _)| mask.bit(i))
-                            .fold(base, |acc, (_, &(b, sign))| acc.set_trit(b, sign))
-                    })
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap();
-
-                (unit_weights, exp_weights)
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
-
-        inputs
-            .par_chunks(self.chunk_size)
-            .zip(targets.par_chunks(self.chunk_size))
-            .fold(
-                || init_acc::<N, B, E, { 64 * O }>(),
-                |mut acc, (input, target)| {
-                    for o in 0..(64 * O) {
-                        input.iter().zip(target.iter()).for_each(|(input, target)| {
-                            acc[o].n += 1;
-                            for b in 0..B {
-                                for s in 0..2 {
-                                    let count = masked_hamming_dist(&input, &weights[o].0[b][s]);
-                                    for t in 0..N {
-                                        acc[o].unit_counts[b][s][t] +=
-                                            ((count > table[o].thresholds[t]) == target.get_bit(o))
-                                                as u64;
-                                    }
-                                }
-                            }
-                            for m in 0..2usize.pow(E) {
-                                let count = masked_hamming_dist(&input, &weights[o].1[m]);
-                                for t in 0..N {
-                                    //dbg!(o);
-                                    acc[o].exp_counts[m][t] += ((count > table[o].thresholds[t])
-                                        == target.get_bit(o))
-                                        as u64;
-                                }
-                            }
-                        });
-                    }
-                    acc
-                },
-            )
-            .reduce_with(|a, b| merge_acc::<N, B, E, { 64 * O }>(a, b))
-            .unwrap()
-    }
-}
-
-fn main() {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(16)
-        .stack_size(2usize.pow(28))
-        .build_global()
-        .unwrap();
-
-    let shuffle_tables: [_; 256] = (0..256)
-        .map(|_| ShuffleTable::<32, 3, 6> {
-            base: vec![(0, true), (1, false), (2, true), (3, false), (4, true)],
-            unit: [
-                5, 6, 7, 8, 9, 10, 11, 12, 5, 6, 7, 8, 9, 10, 11, 12, 5, 6, 7, 8, 9, 10, 11, 12, 5,
-                6, 7, 8, 9, 10, 11, 12,
-            ],
-            exp: [
-                (13, false),
-                (14, true),
-                (15, false),
-                (18, true),
-                (19, true),
-                (20, true),
-            ],
-            thresholds: [5, 6, 7],
+    assert_eq!(input.len(), target.len());
+    let weights: [([Option<bool>; 512], u32); 256] = (0..256)
+        .map(|i| {
+            let mut w = ([None; 512], 1u32);
+            w.0[i] = Some(i % 2 == 0);
+            w.0[(i * 2) % 512] = Some(i % 2 == 0);
+            w.0[(i * 3) % 512] = Some(i % 2 == 1);
+            w.0[(i * 5) % 512] = Some(i % 2 == 0);
+            w.0[(i * 7) % 512] = Some(i % 2 == 1);
+            w.0[(i * 11) % 512] = Some(i % 2 == 0);
+            w
         })
         .collect::<Vec<_>>()
         .try_into()
         .unwrap();
 
-    let bytes = std::fs::read("/big/temp/books_txt/Delphi Complete Works of Charles Dickens (Illustrated) - Charles Dickens.txt").unwrap();
-    //let bytes: Vec<u8> = (0..(2usize.pow(25) + 5)).map(|i| (i % 50) as u8).collect();
+    let sparse: [(Vec<(usize, bool)>, [u32; UNIT_THRESHOLDS]); 256] = weights
+        .iter()
+        .map(|w| weights_to_sparse(w))
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+
+    let unit_start = Instant::now();
+    let unit_counts = alg.unit_count_bits(&input, &target, &sparse, n_threads, chunk_size);
+    let unit_duration = unit_start.elapsed();
+
+    let mut hasher = DefaultHasher::new();
+    unit_counts.hash(&mut hasher);
+    let unit_hash = hasher.finish();
+
+    let exp_candidates: [(Vec<(usize, bool)>, [(usize, bool); 8 as usize], [u32; 3]); 256] =
+        weights
+            .iter()
+            .zip(unit_counts.iter())
+            .map(|(w, counts)| compute_exp_candidates::<512, 2, 3, 8>(w, counts))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+
+    let exp_start = Instant::now();
+    let exp_counts = alg.exp_count_bits(&input, &target, &exp_candidates, n_threads, chunk_size);
+    let exp_duration = exp_start.elapsed();
+
+    let weights = weights
+        .chunks(64)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|w| weights_to_dense(w))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+
+    let apply_start = Instant::now();
+    let l: Vec<[b64; 4]> = target
+        .par_windows(2)
+        .map(|slice| {
+            let flat = flatten_2d::<b64, 2, 4>(<&[[b64; 4]; 2]>::try_from(&slice[0..2]).unwrap());
+            layer::apply(&weights, flat)
+        })
+        .collect();
+    let apply_duration = apply_start.elapsed();
+
+    let mut hasher = DefaultHasher::new();
+    exp_counts.hash(&mut hasher);
+    let exp_hash = hasher.finish();
+
+    let total_duration = total_start.elapsed();
+    PerfTest {
+        algorithm: alg.name(),
+        n_threads: n_threads,
+        chunk_size: chunk_size,
+        n_examples: input.len(),
+        unit_nanos: unit_duration.as_nanos(),
+        exp_nanos: exp_duration.as_nanos(),
+        apply_nanos: apply_duration.as_nanos(),
+        total_nanos: total_duration.as_nanos(),
+        unit_hash: unit_hash,
+        exp_hash: exp_hash,
+    }
+}
+
+const N_THRESHOLDS: usize = 3;
+const N_EXP: u32 = 8;
+
+const UNIT_THRESHOLDS: usize = 2;
+
+trait CountBits: ExpCountBits<8, 4, 3, 8> + UnitCountBits<8, 4, 2> {
+    fn name(&self) -> String;
+    fn width(&self) -> usize;
+    fn cost(&self) -> f64;
+}
+
+impl CountBits for PopCountBitCounter {
+    fn name(&self) -> String {
+        format!("popcnt")
+    }
+    fn width(&self) -> usize {
+        64 // not actualy, but is makes things faster
+    }
+    fn cost(&self) -> f64 {
+        220f64
+    }
+}
+
+impl<const B: usize, const L: usize> CountBits for BitSliceBitCounter<BitArray64<L>, B>
+where
+    [(); BitArray64::<L>::N]: ,
+{
+    fn name(&self) -> String {
+        format!("bitslice-BitArray64x{}", L)
+    }
+    fn width(&self) -> usize {
+        64 * L
+    }
+    fn cost(&self) -> f64 {
+        8f64 / L as f64
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl<const B: usize> CountBits for BitSliceBitCounter<__m512i, B> {
+    fn name(&self) -> String {
+        format!("bitslice-avx512")
+    }
+    fn width(&self) -> usize {
+        512
+    }
+    fn cost(&self) -> f64 {
+        1f64
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl<const B: usize> CountBits for BitSliceBitCounter<__m256i, B> {
+    fn name(&self) -> String {
+        format!("bitslice-avx2")
+    }
+    fn width(&self) -> usize {
+        256
+    }
+    fn cost(&self) -> f64 {
+        2f64
+    }
+}
+
+#[cfg(target_feature = "neon")]
+impl<const B: usize> CountBits for BitSliceBitCounter<uint8x16_t, B> {
+    fn name(&self) -> String {
+        format!("bitslice-neon")
+    }
+    fn width(&self) -> usize {
+        128
+    }
+    fn cost(&self) -> f64 {
+        4f64
+    }
+}
+
+impl<const B: usize> CountBits for BitSliceBitCounter<b128, B> {
+    fn name(&self) -> String {
+        format!("bitslice-u128")
+    }
+    fn width(&self) -> usize {
+        128
+    }
+    fn cost(&self) -> f64 {
+        4f64
+    }
+}
+
+impl<const B: usize> CountBits for BitSliceBitCounter<b64, B> {
+    fn name(&self) -> String {
+        format!("bitslice-u64")
+    }
+    fn width(&self) -> usize {
+        64
+    }
+    fn cost(&self) -> f64 {
+        8f64
+    }
+}
+
+fn main() {
+    let n_cores = num_cpus::get();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(16)
+        .stack_size(2usize.pow(30))
+        .build_global()
+        .unwrap();
+
+    let bytes = std::fs::read(
+        "Delphi Complete Works of Charles Dickens (Illustrated) - Charles Dickens.txt",
+    )
+    .unwrap();
 
     let expanded: Vec<[b64; 4]> = bytes.par_iter().map(|&b| encode_byte(b)).collect();
-    //let expanded: Vec<[b64; 4]> = (0..(2usize.pow(24))).map(|_| [b64(0); 4]).collect();
 
-    let window_start = Instant::now();
     let (input, target): (Vec<[b64; 8]>, Vec<[b64; 4]>) = expanded
         .par_windows(3)
         .map(|slice| {
             let input = flatten_2d::<b64, 2, 4>(<&[[b64; 4]; 2]>::try_from(&slice[0..2]).unwrap());
             (input, slice[2])
         })
-        .take(2usize.pow(22))
         .unzip();
-    dbg!(window_start.elapsed());
-    dbg!(input.len());
-    dbg!(target.len());
 
-    let bit_counter = PopCountBitCounter {
-        n_threads: 16,
-        chunk_size: 2usize.pow(7),
-    };
+    let mut counters: Vec<Box<dyn CountBits>> = vec![
+        //Box::new(PopCountBitCounter {}),
+        Box::new(BitSliceBitCounter::<b64, 4> {
+            slice_type: PhantomData::default(),
+        }),
+        Box::new(BitSliceBitCounter::<b128, 4> {
+            slice_type: PhantomData::default(),
+        }),
+        Box::new(BitSliceBitCounter::<BitArray64<1>, 4> {
+            slice_type: PhantomData::default(),
+        }),
+        Box::new(BitSliceBitCounter::<BitArray64<2>, 4> {
+            slice_type: PhantomData::default(),
+        }),
+        Box::new(BitSliceBitCounter::<BitArray64<4>, 4> {
+            slice_type: PhantomData::default(),
+        }),
+        Box::new(BitSliceBitCounter::<BitArray64<8>, 4> {
+            slice_type: PhantomData::default(),
+        }),
+        Box::new(BitSliceBitCounter::<BitArray64<16>, 4> {
+            slice_type: PhantomData::default(),
+        }),
+        Box::new(BitSliceBitCounter::<BitArray64<32>, 4> {
+            slice_type: PhantomData::default(),
+        }),
+        Box::new(BitSliceBitCounter::<BitArray64<64>, 4> {
+            slice_type: PhantomData::default(),
+        }),
+    ];
 
-    //dbg!(&input[0..20]);
-    let count_start = Instant::now();
-    let counts1 = <PopCountBitCounter as CountBits<8, 4, 32, 3, 6>>::count_bits(
-        &bit_counter,
-        &input,
-        &target,
-        &shuffle_tables,
-    );
-    dbg!(&count_start.elapsed());
-
-    let bit_counter = BitSliceBitCounter::<__m256i, 4> {
-        n_threads: 16,
-        slice_type: PhantomData::default(),
-        chunk_size: 8,
-    };
-
-    let count_start = Instant::now();
-    let counts2 = <BitSliceBitCounter<__m256i, 4> as CountBits<8, 4, 32, 3, 6>>::count_bits(
-        &bit_counter,
-        &input,
-        &target,
-        &shuffle_tables,
-    );
-    dbg!(&count_start.elapsed());
-
-    for b in 0..256 {
-        assert_eq!(counts1[b].n, input.len());
-        assert_eq!(counts1[b].n, counts2[b].n);
+    #[cfg(target_feature = "avx2")]
+    {
+        println!("avx2 is enabled",);
+        counters.push(Box::new(BitSliceBitCounter::<__m256i, 4> {
+            slice_type: PhantomData::default(),
+        }));
     }
+    #[cfg(target_feature = "avx512f")]
+    {
+        println!("avx512 is enabled",);
+        counters.push(Box::new(BitSliceBitCounter::<__m512i, 4> {
+            slice_type: PhantomData::default(),
+        }));
+    }
+    #[cfg(target_feature = "neon")]
+    {
+        println!("neon is enabled",);
+        counters.push(Box::new(BitSliceBitCounter::<uint8x16_t, 4> {
+            slice_type: PhantomData::default(),
+        }));
+    }
+    counters.iter().for_each(|x| {
+        dbg!(x.name());
+    });
 
-    assert_eq!(counts1[1].unit_counts, counts2[1].unit_counts);
-    dbg!("pased unit");
-    assert_eq!(counts1[1].exp_counts, counts2[1].exp_counts);
-    assert_eq!(counts1, counts2);
+    let mut results: Vec<_> = [32, 48, 64, 96]
+        .iter()
+        .cloned()
+        .map(|n_threads| {
+            (1..=4096)
+                .map(|chunk_size| (n_threads, chunk_size))
+                .collect::<Vec<_>>()
+        })
+        .flatten()
+        .map(|(n_threads, chunk_size)| {
+            counters
+                .iter()
+                .filter(|alg| alg.width() <= chunk_size)
+                .filter(|alg| (chunk_size % alg.width()) == 0)
+                .map(|alg| {
+                    let cost = alg.cost() / n_threads as f64;
+                    let dataset_size: usize =
+                        ((100_000f64 / cost) as usize / chunk_size) * chunk_size;
+                    let dataset_size = dataset_size.min(2usize.pow(25));
+                    println!(
+                        "{} {} {} {}",
+                        alg.name(),
+                        n_threads,
+                        dataset_size,
+                        chunk_size
+                    );
+                    run_test(
+                        alg,
+                        &input[0..dataset_size],
+                        &target[0..dataset_size],
+                        n_threads,
+                        chunk_size,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .flatten()
+        .collect();
 
-    /*
-    //dbg!(counts[100].unit_counts);
-    //dbg!(counts[100].exp_counts);
+    dbg!(results.len());
 
-    let duration = start.elapsed();
-    dbg!(duration);
-    dbg!(start.elapsed().as_nanos() as f64 / (input.len() / 256) as f64);
-    */
+    //results.sort_by_key(|r| Reverse(r.total_nanos));
+    //dbg!(&results[0..30]);
+    let perf_results = PerfResults {
+        machine_type: "".to_string(),
+        cpu_arch: "".to_string(),
+        n_cores: n_cores,
+        n_physical: num_cpus::get_physical(),
+        price: 0.0,
+        spot_price: 0.0,
+        tests: results,
+    };
+
+    let mut w = File::create(&Path::new("perf_results.json")).unwrap();
+    serde_json::to_writer(w, &perf_results).unwrap();
 }

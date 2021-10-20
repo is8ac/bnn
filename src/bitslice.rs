@@ -17,6 +17,9 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::mem;
 
+#[derive(Copy, Clone, Debug)]
+pub struct BitArray64<const L: usize>([u64; L]);
+
 #[cfg(target_feature = "neon")]
 unsafe fn neon_zeros() -> uint8x16_t {
     vdupq_n_u8(0)
@@ -142,6 +145,55 @@ pub trait BitSlice {
     fn not(self) -> Self;
     fn count_bits(self) -> u32;
 }
+
+impl<const L: usize> BitSlice for BitArray64<L> {
+    const N: usize = 64 * L;
+    fn zeros() -> Self {
+        BitArray64([0; L])
+    }
+    fn ones() -> Self {
+        BitArray64([!0; L])
+    }
+    fn splat(sign: bool) -> Self {
+        BitArray64([0u64 - sign as u64; L])
+    }
+    fn xor(self, rhs: Self) -> Self {
+        let mut target = BitArray64([0; L]);
+        for w in 0..L {
+            target.0[w] = self.0[w] ^ rhs.0[w];
+        }
+        target
+    }
+    fn or(self, rhs: Self) -> Self {
+        let mut target = BitArray64([0; L]);
+        for w in 0..L {
+            target.0[w] = self.0[w] | rhs.0[w];
+        }
+        target
+    }
+    fn and(self, rhs: Self) -> Self {
+        let mut target = BitArray64([0; L]);
+        for w in 0..L {
+            target.0[w] = self.0[w] & rhs.0[w];
+        }
+        target
+    }
+    fn not(self) -> Self {
+        let mut target = BitArray64([0; L]);
+        for w in 0..L {
+            target.0[w] = !self.0[w];
+        }
+        target
+    }
+    fn count_bits(self) -> u32 {
+        let mut target = 0u32;
+        for w in 0..L {
+            target += self.0[w].count_ones();
+        }
+        target
+    }
+}
+
 #[cfg(target_feature = "neon")]
 impl BitSlice for uint8x16_t {
     const N: usize = 128;
@@ -380,6 +432,54 @@ impl<const L: usize> BlockTranspose<L> for __m512i {
             for b in 0..64 {
                 let mut row = [b64(0); 8];
                 for w in 0..8 {
+                    row[w] = block[w][b];
+                }
+                target[l * 64 + b] = unsafe { mem::transmute(row) };
+            }
+        }
+        target
+    }
+}
+
+impl<const L: usize, const W: usize> BlockTranspose<L> for BitArray64<W> {
+    fn block_transpose(input: &[[b64; L]; Self::N]) -> [BitArray64<W>; 64 * L] {
+        let mut target = [BitArray64([0; W]); 64 * L];
+
+        for l in 0..L {
+            let mut block: [[b64; 64]; W] = [[b64(0); 64]; W];
+            for w in 0..W {
+                for b in 0..64 {
+                    block[w][b] = input[w * 64 + b][l];
+                }
+                transpose_64(&mut block[w]);
+            }
+            for b in 0..64 {
+                let mut row = [0; W];
+                for w in 0..W {
+                    row[w] = block[w][b].0;
+                }
+                target[l * 64 + b] = BitArray64(row);
+            }
+        }
+        target
+    }
+}
+
+impl<const L: usize> BlockTranspose<L> for b128 {
+    fn block_transpose(input: &[[b64; L]; 128]) -> [b128; 64 * L] {
+        let mut target = [b128(0); 64 * L];
+
+        for l in 0..L {
+            let mut block: [[b64; 64]; 2] = [[b64(0); 64]; 2];
+            for w in 0..2 {
+                for b in 0..64 {
+                    block[w][b] = input[w * 64 + b][l];
+                }
+                transpose_64(&mut block[w]);
+            }
+            for b in 0..64 {
+                let mut row = [b64(0); 2];
+                for w in 0..2 {
                     row[w] = block[w][b];
                 }
                 target[l * 64 + b] = unsafe { mem::transmute(row) };
