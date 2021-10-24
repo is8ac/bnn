@@ -1,8 +1,7 @@
-/// the bits mod contains traits to manipulate words of bits
-/// and arrays of bits.
+use rand::distributions::{Distribution, Standard};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::num::Wrapping;
 
 pub trait BitArray
 where
@@ -16,32 +15,8 @@ where
     fn get_bit(&self, i: usize) -> bool;
 }
 
-pub trait FromBool {
-    fn from_bool(b: bool) -> Self;
-    fn from_u8(b: u8) -> Self;
-    fn to_u64(self) -> u64;
-    const ONE: Self;
-    const MAX: usize;
-}
-
 macro_rules! for_uints {
     ($b_type:ident, $u_type:ty, $len:expr, $format_string:expr) => {
-        impl FromBool for $u_type {
-            #[inline(always)]
-            fn from_bool(b: bool) -> $u_type {
-                b as $u_type
-            }
-            #[inline(always)]
-            fn from_u8(b: u8) -> $u_type {
-                b as $u_type
-            }
-            fn to_u64(self) -> u64 {
-                self as u64
-            }
-            const ONE: $u_type = 1;
-            const MAX: usize = <$u_type>::MAX as usize;
-        }
-
         #[allow(non_camel_case_types)]
         #[derive(Copy, Clone, Serialize, Deserialize)]
         pub struct $b_type(pub $u_type);
@@ -107,14 +82,17 @@ macro_rules! for_uints {
             }
         }
         impl Eq for $b_type {}
+
+        impl Distribution<$b_type> for Standard {
+            fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> $b_type {
+                $b_type(rng.gen())
+            }
+        }
     };
 }
 
-for_uints!(b8, u8, 8, "{:08b}");
-for_uints!(b16, u16, 16, "{:016b}");
 for_uints!(b32, u32, 32, "{:032b}");
 for_uints!(b64, u64, 64, "{:064b}");
-for_uints!(b128, u128, 128, "{:0128b}");
 
 pub trait GetBit {
     fn bit(self, i: usize) -> bool;
@@ -130,35 +108,5 @@ impl GetBit for u8 {
     #[inline(always)]
     fn bit(self, i: usize) -> bool {
         ((self >> i) & 1) == 1
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{b128, b16, b32, b8, SIMDincrementCounters};
-    use rand::Rng;
-    use rand::SeedableRng;
-    use rand_hc::Hc128Rng;
-    extern crate test;
-    use crate::shape::Shape;
-
-    #[test]
-    fn simd_expand_bits() {
-        let mut rng = Hc128Rng::seed_from_u64(0);
-
-        //let mut simd_counter = <[(); 32] as SIMDincrementCounters>::init_counters();
-
-        (0..10_000).for_each(|_| {
-            let word: b32 = rng.gen();
-            let mut test_counter = [0u32; 32];
-            for i in 0..32 {
-                test_counter[i] += word.get_bit_u8(i) as u32;
-            }
-            let mut simd_counter = [0u32; 32];
-
-            let expanded = <[(); 32] as SIMDincrementCounters>::expand_bits(&word);
-            <[(); 32] as SIMDincrementCounters>::add_to_u32s(&expanded, &mut simd_counter);
-            assert_eq!(simd_counter, test_counter);
-        });
     }
 }

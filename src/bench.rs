@@ -14,7 +14,6 @@ pub struct PerfResults {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PerfTest {
     pub algorithm: String,
-    pub n_threads: usize,
     pub chunk_size: usize,
     pub n_examples: usize,
     pub unit_nanos: u128,

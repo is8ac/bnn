@@ -1,7 +1,6 @@
-#![feature(avx512_target_feature)]
 #![feature(int_log)]
-#![feature(stdsimd)]
 #![forbid(unreachable_pub)]
+#![forbid(unsafe_code)]
 #![feature(test)]
 #![feature(adt_const_params)]
 #![feature(generic_const_exprs)]
@@ -12,7 +11,6 @@ extern crate lazy_static;
 pub mod bench;
 pub mod bits;
 pub mod bitslice;
-pub mod count;
 pub mod count_bits;
 pub mod ecc;
 pub mod layer;

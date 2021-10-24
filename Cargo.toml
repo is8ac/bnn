@@ -2,9 +2,9 @@
 name = "bnn"
 version = "0.2.0"
 authors = ["Isaac Leonard <ifleonar@us.ibm.com>"]
-edition = "2018"
+edition = "2021"
 description = "Greedy layerwise generation of ternary parameters for multi layer conv nets"
-keywords = ["neural networks", "bitnets", "ternary", "cifar10"]
+keywords = ["neural networks", "bitnets", "ternary"]
 
 [dependencies]
 time = "0.2"
@@ -12,11 +12,16 @@ rayon = "1.5"
 num_cpus = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 bincode = { version = "1.2", features = ["i128"] }
-lazy_static = "1.4"
 serde_json = "1.0"
+lazy_static = "1.4"
 plotters = { version = "0.3.1"}
-#plotters = { version = "0.3.1", default_features = false, features = ["bitmap_backend", "bitmap_encoder", "point_series"] }
+rand = "0.8"
+rand_core = "0.6"
 
 [profile.release]
 codegen-units = 1
 lto = "yes"
+
+[profile.test]
+opt-level = 1
+overflow-checks = false

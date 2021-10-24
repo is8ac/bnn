@@ -1,4 +1,17 @@
-use crate::bits::{b32, b64};
+#![feature(int_log)]
+#![feature(adt_const_params)]
+#![feature(generic_const_exprs)]
+
+pub trait GetBit {
+    fn bit(self, i: usize) -> bool;
+}
+
+impl GetBit for usize {
+    #[inline(always)]
+    fn bit(self, i: usize) -> bool {
+        ((self >> i) & 1) == 1
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct BitArray64<const L: usize>([u64; L]);
@@ -63,62 +76,6 @@ impl<const L: usize> BitSlice for BitArray64<L> {
     }
 }
 
-macro_rules! impl_transpose {
-    ($fn_name:ident, $b_type:ident, $u_type:ident, $len:expr) => {
-        // Hacker's Delight 7-7
-        pub fn $fn_name(a: &mut [$b_type; $len]) {
-            let mut m: $u_type = !(0 as $u_type) >> $len / 2;
-            let mut j: usize = $len / 2;
-            while j != 0 {
-                let mut k: usize = 0;
-                let mut t: $u_type;
-                while k < $len {
-                    t = (a[k].0 ^ a[k | j].0 >> j) & m;
-                    a[k].0 ^= t;
-                    a[k | j].0 ^= t << j;
-                    k = (k | j) + 1 & !j
-                }
-                j >>= 1;
-                m ^= m << j
-            }
-        }
-    };
-}
-
-impl_transpose!(transpose_32, b32, u32, 32);
-impl_transpose!(transpose_64, b64, u64, 64);
-
-pub trait BlockTranspose<const L: usize>
-where
-    Self: BitSlice + Sized,
-{
-    fn block_transpose(input: &[[b64; L]; Self::N]) -> [Self; 64 * L];
-}
-
-impl<const L: usize, const W: usize> BlockTranspose<L> for BitArray64<W> {
-    fn block_transpose(input: &[[b64; L]; Self::N]) -> [BitArray64<W>; 64 * L] {
-        let mut target = [BitArray64([0; W]); 64 * L];
-
-        for l in 0..L {
-            let mut block: [[b64; 64]; W] = [[b64(0); 64]; W];
-            for w in 0..W {
-                for b in 0..64 {
-                    block[w][b] = input[w * 64 + b][l];
-                }
-                transpose_64(&mut block[w]);
-            }
-            for b in 0..64 {
-                let mut row = [0; W];
-                for w in 0..W {
-                    row[w] = block[w][b].0;
-                }
-                target[l * 64 + b] = BitArray64(row);
-            }
-        }
-        target
-    }
-}
-
 fn half_comparator<T: BitSlice + Copy>(a: T, b: T) -> (T, T, T) {
     let lt = a.not().and(b);
     let gt = a.and(b.not());
@@ -142,15 +99,7 @@ fn full_adder<T: BitSlice + Copy>(a: T, b: T, c: T) -> (T, T) {
     (u.xor(c), a.and(b).or(u.and(c)))
 }
 
-pub fn equality<T: BitSlice + Copy, const L: usize>(a: &[T; L], b: &[T; L]) -> T {
-    let mut acc = a[0].and(b[0]);
-    for i in 1..L {
-        acc = acc.and(a[i].xor(b[i]).not());
-    }
-    acc
-}
-
-pub fn comparator<T: BitSlice + Copy, const L: usize>(a: &[T; L], b: &[T; L]) -> (T, T, T) {
+fn comparator<T: BitSlice + Copy, const L: usize>(a: &[T; L], b: &[T; L]) -> (T, T, T) {
     let mut acc = half_comparator(a[0], b[0]);
     for i in 1..L {
         acc = full_comparator(a[i], b[i], acc);
@@ -158,7 +107,7 @@ pub fn comparator<T: BitSlice + Copy, const L: usize>(a: &[T; L], b: &[T; L]) ->
     acc
 }
 
-pub fn bit_add<T: BitSlice + Copy, const L: usize>(a: &[T; L], b: &[T; L]) -> [T; L + 1] {
+fn bit_add<T: BitSlice + Copy, const L: usize>(a: &[T; L], b: &[T; L]) -> [T; L + 1] {
     let mut acc = [T::zeros(); L + 1];
     let (zero, c) = half_adder(a[0], b[0]);
     acc[0] = zero;
@@ -172,7 +121,7 @@ pub fn bit_add<T: BitSlice + Copy, const L: usize>(a: &[T; L], b: &[T; L]) -> [T
     acc
 }
 
-pub fn bit_add_wrapping<T: BitSlice + Copy, const L: usize>(a: &[T; L], b: &[T; L]) -> [T; L] {
+fn bit_add_wrapping<T: BitSlice + Copy, const L: usize>(a: &[T; L], b: &[T; L]) -> [T; L] {
     let mut acc = [T::zeros(); L];
     let (zero, c) = half_adder(a[0], b[0]);
     acc[0] = zero;
@@ -185,7 +134,7 @@ pub fn bit_add_wrapping<T: BitSlice + Copy, const L: usize>(a: &[T; L], b: &[T; 
     acc
 }
 
-pub fn extend<T: BitSlice + Copy, const I: usize, const O: usize>(v: &[T; I]) -> [T; O] {
+fn extend<T: BitSlice + Copy, const I: usize, const O: usize>(v: &[T; I]) -> [T; O] {
     let mut target = [T::zeros(); O];
     for i in 0..I {
         target[i] = v[i];
@@ -193,7 +142,7 @@ pub fn extend<T: BitSlice + Copy, const I: usize, const O: usize>(v: &[T; I]) ->
     target
 }
 
-pub fn bit_splat<T: BitSlice + Copy, const L: usize>(value: u32) -> [T; L] {
+fn bit_splat<T: BitSlice + Copy, const L: usize>(value: u32) -> [T; L] {
     let mut target = [T::zeros(); L];
     for i in 0..L {
         let sign = (value >> i) & 1 == 1;
@@ -201,3 +150,73 @@ pub fn bit_splat<T: BitSlice + Copy, const L: usize>(value: u32) -> [T; L] {
     }
     target
 }
+
+fn exp_count<T: BitSlice + Copy, const N: usize, const L: usize, const E: u32>(
+    partial_sum: &[T; L],
+    bits: &[T; E as usize],
+    target_bit: &T,
+    thresholds: &[[T; L]; N],
+    counters: &mut [[u64; N]; 2usize.pow(E)],
+) where
+    T: std::fmt::Debug,
+    [T; E.log2() as usize + 1]: ,
+{
+    for mask in 0..2usize.pow(E) {
+        let mut exp_sum = [T::zeros(); E.log2() as usize + 1];
+        for b in 0..E {
+            let expanded = extend(&[T::splat(mask.bit(b as usize)).and(bits[b as usize])]);
+            exp_sum = bit_add_wrapping(&exp_sum, &expanded);
+        }
+        let exp_sum = extend(&exp_sum);
+        let full_sum = bit_add_wrapping(&exp_sum, &partial_sum);
+
+        for i in 0..N {
+            let (_, _, gt) = comparator(&full_sum, &thresholds[i]);
+            counters[mask][i] += gt.xor(*target_bit).not().count_bits() as u64;
+        }
+    }
+}
+
+fn unit_count<T: BitSlice + Copy, const I: usize, const N: usize, const P: usize>(
+    partial_sum: &[T; P],
+    inputs: &[T; I],
+    target_bit: &T,
+    thresholds: &[[T; P]; N],
+    counters: &mut [[[u64; N]; 2]; I],
+) {
+    for i in 0..I {
+        for t in 0..N {
+            for s in 0..2 {
+                let full_count = bit_add_wrapping(&partial_sum, &extend(&[inputs[i].xor(T::splat(s == 1))]));
+                let (_, _, gt) = comparator(&full_count, &thresholds[t]);
+                counters[i][s][t] += gt.xor(*target_bit).not().count_bits() as u64;
+            }
+        }
+    }
+}
+
+type BitWordType = BitArray64<1>;
+const EXP_SIZE: u32 = 8;
+const ACC_SIZE: usize = 5;
+
+pub fn unit_count_demo(
+    partial_sum: &[BitWordType; ACC_SIZE],
+    inputs: &[BitWordType; 512],
+    target_bit: &BitWordType,
+    thresholds: &[[BitWordType; ACC_SIZE]; 2],
+    counters: &mut [[[u64; 2]; 2]; 512],
+) {
+    unit_count::<BitWordType, 512, 2, ACC_SIZE>(partial_sum, inputs, target_bit, thresholds, counters)
+}
+
+pub fn exp_count_demo(
+    partial_sum: &[BitWordType; ACC_SIZE],
+    bits: &[BitWordType; EXP_SIZE as usize],
+    target_bit: &BitWordType,
+    thresholds: &[[BitWordType; ACC_SIZE]; 3],
+    counters: &mut [[u64; 3]; 2usize.pow(EXP_SIZE)],
+) {
+    exp_count::<BitWordType, 3, ACC_SIZE, EXP_SIZE>(partial_sum, bits, target_bit, thresholds, counters)
+}
+
+fn main() {}
