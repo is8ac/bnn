@@ -25,7 +25,9 @@ impl<const L: usize> TritArray for ([b64; L], [b64; L]) {
     }
 }
 
-fn expand_thresholds<T: BitSlice + Copy, const N: usize, const L: usize>(thresholds: &[u32; N]) -> [[T; L]; N] {
+fn expand_thresholds<T: BitSlice + Copy, const N: usize, const L: usize>(
+    thresholds: &[u32; N],
+) -> [[T; L]; N] {
     let mut expanded_thresholds = [[T::zeros(); L]; N];
     for i in 0..N {
         expanded_thresholds[i] = bit_splat(thresholds[i]);
@@ -68,7 +70,8 @@ fn unit_count<T: BitSlice + Copy, const I: usize, const N: usize, const P: usize
 ) {
     for i in 0..I {
         for s in 0..2 {
-            let full_count = bit_add_wrapping(&partial_sum, &extend(&[inputs[i].xor(T::splat(s == 1))]));
+            let full_count =
+                bit_add_wrapping(&partial_sum, &extend(&[inputs[i].xor(T::splat(s == 1))]));
             for t in 0..N {
                 let (_, _, gt) = comparator(&full_count, &thresholds[t]);
                 counters[i][s][t] += gt.xor(*target_bit).not().count_bits() as u64;
@@ -77,23 +80,41 @@ fn unit_count<T: BitSlice + Copy, const I: usize, const N: usize, const P: usize
     }
 }
 
-fn compute_base_sum<T: BitSlice + Copy, const L: usize, const P: usize>(table: &Vec<(usize, bool)>, bits: &[T; L]) -> [T; P] {
-    table
-        .iter()
-        .fold([T::zeros(); P], |sum, &(i, sign)| bit_add_wrapping(&sum, &extend(&[bits[i].xor(T::splat(sign))])))
+fn compute_base_sum<T: BitSlice + Copy, const L: usize, const P: usize>(
+    table: &Vec<(usize, bool)>,
+    bits: &[T; L],
+) -> [T; P] {
+    table.iter().fold([T::zeros(); P], |sum, &(i, sign)| {
+        bit_add_wrapping(&sum, &extend(&[bits[i].xor(T::splat(sign))]))
+    })
 }
 
-fn extract_exp_bits<T: BitSlice + Copy, const L: usize, const E: u32>(table: &[(usize, bool); E as usize], bits: &[T; L]) -> [T; E as usize] {
+fn extract_exp_bits<T: BitSlice + Copy, const L: usize, const E: u32>(
+    table: &[(usize, bool); E as usize],
+    bits: &[T; L],
+) -> [T; E as usize] {
     let mut exp_target = [T::zeros(); E as usize];
-    table.iter().zip(exp_target.iter_mut()).for_each(|(&(i, s), t)| *t = bits[i].xor(T::splat(s)));
+    table
+        .iter()
+        .zip(exp_target.iter_mut())
+        .for_each(|(&(i, s), t)| *t = bits[i].xor(T::splat(s)));
     exp_target
 }
 
 fn init_unit_acc<const I: usize, const O: usize, const N: usize>() -> Box<[[[[u64; N]; 2]; I]; O]> {
-    Box::new((0..O).map(|_| [[[0u64; N]; 2]; I]).collect::<Vec<_>>().try_into().unwrap())
+    Box::new(
+        (0..O)
+            .map(|_| [[[0u64; N]; 2]; I])
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap(),
+    )
 }
 
-fn merge_unit_acc<const I: usize, const O: usize, const N: usize>(mut a: Box<[[[[u64; N]; 2]; I]; O]>, b: Box<[[[[u64; N]; 2]; I]; O]>) -> Box<[[[[u64; N]; 2]; I]; O]> {
+fn merge_unit_acc<const I: usize, const O: usize, const N: usize>(
+    mut a: Box<[[[[u64; N]; 2]; I]; O]>,
+    b: Box<[[[[u64; N]; 2]; I]; O]>,
+) -> Box<[[[[u64; N]; 2]; I]; O]> {
     for o in 0..O {
         for i in 0..I {
             for s in 0..2 {
@@ -106,8 +127,15 @@ fn merge_unit_acc<const I: usize, const O: usize, const N: usize>(mut a: Box<[[[
     a
 }
 
-fn init_exp_acc<const O: usize, const N: usize, const E: u32>() -> Box<[[[u64; N]; 2usize.pow(E)]; O]> {
-    Box::new((0..O).map(|_| [[0u64; N]; 2usize.pow(E)]).collect::<Vec<_>>().try_into().unwrap())
+fn init_exp_acc<const O: usize, const N: usize, const E: u32>(
+) -> Box<[[[u64; N]; 2usize.pow(E)]; O]> {
+    Box::new(
+        (0..O)
+            .map(|_| [[0u64; N]; 2usize.pow(E)])
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap(),
+    )
 }
 
 fn merge_exp_acc<const O: usize, const N: usize, const E: u32>(
@@ -156,7 +184,8 @@ pub struct BitSliceBitCounter<T, const P: usize> {
     pub slice_type: PhantomData<T>,
 }
 
-impl<T, const I: usize, const O: usize, const P: usize, const N: usize> UnitCountBits<I, O, N> for BitSliceBitCounter<T, P>
+impl<T, const I: usize, const O: usize, const P: usize, const N: usize> UnitCountBits<I, O, N>
+    for BitSliceBitCounter<T, P>
 where
     T: BitSlice + Copy + BlockTranspose<I> + BlockTranspose<O> + Sync + Send + std::fmt::Debug,
     [(); 64 * I]: ,
@@ -197,7 +226,13 @@ where
                     for o in 0..(64 * O) {
                         chunk.iter().for_each(|(input, target)| {
                             let base_sum = compute_base_sum(&table[o].0, input);
-                            unit_count::<T, { 64 * I }, N, P>(&base_sum, input, &target[o], &expanded_thresholds[o], &mut acc[o]);
+                            unit_count::<T, { 64 * I }, N, P>(
+                                &base_sum,
+                                input,
+                                &target[o],
+                                &expanded_thresholds[o],
+                                &mut acc[o],
+                            );
                         });
                     }
                     acc
@@ -215,7 +250,8 @@ where
     }
 }
 
-impl<T, const I: usize, const O: usize, const P: usize, const N: usize, const E: u32> ExpCountBits<I, O, N, E> for BitSliceBitCounter<T, P>
+impl<T, const I: usize, const O: usize, const P: usize, const N: usize, const E: u32>
+    ExpCountBits<I, O, N, E> for BitSliceBitCounter<T, P>
 where
     T: BitSlice + Copy + BlockTranspose<I> + BlockTranspose<O> + Sync + Send + std::fmt::Debug,
     [(); 64 * I]: ,
@@ -260,7 +296,13 @@ where
                         chunk.iter().for_each(|(input, target)| {
                             let base_sum = compute_base_sum(&table[o].0, input);
                             let exp_bits = extract_exp_bits::<T, { 64 * I }, E>(&table[o].1, input);
-                            exp_count::<T, N, P, E>(&base_sum, &exp_bits, &target[o], &expanded_thresholds[o], &mut acc[o]);
+                            exp_count::<T, N, P, E>(
+                                &base_sum,
+                                &exp_bits,
+                                &target[o],
+                                &expanded_thresholds[o],
+                                &mut acc[o],
+                            );
                         });
                     }
                     acc
@@ -284,7 +326,10 @@ impl<const I: usize, const O: usize, const N: usize> UnitCountBits<I, O, N> for 
         let weights: Vec<[[([b64; I], [b64; I]); 2]; 64 * I]> = table
             .iter()
             .map(|table| {
-                let base = table.0.iter().fold(([b64(0); I], [b64(0); I]), |w, &(i, s)| w.set_trit(i, s));
+                let base = table
+                    .0
+                    .iter()
+                    .fold(([b64(0); I], [b64(0); I]), |w, &(i, s)| w.set_trit(i, s));
                 let unit_weights: [[([b64; I], [b64; I]); 2]; 64 * I] = (0..64 * I)
                     .map(|i| [base.set_trit(i, false), base.set_trit(i, true)])
                     .collect::<Vec<_>>()
@@ -307,7 +352,8 @@ impl<const I: usize, const O: usize, const N: usize> UnitCountBits<I, O, N> for 
                                 for s in 0..2 {
                                     let count = masked_hamming_dist(&input, &weights[o][i][s]);
                                     for t in 0..N {
-                                        acc[o][i][s][t] += ((count > table[o].1[t]) == target.get_bit(o)) as u64;
+                                        acc[o][i][s][t] +=
+                                            ((count > table[o].1[t]) == target.get_bit(o)) as u64;
                                     }
                                 }
                             }
@@ -327,7 +373,8 @@ impl<const I: usize, const O: usize, const N: usize> UnitCountBits<I, O, N> for 
     }
 }
 
-impl<const I: usize, const O: usize, const N: usize, const E: u32> ExpCountBits<I, O, N, E> for PopCountBitCounter
+impl<const I: usize, const O: usize, const N: usize, const E: u32> ExpCountBits<I, O, N, E>
+    for PopCountBitCounter
 where
     [(); E as usize]: ,
     [(); 2usize.pow(E)]: ,
@@ -348,7 +395,10 @@ where
         let weights: Vec<[([b64; I], [b64; I]); 2usize.pow(E)]> = table
             .iter()
             .map(|table| {
-                let base = table.0.iter().fold(([b64(0); I], [b64(0); I]), |w, &(i, s)| w.set_trit(i, s));
+                let base = table
+                    .0
+                    .iter()
+                    .fold(([b64(0); I], [b64(0); I]), |w, &(i, s)| w.set_trit(i, s));
                 let exp_weights: [([b64; I], [b64; I]); 2usize.pow(E)] = (0..2usize.pow(E))
                     .map(|mask| {
                         table
@@ -379,7 +429,8 @@ where
                             for m in 0..2usize.pow(E) {
                                 let count = masked_hamming_dist(&input, &weights[o][m]);
                                 for t in 0..N {
-                                    acc[o][m][t] += ((count > table[o].2[t]) == target.get_bit(o)) as u64;
+                                    acc[o][m][t] +=
+                                        ((count > table[o].2[t]) == target.get_bit(o)) as u64;
                                 }
                             }
                         });
@@ -404,7 +455,10 @@ mod tests {
 
     #[test]
     fn exp_count() {
-        rayon::ThreadPoolBuilder::new().stack_size(2usize.pow(28)).build_global().unwrap();
+        rayon::ThreadPoolBuilder::new()
+            .stack_size(2usize.pow(28))
+            .build_global()
+            .unwrap();
         let mut rng = StdRng::seed_from_u64(0);
         let input: Vec<[b64; 8]> = (0..2usize.pow(16)).map(|_| rng.gen()).collect();
         let target: Vec<[b64; 4]> = (0..2usize.pow(16)).map(|_| rng.gen()).collect();
@@ -456,55 +510,130 @@ mod tests {
             .try_into()
             .unwrap();
 
-        let sparse: [(Vec<(usize, bool)>, [u32; 2]); 256] = weights.iter().map(|w| weights_to_sparse(w)).collect::<Vec<_>>().try_into().unwrap();
-
-        let popcount_unit_counts = popcount_counter.unit_count_bits(&input, &target, &sparse, 1024);
-
-        assert_eq!(popcount_unit_counts, bitslice_counter1_3.unit_count_bits(&input, &target, &sparse, 1024));
-        assert_eq!(popcount_unit_counts, bitslice_counter2_3.unit_count_bits(&input, &target, &sparse, 1024));
-        assert_eq!(popcount_unit_counts, bitslice_counter4_3.unit_count_bits(&input, &target, &sparse, 1024));
-
-        assert_eq!(popcount_unit_counts, bitslice_counter1_4.unit_count_bits(&input, &target, &sparse, 1024));
-        assert_eq!(popcount_unit_counts, bitslice_counter2_4.unit_count_bits(&input, &target, &sparse, 1024));
-        assert_eq!(popcount_unit_counts, bitslice_counter4_4.unit_count_bits(&input, &target, &sparse, 1024));
-
-        assert_eq!(popcount_unit_counts, bitslice_counter1_5.unit_count_bits(&input, &target, &sparse, 1024));
-        assert_eq!(popcount_unit_counts, bitslice_counter2_5.unit_count_bits(&input, &target, &sparse, 1024));
-        assert_eq!(popcount_unit_counts, bitslice_counter4_5.unit_count_bits(&input, &target, &sparse, 1024));
-
-        let exp_candidates: [(Vec<(usize, bool)>, [(usize, bool); 8 as usize], [u32; 3]); 256] = weights
+        let sparse: [(Vec<(usize, bool)>, [u32; 2]); 256] = weights
             .iter()
-            .zip(popcount_unit_counts.iter())
-            .map(|(w, counts)| compute_exp_candidates::<512, 2, 3, 8>(w, counts))
+            .map(|w| weights_to_sparse(w))
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
 
-        let popcount_exp_counts = <PopCountBitCounter as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(&popcount_counter, &input, &target, &exp_candidates, 1024);
+        let popcount_unit_counts = popcount_counter.unit_count_bits(&input, &target, &sparse, 1024);
+
         assert_eq!(
-            popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(&bitslice_counter1_4, &input, &target, &exp_candidates, 1024)
+            popcount_unit_counts,
+            bitslice_counter1_3.unit_count_bits(&input, &target, &sparse, 1024)
+        );
+        assert_eq!(
+            popcount_unit_counts,
+            bitslice_counter2_3.unit_count_bits(&input, &target, &sparse, 1024)
+        );
+        assert_eq!(
+            popcount_unit_counts,
+            bitslice_counter4_3.unit_count_bits(&input, &target, &sparse, 1024)
+        );
+
+        assert_eq!(
+            popcount_unit_counts,
+            bitslice_counter1_4.unit_count_bits(&input, &target, &sparse, 1024)
+        );
+        assert_eq!(
+            popcount_unit_counts,
+            bitslice_counter2_4.unit_count_bits(&input, &target, &sparse, 1024)
+        );
+        assert_eq!(
+            popcount_unit_counts,
+            bitslice_counter4_4.unit_count_bits(&input, &target, &sparse, 1024)
+        );
+
+        assert_eq!(
+            popcount_unit_counts,
+            bitslice_counter1_5.unit_count_bits(&input, &target, &sparse, 1024)
+        );
+        assert_eq!(
+            popcount_unit_counts,
+            bitslice_counter2_5.unit_count_bits(&input, &target, &sparse, 1024)
+        );
+        assert_eq!(
+            popcount_unit_counts,
+            bitslice_counter4_5.unit_count_bits(&input, &target, &sparse, 1024)
+        );
+
+        let exp_candidates: [(Vec<(usize, bool)>, [(usize, bool); 8 as usize], [u32; 3]); 256] =
+            weights
+                .iter()
+                .zip(popcount_unit_counts.iter())
+                .map(|(w, counts)| compute_exp_candidates::<512, 2, 3, 8>(w, counts))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
+
+        let popcount_exp_counts = <PopCountBitCounter as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+            &popcount_counter,
+            &input,
+            &target,
+            &exp_candidates,
+            1024,
         );
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(&bitslice_counter2_4, &input, &target, &exp_candidates, 1024)
+            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+                &bitslice_counter1_4,
+                &input,
+                &target,
+                &exp_candidates,
+                1024
+            )
         );
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(&bitslice_counter4_4, &input, &target, &exp_candidates, 1024)
+            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+                &bitslice_counter2_4,
+                &input,
+                &target,
+                &exp_candidates,
+                1024
+            )
+        );
+        assert_eq!(
+            popcount_exp_counts,
+            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+                &bitslice_counter4_4,
+                &input,
+                &target,
+                &exp_candidates,
+                1024
+            )
         );
 
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(&bitslice_counter1_5, &input, &target, &exp_candidates, 1024)
+            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+                &bitslice_counter1_5,
+                &input,
+                &target,
+                &exp_candidates,
+                1024
+            )
         );
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(&bitslice_counter2_5, &input, &target, &exp_candidates, 1024)
+            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+                &bitslice_counter2_5,
+                &input,
+                &target,
+                &exp_candidates,
+                1024
+            )
         );
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(&bitslice_counter4_5, &input, &target, &exp_candidates, 1024)
+            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+                &bitslice_counter4_5,
+                &input,
+                &target,
+                &exp_candidates,
+                1024
+            )
         );
     }
 }

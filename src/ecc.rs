@@ -43,7 +43,10 @@ impl<const L: usize> BitString for [b64; L] {
         self[i / 64].0 |= (b as u64) << (i % 64);
     }
     fn hamming_dist(&self, rhs: &Self) -> u32 {
-        self.iter().zip(rhs.iter()).map(|(a, b)| (a.0 ^ b.0).count_ones()).sum()
+        self.iter()
+            .zip(rhs.iter())
+            .map(|(a, b)| (a.0 ^ b.0).count_ones())
+            .sum()
     }
 }
 
@@ -56,5 +59,10 @@ pub fn encode_byte(b: u8) -> [b64; 4] {
 }
 
 pub fn decode_byte(bits: &[b64; 4]) -> u8 {
-    HADAMARD_MATRIX_256.iter().enumerate().min_by_key(|(_, row)| row.hamming_dist(bits)).unwrap().0 as u8
+    HADAMARD_MATRIX_256
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, row)| row.hamming_dist(bits))
+        .unwrap()
+        .0 as u8
 }

@@ -18,7 +18,12 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::time::Instant;
 
-fn run_test(alg: &Box<dyn CountBits>, input: &[[b64; 8]], target: &[[b64; 4]], chunk_size: usize) -> PerfTest {
+fn run_test(
+    alg: &Box<dyn CountBits>,
+    input: &[[b64; 8]],
+    target: &[[b64; 4]],
+    chunk_size: usize,
+) -> PerfTest {
     let total_start = Instant::now();
 
     assert_eq!(input.len(), target.len());
@@ -37,7 +42,12 @@ fn run_test(alg: &Box<dyn CountBits>, input: &[[b64; 8]], target: &[[b64; 4]], c
         .try_into()
         .unwrap();
 
-    let sparse: [(Vec<(usize, bool)>, [u32; UNIT_THRESHOLDS]); 256] = weights.iter().map(|w| weights_to_sparse(w)).collect::<Vec<_>>().try_into().unwrap();
+    let sparse: [(Vec<(usize, bool)>, [u32; UNIT_THRESHOLDS]); 256] = weights
+        .iter()
+        .map(|w| weights_to_sparse(w))
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
 
     let unit_start = Instant::now();
     let unit_counts = alg.unit_count_bits(&input, &target, &sparse, chunk_size);
@@ -47,13 +57,14 @@ fn run_test(alg: &Box<dyn CountBits>, input: &[[b64; 8]], target: &[[b64; 4]], c
     unit_counts.hash(&mut hasher);
     let unit_hash = hasher.finish();
 
-    let exp_candidates: [(Vec<(usize, bool)>, [(usize, bool); 8 as usize], [u32; 3]); 256] = weights
-        .iter()
-        .zip(unit_counts.iter())
-        .map(|(w, counts)| compute_exp_candidates::<512, 2, 3, 8>(w, counts))
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap();
+    let exp_candidates: [(Vec<(usize, bool)>, [(usize, bool); 8 as usize], [u32; 3]); 256] =
+        weights
+            .iter()
+            .zip(unit_counts.iter())
+            .map(|(w, counts)| compute_exp_candidates::<512, 2, 3, 8>(w, counts))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
 
     let exp_start = Instant::now();
     let exp_counts = alg.exp_count_bits(&input, &target, &exp_candidates, chunk_size);
@@ -61,7 +72,14 @@ fn run_test(alg: &Box<dyn CountBits>, input: &[[b64; 8]], target: &[[b64; 4]], c
 
     let weights = weights
         .chunks(64)
-        .map(|chunk| chunk.iter().map(|w| weights_to_dense(w)).collect::<Vec<_>>().try_into().unwrap())
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|w| weights_to_dense(w))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
+        })
         .collect::<Vec<_>>()
         .try_into()
         .unwrap();
@@ -126,9 +144,15 @@ fn main() {
     let n_cores = num_cpus::get();
     dbg!(n_cores);
     //rayon::ThreadPoolBuilder::new().num_threads(16).stack_size(2usize.pow(30)).build_global().unwrap();
-    rayon::ThreadPoolBuilder::new().stack_size(2usize.pow(30)).build_global().unwrap();
+    rayon::ThreadPoolBuilder::new()
+        .stack_size(2usize.pow(30))
+        .build_global()
+        .unwrap();
 
-    let bytes = std::fs::read("Delphi Complete Works of Charles Dickens (Illustrated) - Charles Dickens.txt").unwrap();
+    let bytes = std::fs::read(
+        "Delphi Complete Works of Charles Dickens (Illustrated) - Charles Dickens.txt",
+    )
+    .unwrap();
 
     let expanded: Vec<[b64; 4]> = bytes.par_iter().map(|&b| encode_byte(b)).collect();
 
@@ -192,7 +216,12 @@ fn main() {
             let chunk_size = (4096 / alg.width()) * alg.width();
             let dataset_size = (2usize.pow(24) / chunk_size) * chunk_size;
             println!("{} {} {}", alg.name(), dataset_size, chunk_size);
-            run_test(alg, &input[0..dataset_size], &target[0..dataset_size], chunk_size)
+            run_test(
+                alg,
+                &input[0..dataset_size],
+                &target[0..dataset_size],
+                chunk_size,
+            )
         })
         .collect::<Vec<_>>();
 

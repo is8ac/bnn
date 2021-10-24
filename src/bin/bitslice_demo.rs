@@ -187,7 +187,8 @@ fn unit_count<T: BitSlice + Copy, const I: usize, const N: usize, const P: usize
     for i in 0..I {
         for t in 0..N {
             for s in 0..2 {
-                let full_count = bit_add_wrapping(&partial_sum, &extend(&[inputs[i].xor(T::splat(s == 1))]));
+                let full_count =
+                    bit_add_wrapping(&partial_sum, &extend(&[inputs[i].xor(T::splat(s == 1))]));
                 let (_, _, gt) = comparator(&full_count, &thresholds[t]);
                 counters[i][s][t] += gt.xor(*target_bit).not().count_bits() as u64;
             }
@@ -206,7 +207,13 @@ pub fn unit_count_demo(
     thresholds: &[[BitWordType; ACC_SIZE]; 2],
     counters: &mut [[[u64; 2]; 2]; 512],
 ) {
-    unit_count::<BitWordType, 512, 2, ACC_SIZE>(partial_sum, inputs, target_bit, thresholds, counters)
+    unit_count::<BitWordType, 512, 2, ACC_SIZE>(
+        partial_sum,
+        inputs,
+        target_bit,
+        thresholds,
+        counters,
+    )
 }
 
 pub fn exp_count_demo(
@@ -216,7 +223,13 @@ pub fn exp_count_demo(
     thresholds: &[[BitWordType; ACC_SIZE]; 3],
     counters: &mut [[u64; 3]; 2usize.pow(EXP_SIZE)],
 ) {
-    exp_count::<BitWordType, 3, ACC_SIZE, EXP_SIZE>(partial_sum, bits, target_bit, thresholds, counters)
+    exp_count::<BitWordType, 3, ACC_SIZE, EXP_SIZE>(
+        partial_sum,
+        bits,
+        target_bit,
+        thresholds,
+        counters,
+    )
 }
 
 fn main() {}

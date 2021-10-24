@@ -5,7 +5,11 @@ use std::cmp::Reverse;
 use std::convert::TryInto;
 
 fn compute_thresholds<const N: usize>(base: u32) -> [u32; N] {
-    (0..N).map(|x| base + x as u32).collect::<Vec<u32>>().try_into().unwrap()
+    (0..N)
+        .map(|x| base + x as u32)
+        .collect::<Vec<u32>>()
+        .try_into()
+        .unwrap()
 }
 
 pub fn compute_exp_candidates<const I: usize, const UN: usize, const EN: usize, const E: u32>(
@@ -43,7 +47,12 @@ pub fn compute_exp_candidates<const I: usize, const UN: usize, const EN: usize, 
         .try_into()
         .unwrap();
 
-    let base = weights.0.iter().enumerate().filter_map(|(i, &w)| w.map(|sign| (i, sign))).collect();
+    let base = weights
+        .0
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &w)| w.map(|sign| (i, sign)))
+        .collect();
 
     (base, candidates, compute_thresholds(weights.1))
 }
@@ -58,7 +67,11 @@ pub fn update_weights<const I: usize, const N: usize, const E: u32>(
         .iter()
         .enumerate()
         .map(|(mask, &counts)| {
-            let (accuracy, threshold) = counts.iter().zip(thresholds.iter()).max_by_key(|(c, t)| (*c, Reverse(*t))).unwrap();
+            let (accuracy, threshold) = counts
+                .iter()
+                .zip(thresholds.iter())
+                .max_by_key(|(c, t)| (*c, Reverse(*t)))
+                .unwrap();
             (mask, (*accuracy, *threshold))
         })
         .max_by_key(|(mask, (a, _))| (*a, mask.count_zeros()))
@@ -74,14 +87,23 @@ pub fn update_weights<const I: usize, const N: usize, const E: u32>(
     accuracy
 }
 
-pub fn weights_to_sparse<const I: usize, const N: usize>(weights: &([Option<bool>; I], u32)) -> (Vec<(usize, bool)>, [u32; N]) {
+pub fn weights_to_sparse<const I: usize, const N: usize>(
+    weights: &([Option<bool>; I], u32),
+) -> (Vec<(usize, bool)>, [u32; N]) {
     (
-        weights.0.iter().enumerate().filter_map(|(i, t)| t.map(|s| (i, s))).collect(),
+        weights
+            .0
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| t.map(|s| (i, s)))
+            .collect(),
         compute_thresholds(weights.1),
     )
 }
 
-pub fn weights_to_dense<const I: usize>(weights: &([Option<bool>; 64 * I], u32)) -> (([b64; I], [b64; I]), u32) {
+pub fn weights_to_dense<const I: usize>(
+    weights: &([Option<bool>; 64 * I], u32),
+) -> (([b64; I], [b64; I]), u32) {
     let base = weights
         .0
         .iter()
