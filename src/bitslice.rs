@@ -1,4 +1,5 @@
 use crate::bits::{b32, b64};
+use std::num::Wrapping;
 
 #[derive(Copy, Clone, Debug)]
 pub struct BitArray64<const L: usize>([u64; L]);
@@ -24,7 +25,7 @@ impl<const L: usize> BitSlice for BitArray64<L> {
         BitArray64([!0; L])
     }
     fn splat(sign: bool) -> Self {
-        BitArray64([0u64 - sign as u64; L])
+        BitArray64([(Wrapping(0u64) - Wrapping(sign as u64)).0; L])
     }
     fn xor(self, rhs: Self) -> Self {
         let mut target = BitArray64([0; L]);

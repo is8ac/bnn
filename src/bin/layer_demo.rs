@@ -12,19 +12,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::env;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem;
 use std::time::Instant;
 
-type CounterType = BitSliceBitCounter<BitArray64<8>, 5>;
-const EXP_SIZE: u32 = 8;
+const EXP_SIZE: u32 = 7;
 const EXP_THRESHOLDS: usize = 3;
+const PRECISION: usize = 4;
+type CounterType = BitSliceBitCounter<BitArray64<8>, PRECISION>;
 
 fn stackable_layer<'a>(
     input: &'a [[b64; 4]],
     target: &'a [[b64; 4]],
     target_bytes: &'a [u8],
+    train_len: usize,
 ) -> (Vec<[b64; 4]>, &'a [[b64; 4]], &'a [u8]) {
     let l: Vec<[b64; 8]> = input
         .par_windows(2)
@@ -41,7 +44,7 @@ fn stackable_layer<'a>(
     let bit_counter = CounterType {
         slice_type: PhantomData::default(),
     };
-    let weights = (0..5).fold(weights, |mut weights, i| {
+    let weights = (0..4).fold(weights, |mut weights, i| {
         let sparse: [(Vec<(usize, bool)>, [u32; 2]); 256] = weights
             .iter()
             .map(|w| weights_to_sparse(w))
@@ -50,8 +53,8 @@ fn stackable_layer<'a>(
             .unwrap();
         let unit_counts = <CounterType as UnitCountBits<8, 4, 2>>::unit_count_bits(
             &bit_counter,
-            &l[0..TRAIN_LEN],
-            &target[0..TRAIN_LEN],
+            &l[0..train_len],
+            &target[0..train_len],
             &sparse,
             4096,
         );
@@ -71,8 +74,8 @@ fn stackable_layer<'a>(
         let exp_counts =
             <CounterType as ExpCountBits<8, 4, EXP_THRESHOLDS, EXP_SIZE>>::exp_count_bits(
                 &bit_counter,
-                &l[0..TRAIN_LEN],
-                &target[0..TRAIN_LEN],
+                &l[0..train_len],
+                &target[0..train_len],
                 &exp_candidates,
                 4096,
             );
@@ -81,7 +84,7 @@ fn stackable_layer<'a>(
             .zip(exp_candidates.iter())
             .zip(exp_counts.iter())
             .map(|((weights, exp_candidates), exp_counts)| {
-                update_weights::<512, EXP_THRESHOLDS, EXP_SIZE>(
+                update_weights::<512, EXP_THRESHOLDS, PRECISION, EXP_SIZE>(
                     weights,
                     &exp_candidates.1,
                     exp_counts,
@@ -129,28 +132,40 @@ fn stackable_layer<'a>(
     (expanded, target, &target_bytes[1..])
 }
 
-const TRAIN_LEN: usize = 2usize.pow(18);
-
 fn main() {
+    let mut args = env::args();
+    args.next();
+
+    let n_examples_exp: u32 = args
+        .next()
+        .expect("you must pass the exponent number of examples")
+        .parse()
+        .expect("first arg must be a number");
+
+    let data_path: String = args.next().unwrap();
+
     rayon::ThreadPoolBuilder::new()
         .stack_size(2usize.pow(30))
         .build_global()
         .unwrap();
 
-    let bytes = std::fs::read("/big/temp/books_txt/Delphi Complete Works of Charles Dickens (Illustrated) - Charles Dickens.txt").unwrap();
+    let bytes = std::fs::read(data_path).unwrap();
 
     let expanded: Vec<[b64; 4]> = bytes.par_iter().map(|&b| encode_byte(b)).collect();
 
-    let (input, target, target_bytes) = stackable_layer(&expanded, &expanded[1..], &bytes[2..]);
+    let (input, target, target_bytes) = stackable_layer(
+        &expanded,
+        &expanded[1..],
+        &bytes[2..],
+        2usize.pow(n_examples_exp),
+    );
 
-    let (input, target, target_bytes) = stackable_layer(&input, target, target_bytes);
-    let (input, target, target_bytes) = stackable_layer(&input, target, target_bytes);
-    let (input, target, target_bytes) = stackable_layer(&input, target, target_bytes);
-    let (input, target, target_bytes) = stackable_layer(&input, target, target_bytes);
-
-    let (input, target, target_bytes) = stackable_layer(&input, target, target_bytes);
-    let (input, target, target_bytes) = stackable_layer(&input, target, target_bytes);
-    let (input, target, target_bytes) = stackable_layer(&input, target, target_bytes);
-    let (input, target, target_bytes) = stackable_layer(&input, target, target_bytes);
-    let (input, target, target_bytes) = stackable_layer(&input, target, target_bytes);
+    let (input, target, target_bytes) =
+        stackable_layer(&input, target, target_bytes, 2usize.pow(n_examples_exp));
+    let (input, target, target_bytes) =
+        stackable_layer(&input, target, target_bytes, 2usize.pow(n_examples_exp));
+    let (input, target, target_bytes) =
+        stackable_layer(&input, target, target_bytes, 2usize.pow(n_examples_exp));
+    let (input, target, target_bytes) =
+        stackable_layer(&input, target, target_bytes, 2usize.pow(n_examples_exp));
 }

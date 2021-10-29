@@ -2,28 +2,37 @@
 
 See description: https://www.isaacleonard.com/ml/distributed/
 
-The codebase is undergone significant code churn. Do not expect the `master` branch to necessarily compile.
-
-This project makes extensive use of const generics. You must therefore use rust nightly.
 ```
 https://rustup.rs/
 ```
-
-Until a [bug](https://github.com/rust-lang/rust/issues/80807) is fixed, you must pin an older `rustc`.
+You will need nightly rust
 ```
-rustup default nightly-2020-12-20
+rustup default nightly
+```
+and make sure it is up to date.
+```
+rustup update
+```
+Now you can build it.
+```
+cargo build --release
 ```
 
-
-To run:
+See how fast different word sizes are on your machine. (Replace "zen+" with the appropriate arch name.)
 ```
-cargo run --release --bin mnist_one_layer_fc -- mnist
+./target/release/count_bits_benchmark 20 zen+ "Threadripper 2950X 16-Core" word_perf_zen+.json
 ```
-where `mnist` is the path the MNIST dataset.
-If needed, download from http://yann.lecun.com/exdb/mnist/
 
-# Testing
-Use `--release` to make tests run faster.
+Plot the numbers (replace 3000 with a scaling factor appropriate for your machine):
+```
+./target/release/plot_word_perf 3000 word_perf_zen+.json word_perf_zen+.png
+```
+
+And finally stack some layers and measure accuracy on a given training set:
+```
+./target/release/layer_demo 20 "/path/to_some/big/chunk/of/text.txt"
+```
+
 
 # Literature
 ## Low precision neural nets

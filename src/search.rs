@@ -57,15 +57,17 @@ pub fn compute_exp_candidates<const I: usize, const UN: usize, const EN: usize, 
     (base, candidates, compute_thresholds(weights.1))
 }
 
-pub fn update_weights<const I: usize, const N: usize, const E: u32>(
+pub fn update_weights<const I: usize, const N: usize, const B: usize, const E: u32>(
     weights: &mut ([Option<bool>; I], u32),
     exp_candidates: &[(usize, bool); E as usize],
     exp_counts: &[[u64; N]; 2usize.pow(E)],
 ) -> u64 {
+    let current_n_set = weights.0.iter().filter(|w| w.is_some()).count();
     let thresholds = compute_thresholds::<N>(weights.1);
     let (mask, (accuracy, threshold)): (usize, (u64, u32)) = exp_counts
         .iter()
         .enumerate()
+        .filter(|(mask, _)| (mask.count_ones() as usize + current_n_set) < 2usize.pow(B as u32))
         .map(|(mask, &counts)| {
             let (accuracy, threshold) = counts
                 .iter()

@@ -558,16 +558,15 @@ mod tests {
             bitslice_counter4_5.unit_count_bits(&input, &target, &sparse, 1024)
         );
 
-        let exp_candidates: [(Vec<(usize, bool)>, [(usize, bool); 8 as usize], [u32; 3]); 256] =
-            weights
-                .iter()
-                .zip(popcount_unit_counts.iter())
-                .map(|(w, counts)| compute_exp_candidates::<512, 2, 3, 8>(w, counts))
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
+        let exp_candidates: [(Vec<(usize, bool)>, [(usize, bool); 7], [u32; 3]); 256] = weights
+            .iter()
+            .zip(popcount_unit_counts.iter())
+            .map(|(w, counts)| compute_exp_candidates::<512, 2, 3, 7>(w, counts))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
 
-        let popcount_exp_counts = <PopCountBitCounter as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+        let popcount_exp_counts = <PopCountBitCounter as ExpCountBits<8, 4, 3, 7>>::exp_count_bits(
             &popcount_counter,
             &input,
             &target,
@@ -576,7 +575,7 @@ mod tests {
         );
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+            <_ as ExpCountBits<8, 4, 3, 7>>::exp_count_bits(
                 &bitslice_counter1_4,
                 &input,
                 &target,
@@ -586,7 +585,7 @@ mod tests {
         );
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+            <_ as ExpCountBits<8, 4, 3, 7>>::exp_count_bits(
                 &bitslice_counter2_4,
                 &input,
                 &target,
@@ -596,7 +595,7 @@ mod tests {
         );
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+            <_ as ExpCountBits<8, 4, 3, 7>>::exp_count_bits(
                 &bitslice_counter4_4,
                 &input,
                 &target,
@@ -607,7 +606,7 @@ mod tests {
 
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+            <_ as ExpCountBits<8, 4, 3, 7>>::exp_count_bits(
                 &bitslice_counter1_5,
                 &input,
                 &target,
@@ -617,7 +616,7 @@ mod tests {
         );
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+            <_ as ExpCountBits<8, 4, 3, 7>>::exp_count_bits(
                 &bitslice_counter2_5,
                 &input,
                 &target,
@@ -627,7 +626,7 @@ mod tests {
         );
         assert_eq!(
             popcount_exp_counts,
-            <_ as ExpCountBits<8, 4, 3, 8>>::exp_count_bits(
+            <_ as ExpCountBits<8, 4, 3, 7>>::exp_count_bits(
                 &bitslice_counter4_5,
                 &input,
                 &target,
