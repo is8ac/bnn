@@ -5,5 +5,5 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -sSf | sh -s -- --defa
 source $HOME/.cargo/env
 git clone https://github.com/is8ac/bnn.git
 cd bnn
-git checkout 388b3809879b611b21d1f9a474c183dc1a252c35
+git checkout 0f58541a4a7e997c96b459b666f2c657770eaf9a
 cargo build --release
