@@ -155,7 +155,6 @@ fn main() {
         .expect("you must pass the exponent number of examples")
         .parse()
         .expect("first arg must be a number");
-    assert!(n_examples_exp < 25);
 
     let cpu_arch: String = args.next().expect("you must pass a cpu arch");
     let machine_type: String = args.next().expect("you must pass a machine type");
@@ -166,7 +165,7 @@ fn main() {
     let n_cores = num_cpus::get();
     dbg!(n_cores);
     rayon::ThreadPoolBuilder::new()
-        .stack_size(2usize.pow(26))
+        .stack_size(2usize.pow(30))
         .build_global()
         .unwrap();
 

@@ -33,6 +33,7 @@ And finally stack some layers and measure accuracy on a given training set:
 ./target/release/layer_demo 20 "/path/to_some/big/chunk/of/text.txt"
 ```
 
+Or run `setup.sh`.
 
 # Literature
 ## Low precision neural nets

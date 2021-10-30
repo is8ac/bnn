@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .margin(30)
         .x_label_area_size(20)
         .y_label_area_size(20)
-        .build_cartesian_2d(0f32..32f32, 0f32..y_scale as f32)?;
+        .build_cartesian_2d(0f32..34f32, 0f32..y_scale as f32)?;
 
     chart.configure_mesh().draw()?;
 
@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .for_each(|(b, color)| {
             chart
                 .draw_series(PointSeries::of_element(
-                    (0..32).filter_map(|i| {
+                    (0..=32).filter_map(|i| {
                         perf_results
                             .tests
                             .iter()
